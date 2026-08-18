@@ -1,0 +1,98 @@
+@unocss;
+
+/* RGB channel triplets so UnoCSS alpha modifiers (`bg-accent/85`) work.
+   `data-theme` is set before first paint by the inline script in app.html. */
+:root,
+[data-theme='light'] {
+	--c-bg: 255 255 255;
+	--c-panel: 247 248 250;
+	--c-raised: 237 239 244;
+	--c-border: 218 222 230;
+	--c-muted: 108 116 133;
+	--c-text: 26 30 38;
+	--c-accent: 36 106 235;
+	--c-ok: 22 143 92;
+	--c-warn: 176 118 12;
+	--c-bad: 208 48 53;
+	color-scheme: light;
+}
+
+[data-theme='dark'] {
+	--c-bg: 14 15 19;
+	--c-panel: 21 23 29;
+	--c-raised: 28 31 39;
+	--c-border: 39 43 53;
+	--c-muted: 139 147 167;
+	--c-text: 223 227 236;
+	--c-accent: 91 156 255;
+	--c-ok: 62 207 142;
+	--c-warn: 232 179 57;
+	--c-bad: 242 85 90;
+	color-scheme: dark;
+}
+
+:root {
+	--font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+}
+
+html,
+body {
+	height: 100%;
+	margin: 0;
+	background: rgb(var(--c-bg));
+	color: rgb(var(--c-text));
+	font-family:
+		-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+	font-size: 13px;
+	overflow: hidden;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+	background: rgb(var(--c-border));
+	border-radius: 5px;
+	border: 2px solid rgb(var(--c-bg));
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: rgb(var(--c-muted) / 0.6);
+}
+
+::-webkit-scrollbar-corner,
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+/* The whole window is chrome, not a document — text selection should be
+   deliberate, but never blocked inside the editors or the response. */
+body {
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.cm-editor,
+.selectable {
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+/* Let the pane background show through rather than CodeMirror's own. */
+.cm-editor,
+.cm-editor .cm-gutters {
+	background-color: transparent !important;
+}
+
+.cm-editor .cm-activeLine,
+.cm-editor .cm-activeLineGutter {
+	background-color: rgb(var(--c-raised) / 0.6) !important;
+}
