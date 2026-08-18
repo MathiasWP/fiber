@@ -55,7 +55,14 @@
 
 	$effect(() => {
 		collections.load();
+		history.load();
 		return theme.init();
+	});
+
+	// Bodies aren't loaded with the history list; pull one in when it's about
+	// to be shown.
+	$effect(() => {
+		if (shown) history.ensureBody(shown);
 	});
 
 	$effect(() => {
@@ -102,10 +109,11 @@
 		return /json/i.test(contentType) ? 'json' : 'text';
 	});
 
+	const shownBody = $derived(shown?.body ?? '');
+
 	const responseText = $derived.by(() => {
-		const response = shown?.response;
-		if (!response || response.isBinary) return '';
-		return responseTab === 'pretty' ? tryFormatJson(response.body) : response.body;
+		if (!shown?.response || shown.response.isBinary) return '';
+		return responseTab === 'pretty' ? tryFormatJson(shownBody) : shownBody;
 	});
 
 	async function send() {
@@ -136,6 +144,7 @@
 		try {
 			const response = await sendRequest({
 				id,
+				requestId: requestKey,
 				method: draft.method,
 				url,
 				headers: outgoing,
@@ -464,11 +473,7 @@
 											</Tabs.Content>
 
 											<Tabs.Content value="raw" class="flex-1 min-h-0">
-												<Editor
-													value={response.isBinary ? response.body : responseText}
-													readonly
-													language="text"
-												/>
+												<Editor value={shownBody} readonly language="text" />
 											</Tabs.Content>
 
 											<Tabs.Content value="headers" class="flex-1 min-h-0 overflow-y-auto p-3">
@@ -492,15 +497,14 @@
 											<ContextMenu.Content class="menu-content">
 												<ContextMenu.Item
 													class="menu-item"
-													onSelect={() => navigator.clipboard.writeText(response.body)}
+													onSelect={() => navigator.clipboard.writeText(shownBody)}
 												>
 													<span class="i-lucide-copy text-3"></span>
 													Copy response
 												</ContextMenu.Item>
 												<ContextMenu.Item
 													class="menu-item"
-													onSelect={() =>
-														navigator.clipboard.writeText(tryFormatJson(response.body))}
+													onSelect={() => navigator.clipboard.writeText(tryFormatJson(shownBody))}
 												>
 													<span class="i-lucide-braces text-3"></span>
 													Copy formatted

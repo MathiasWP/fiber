@@ -29,8 +29,12 @@ pub struct Header {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestSpec {
-    /// Client-generated; also the handle used to cancel the request.
+    /// Client-generated; also the handle used to cancel the request, and the
+    /// primary key of its history entry.
     pub id: String,
+    /// The saved request this belongs to, so history can bucket it per request.
+    #[serde(default)]
+    pub request_id: String,
     pub method: String,
     pub url: String,
     #[serde(default)]
@@ -49,7 +53,7 @@ fn yes() -> bool {
     true
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Timing {
     /// Time to response headers.
@@ -393,6 +397,7 @@ mod tests {
             &state,
             RequestSpec {
                 id: "test-1".into(),
+                request_id: "req-test".into(),
                 method: "POST".into(),
                 url: format!("{url}/user/create"),
                 headers: vec![Header {
@@ -442,6 +447,7 @@ mod tests {
             &state,
             RequestSpec {
                 id: "test-2".into(),
+                request_id: "req-test".into(),
                 method: "GET".into(),
                 url,
                 headers: vec![],
@@ -473,6 +479,7 @@ mod tests {
         let state = std::sync::Arc::new(HttpState::default());
         let spec = RequestSpec {
             id: "test-3".into(),
+            request_id: "req-test".into(),
             method: "GET".into(),
             url: format!("http://{addr}"),
             headers: vec![],

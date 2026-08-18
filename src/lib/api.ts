@@ -6,8 +6,10 @@ export interface Header {
 }
 
 export interface RequestSpec {
-	/** Also the cancellation handle. */
+	/** Also the cancellation handle and the history entry's primary key. */
 	id: string;
+	/** The saved request this belongs to, so history buckets it correctly. */
+	requestId: string;
 	method: string;
 	url: string;
 	headers: Header[];
@@ -22,17 +24,53 @@ export interface Timing {
 	totalMs: number;
 }
 
-export interface ResponseData {
+/** Everything about a response except the body, which is fetched separately. */
+export interface ResponseMeta {
 	status: number;
 	statusText: string;
 	finalUrl: string;
 	headers: Header[];
-	/** UTF-8 text, or base64 when `isBinary`. */
-	body: string;
 	isBinary: boolean;
 	truncated: boolean;
 	sizeBytes: number;
 	timing: Timing;
+}
+
+export interface ResponseData extends ResponseMeta {
+	/** UTF-8 text, or base64 when `isBinary`. */
+	body: string;
+}
+
+/** A stored history entry. Bodies come from `historyBody`. */
+export interface HistoryRecord {
+	id: string;
+	requestId: string;
+	at: number;
+	method: string;
+	url: string;
+	requestBody: string;
+	response: ResponseMeta | null;
+	error: string | null;
+}
+
+export function historyList(): Promise<HistoryRecord[]> {
+	return invoke<HistoryRecord[]>('history_list');
+}
+
+export function historyBody(id: string): Promise<string | null> {
+	return invoke<string | null>('history_body', { id });
+}
+
+export function historyDelete(id: string): Promise<void> {
+	return invoke<void>('history_delete', { id });
+}
+
+export function historyClearRequest(requestId: string): Promise<void> {
+	return invoke<void>('history_clear_request', { requestId });
+}
+
+export function historyClearAll(): Promise<void> {
+	return invoke<void>('history_clear_all');
 }
 
 /** A request saved inside a section. `path` is relative to the section's base URL. */

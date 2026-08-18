@@ -62,8 +62,11 @@ which is the only escape hatch.
 
 ## Status
 
-Steps 1–2 of the build order in the design doc: send requests from Rust, write a
-JSON body, read the response, keep a session history, and organise requests into
-sections that live on disk.
+Steps 1–3 of the build order in the design doc: send requests from Rust, write a
+JSON body, read the response, organise requests into sections that live on disk,
+and keep history that survives restarts.
 
-Not built yet: persistent history, auth, loaders, MCP server.
+History is SQLite in the app data dir, bucketed per request — the newest 50 per
+request, nothing older than 30 days. Bodies over 256KB spill to files.
+
+Not built yet: auth, loaders, MCP server.
