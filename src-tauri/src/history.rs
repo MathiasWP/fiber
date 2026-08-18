@@ -334,6 +334,7 @@ mod tests {
         RequestSpec {
             id: id.into(),
             request_id: request_id.into(),
+            section_id: None,
             method: "GET".into(),
             url: "https://example.com/x".into(),
             headers: vec![],

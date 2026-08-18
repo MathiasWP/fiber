@@ -98,6 +98,7 @@ class Collections {
 			name: name.trim() || 'Untitled',
 			baseUrl: baseUrl.trim(),
 			collapsed: false,
+			auth: { kind: 'none' },
 			requests: []
 		};
 		this.sections = [...this.sections, section].sort((a, b) =>

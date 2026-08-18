@@ -60,13 +60,29 @@ A section owns the base URL; requests inside it hold just a path. There is no
 variable system — an absolute URL in a request's path overrides the section,
 which is the only escape hatch.
 
+## Auth
+
+Set per section, under *Section settings → Auth*:
+
+- **Bearer token** — a fixed token.
+- **Login request** — fetch a token by making a request. Point `tokenPath` at it
+  (`$.data.access_token`), and **any 401 silently re-runs the login and retries
+  the request once**. That's the whole point: no more pasting a fresh token every
+  hour.
+
+Credentials live in the OS keychain; the section file holds only a reference, so
+it stays safe to share or commit. There is no command to read a secret back out
+— the UI can write one and ask whether one exists, nothing more.
+
+An `Authorization` header typed on a request overrides the section's auth.
+
 ## Status
 
-Steps 1–3 of the build order in the design doc: send requests from Rust, write a
-JSON body, read the response, organise requests into sections that live on disk,
-and keep history that survives restarts.
+Steps 1–4 of the build order in the design doc: send requests from Rust, write a
+JSON body, read the response, organise requests into sections on disk, keep
+history that survives restarts, and authenticate without babysitting tokens.
 
 History is SQLite in the app data dir, bucketed per request — the newest 50 per
 request, nothing older than 30 days. Bodies over 256KB spill to files.
 
-Not built yet: auth, loaders, MCP server.
+Not built yet: dynamic loaders, MCP server.

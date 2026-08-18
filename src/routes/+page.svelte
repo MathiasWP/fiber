@@ -145,6 +145,7 @@
 			const response = await sendRequest({
 				id,
 				requestId: requestKey,
+				sectionId: selection?.section.id ?? null,
 				method: draft.method,
 				url,
 				headers: outgoing,
@@ -302,13 +303,13 @@
 								>
 									<Tabs.Trigger
 										value="body"
-										class="px-2 py-1 rounded text-xs text-muted data-[state=active]:(bg-raised text-text) hover:text-text transition-colors"
+										class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
 									>
 										Body
 									</Tabs.Trigger>
 									<Tabs.Trigger
 										value="headers"
-										class="px-2 py-1 rounded text-xs text-muted data-[state=active]:(bg-raised text-text) hover:text-text transition-colors"
+										class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
 									>
 										Headers{filledHeaders.length ? ` (${filledHeaders.length})` : ''}
 									</Tabs.Trigger>
@@ -395,19 +396,19 @@
 									>
 										<Tabs.Trigger
 											value="pretty"
-											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:(bg-raised text-text) hover:text-text transition-colors"
+											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
 										>
 											Pretty
 										</Tabs.Trigger>
 										<Tabs.Trigger
 											value="raw"
-											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:(bg-raised text-text) hover:text-text transition-colors"
+											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
 										>
 											Raw
 										</Tabs.Trigger>
 										<Tabs.Trigger
 											value="headers"
-											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:(bg-raised text-text) hover:text-text transition-colors"
+											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
 										>
 											Headers ({response.headers.length})
 										</Tabs.Trigger>

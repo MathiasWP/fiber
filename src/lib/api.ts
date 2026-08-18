@@ -10,6 +10,8 @@ export interface RequestSpec {
 	id: string;
 	/** The saved request this belongs to, so history buckets it correctly. */
 	requestId: string;
+	/** The section this came from — its auth config is applied on send. */
+	sectionId?: string | null;
 	method: string;
 	url: string;
 	headers: Header[];
@@ -83,13 +85,56 @@ export interface SavedRequest {
 	headers: Header[];
 }
 
-/** A group of requests sharing a base URL. Auth and loaders attach here later. */
+/**
+ * How a section obtains credentials. Values never live here — `secretRef` names
+ * an entry in the OS keychain, so a section file is safe to share.
+ */
+export type AuthConfig =
+	| { kind: 'none' }
+	| { kind: 'bearer'; secretRef: string }
+	| {
+			kind: 'login';
+			method: string;
+			/** Absolute, or relative to the section's base URL. */
+			url: string;
+			/** Where the token is in the response, e.g. `$.data.access_token`. */
+			tokenPath: string;
+			header: string;
+			prefix: string;
+			/** 0 means "cache until a 401 says otherwise". */
+			ttlSeconds: number;
+			/** Keychain reference for the login request body. */
+			secretRef: string;
+	  };
+
+export type AuthKind = AuthConfig['kind'];
+
+/** A group of requests sharing a base URL. Loaders attach here later. */
 export interface Section {
 	id: string;
 	name: string;
 	baseUrl: string;
 	collapsed: boolean;
+	auth: AuthConfig;
 	requests: SavedRequest[];
+}
+
+/** Write-only by design: there is no command to read a secret back out. */
+export function setSecret(reference: string, value: string): Promise<void> {
+	return invoke<void>('set_secret', { reference, value });
+}
+
+export function hasSecret(reference: string): Promise<boolean> {
+	return invoke<boolean>('has_secret', { reference });
+}
+
+export function deleteSecret(reference: string): Promise<void> {
+	return invoke<void>('delete_secret', { reference });
+}
+
+/** Forces the next send for this section to log in again. */
+export function forgetToken(sectionId: string): Promise<void> {
+	return invoke<void>('forget_token', { sectionId });
 }
 
 export function listSections(): Promise<Section[]> {

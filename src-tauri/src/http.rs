@@ -35,6 +35,9 @@ pub struct RequestSpec {
     /// The saved request this belongs to, so history can bucket it per request.
     #[serde(default)]
     pub request_id: String,
+    /// The section this came from, if any — its auth config is applied on send.
+    #[serde(default)]
+    pub section_id: Option<String>,
     pub method: String,
     pub url: String,
     #[serde(default)]
@@ -94,6 +97,8 @@ pub enum HttpError {
     Timeout,
     #[error("request cancelled")]
     Cancelled,
+    #[error("authentication failed: {0}")]
+    Auth(String),
     #[error("could not connect: {0}")]
     Connect(String),
     #[error("{0}")]
@@ -398,6 +403,7 @@ mod tests {
             RequestSpec {
                 id: "test-1".into(),
                 request_id: "req-test".into(),
+                section_id: None,
                 method: "POST".into(),
                 url: format!("{url}/user/create"),
                 headers: vec![Header {
@@ -448,6 +454,7 @@ mod tests {
             RequestSpec {
                 id: "test-2".into(),
                 request_id: "req-test".into(),
+                section_id: None,
                 method: "GET".into(),
                 url,
                 headers: vec![],
@@ -480,6 +487,7 @@ mod tests {
         let spec = RequestSpec {
             id: "test-3".into(),
             request_id: "req-test".into(),
+            section_id: None,
             method: "GET".into(),
             url: format!("http://{addr}"),
             headers: vec![],

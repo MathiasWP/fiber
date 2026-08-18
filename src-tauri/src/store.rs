@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::auth::AuthConfig;
 use crate::http::Header;
 
 /// A group of requests that share a base URL. Auth and loaders attach here too,
@@ -26,7 +27,10 @@ pub struct Section {
     pub base_url: String,
     #[serde(default)]
     pub collapsed: bool,
-    // Array-of-tables must come after the scalars or the TOML is invalid.
+    // Tables and array-of-tables must come after the scalars, or the TOML is
+    // invalid. `auth` holds only a keychain reference, never a credential.
+    #[serde(default)]
+    pub auth: AuthConfig,
     #[serde(default)]
     pub requests: Vec<SavedRequest>,
 }
@@ -118,6 +122,23 @@ pub fn load_all(dir: &Path) -> Result<Vec<Section>, StoreError> {
 
     sections.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(sections)
+}
+
+/// Reads a single section by id. Used on every send to find the section's auth
+/// config, so the file on disk stays the single source of truth.
+pub fn load_one(dir: &Path, id: &str) -> Result<Option<Section>, StoreError> {
+    let path = dir.join(safe_file_name(id)?);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(StoreError::Read {
+                path: path.display().to_string(),
+                source,
+            })
+        }
+    };
+    Ok(toml::from_str(&text).ok())
 }
 
 /// Writes via a temp file and a rename so an interrupted save can't leave a
@@ -239,6 +260,7 @@ mod tests {
             name: "Acme API".into(),
             base_url: "https://api.acme.com".into(),
             collapsed: false,
+            auth: crate::auth::AuthConfig::None,
             requests: vec![SavedRequest {
                 id: "req1".into(),
                 name: "Get user".into(),
@@ -287,6 +309,7 @@ mod tests {
                 name: "Good".into(),
                 base_url: String::new(),
                 collapsed: false,
+                auth: crate::auth::AuthConfig::None,
                 requests: vec![],
             },
         )
