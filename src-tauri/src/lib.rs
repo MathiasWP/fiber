@@ -3,6 +3,8 @@ mod browser;
 mod history;
 mod loader;
 pub mod mcp;
+mod migrate;
+mod openapi;
 mod http;
 mod secrets;
 mod store;
@@ -385,6 +387,13 @@ fn loader_cache(paths: State<'_, Paths>, section_id: String) -> loader::LoaderCa
     loader::read_cache(&paths.loaders, &section_id).unwrap_or_default()
 }
 
+/// Parses an OpenAPI or Swagger document. Pure — the frontend decides what to
+/// do with the result, and nothing is written until the user confirms.
+#[tauri::command]
+fn parse_openapi(text: String) -> Result<openapi::Import, openapi::ImportError> {
+    openapi::parse(&text)
+}
+
 #[tauri::command]
 fn default_loader() -> loader::LoaderConfig {
     loader::LoaderConfig::default()
@@ -502,6 +511,7 @@ pub fn run() {
             loader_preview,
             loader_cache,
             default_loader,
+            parse_openapi,
             loader_examples
         ])
         .setup(|app| {
@@ -514,6 +524,13 @@ pub fn run() {
             }
 
             let app_data_dir = app.path().app_data_dir()?;
+            // The app used to be called Fetch. Carry its collections and
+            // credentials across before anything reads them.
+            if migrate::data_dir(&app_data_dir) {
+                let sections = store::sections_dir(&app_data_dir);
+                migrate::secrets(migrate::references(&sections).into_iter());
+            }
+
             app.manage(Paths {
                 sections: store::sections_dir(&app_data_dir),
                 loaders: loader::loaders_dir(&app_data_dir),

@@ -266,6 +266,29 @@ export function defaultLoader(): Promise<LoaderConfig> {
 	return invoke<LoaderConfig>('default_loader');
 }
 
+export interface ImportedEndpoint {
+	method: string;
+	path: string;
+	name: string;
+	description: string;
+}
+
+export interface Import {
+	title: string;
+	version: string;
+	baseUrl: string;
+	endpoints: ImportedEndpoint[];
+}
+
+/**
+ * Parses an OpenAPI or Swagger document, JSON or YAML. Pure — nothing is
+ * written until the user confirms, and the result becomes ordinary requests
+ * rather than loader output, so it keeps working offline.
+ */
+export function parseOpenApi(text: string): Promise<Import> {
+	return invoke<Import>('parse_openapi', { text });
+}
+
 /** Worked filters for the manifest shapes people actually hit. */
 export function loaderExamples(): Promise<[string, string][]> {
 	return invoke<[string, string][]>('loader_examples');

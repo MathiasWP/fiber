@@ -7,7 +7,7 @@
 //! them and asks whether one exists; only Rust ever sees the value, on its way
 //! into an outgoing request.
 
-const SERVICE: &str = "dev.fetch.app";
+const SERVICE: &str = "dev.fiber.app";
 
 #[derive(Debug, thiserror::Error)]
 #[error("keychain: {0}")]
@@ -21,6 +21,15 @@ impl serde::Serialize for SecretError {
 
 fn entry(reference: &str) -> Result<keyring::Entry, SecretError> {
     Ok(keyring::Entry::new(SERVICE, reference)?)
+}
+
+/// Reads from a named service. Only the rename migration needs this — the app
+/// itself never looks anywhere but [`SERVICE`].
+pub fn get_from(service: &str, reference: &str) -> Option<String> {
+    keyring::Entry::new(service, reference)
+        .ok()?
+        .get_password()
+        .ok()
 }
 
 pub fn set(reference: &str, value: &str) -> Result<(), SecretError> {

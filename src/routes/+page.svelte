@@ -214,7 +214,7 @@
 <SectionSettings section={settingsFor} onClose={() => (settingsFor = null)} />
 
 <div class="h-screen bg-bg text-text">
-	<PaneGroup direction="horizontal" autoSaveId="fetch:sidebar">
+	<PaneGroup direction="horizontal" autoSaveId="fiber:sidebar">
 		<Pane defaultSize={20} minSize={12} maxSize={40}>
 			<Sidebar
 				onOpenSettings={(section) => (settingsFor = section)}
@@ -296,7 +296,7 @@
 				</div>
 
 				<!-- Input | output. This split is the app. -->
-				<PaneGroup direction="horizontal" autoSaveId="fetch:main" class="min-h-0 min-w-0">
+				<PaneGroup direction="horizontal" autoSaveId="fiber:main" class="min-h-0 min-w-0">
 					<Pane defaultSize={50} minSize={20}>
 						<section class="flex flex-col min-h-0 min-w-0 h-full">
 							<Tabs.Root bind:value={requestTab} class="flex flex-col h-full min-h-0">

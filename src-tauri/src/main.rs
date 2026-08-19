@@ -1,7 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-/// The same binary is both the app and its MCP server: `fetch mcp` speaks MCP
+/// The same binary is both the app and its MCP server: `fiber mcp` speaks MCP
 /// over stdio against the same collections on disk, with no window and no
 /// running app. Argument parsing happens before Tauri starts, so the MCP path
 /// never initialises a GUI.
@@ -14,7 +14,7 @@ fn main() {
                 std::process::exit(1);
             }
         };
-        if let Err(err) = runtime.block_on(app_lib::mcp::serve()) {
+        if let Err(err) = runtime.block_on(fiber_lib::mcp::serve()) {
             // stdout is the protocol channel, so diagnostics go to stderr.
             eprintln!("mcp server stopped: {err}");
             std::process::exit(1);
@@ -22,5 +22,5 @@ fn main() {
         return;
     }
 
-    app_lib::run();
+    fiber_lib::run();
 }

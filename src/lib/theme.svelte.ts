@@ -1,6 +1,6 @@
 export type ThemeMode = 'system' | 'light' | 'dark';
 
-const STORAGE_KEY = 'fetch:theme';
+const STORAGE_KEY = 'fiber:theme';
 const MODES: ThemeMode[] = ['system', 'light', 'dark'];
 
 /**

@@ -1,5 +1,5 @@
 [package]
-name = "app"
+name = "fiber"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
@@ -11,7 +11,7 @@ rust-version = "1.90"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-name = "app_lib"
+name = "fiber_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -37,6 +37,7 @@ jaq-json = "2.0.2"
 rmcp = { version = "3.1.3", features = ["server", "macros", "transport-io", "schemars"] }
 dirs = "6.0.0"
 schemars = "1.2.2"
+serde_norway = "0.9.42"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }

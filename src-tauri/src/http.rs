@@ -162,7 +162,7 @@ impl HttpState {
         };
 
         let client = reqwest::Client::builder()
-            .user_agent(concat!("fetch/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("fiber/", env!("CARGO_PKG_VERSION")))
             // One jar per client for now. Per-section jars arrive with sections.
             .cookie_store(true)
             .redirect(redirect)

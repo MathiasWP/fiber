@@ -1,4 +1,4 @@
-# Fetch
+# Fiber
 
 A local-first API client. Tauri + SvelteKit + Bits UI + UnoCSS.
 
@@ -55,10 +55,23 @@ src-tauri/
 Panes are draggable and their sizes persist. Theme is system/light/dark, toggled
 bottom-left of the sidebar.
 
+## Endpoints
+
+Three ways to get them, and they compose — a section can use any mix:
+
+1. **Type them.** A request is a method and a path.
+2. **Import an OpenAPI or Swagger file** — *Section settings → General → Import
+   OpenAPI*. JSON or YAML, 3.x or 2.0. Operations become ordinary requests, so
+   there is nothing to fetch and nothing to go stale: an imported collection
+   works offline.
+3. **Point a loader at the API's own manifest** — *Section settings → Loader*.
+   Best when the API publishes its routes and you want them to stay current,
+   but it needs the API reachable.
+
 ## Collections
 
 One TOML file per section, in
-`~/Library/Application Support/dev.fetch.app/sections/`. Plain text and stably
+`~/Library/Application Support/dev.fiber.app/sections/`. Plain text and stably
 ordered, so it diffs cleanly if you ever want it in a repo. Edits autosave.
 
 A section owns the base URL; requests inside it hold just a path. There is no
@@ -110,7 +123,7 @@ The same binary is the MCP server:
 
 ```jsonc
 // e.g. Claude Code's mcp config
-{ "fetch": { "command": "/path/to/fetch", "args": ["mcp"] } }
+{ "fiber": { "command": "/path/to/fiber", "args": ["mcp"] } }
 ```
 
 It reads the same collections on disk and needs no running app. **Nothing is

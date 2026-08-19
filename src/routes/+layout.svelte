@@ -6,7 +6,7 @@
 </script>
 
 <svelte:head>
-	<title>Fetch</title>
+	<title>Fiber</title>
 </svelte:head>
 
 {@render children()}

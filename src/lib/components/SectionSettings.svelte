@@ -14,6 +14,7 @@
 	} from '$lib/api';
 	import { collections } from '$lib/collections.svelte';
 	import CapturePicker from './CapturePicker.svelte';
+	import ImportSpec from './ImportSpec.svelte';
 	import LoaderTab from './LoaderTab.svelte';
 
 	interface Props {
@@ -232,6 +233,8 @@
 								class="input-base text-xs font-mono selectable"
 							/>
 						</label>
+
+						<ImportSpec {section} />
 
 						<div class="rounded border border-border p-3 flex flex-col gap-2">
 							<div class="flex items-center gap-2">

@@ -1,6 +1,6 @@
 //! The MCP server.
 //!
-//! `fetch mcp` speaks MCP over stdio using the same core as the app and the
+//! `fiber mcp` speaks MCP over stdio using the same core as the app and the
 //! same files on disk. No window, no running app — which is why every module
 //! under it is free of Tauri types.
 //!
@@ -131,7 +131,7 @@ struct TryFilterArgs {
 }
 
 #[derive(Clone)]
-pub struct FetchMcp {
+pub struct FiberMcp {
     sections_dir: std::path::PathBuf,
     loaders_dir: std::path::PathBuf,
     http: Arc<HttpState>,
@@ -141,7 +141,7 @@ pub struct FetchMcp {
     tool_router: ToolRouter<Self>,
 }
 
-impl FetchMcp {
+impl FiberMcp {
     /// Only sections the user has explicitly exposed. Everything else is
     /// invisible, not merely read-only.
     fn exposed(&self) -> Vec<Section> {
@@ -268,7 +268,7 @@ fn ok_json<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
 }
 
 #[tool_router]
-impl FetchMcp {
+impl FiberMcp {
     /// Collections shared with MCP.
     #[tool(description = "List the API collections shared with MCP, with their base URLs.")]
     async fn list_sections(&self) -> Result<CallToolResult, McpError> {
@@ -518,15 +518,15 @@ impl FetchMcp {
 }
 
 #[tool_handler]
-impl ServerHandler for FetchMcp {
+impl ServerHandler for FiberMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(rmcp::model::Implementation::new(
-                "fetch",
+                "fiber",
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-            "Fetch exposes API collections the user has explicitly shared. Start with \
+            "Fiber exposes API collections the user has explicitly shared. Start with \
              search_endpoints to find an endpoint, then send_request to call it — the \
              collection's base URL and credentials are applied for you and never returned. \
              Only GET, HEAD and OPTIONS are available unless a collection permits writes.",
@@ -538,19 +538,25 @@ impl ServerHandler for FetchMcp {
 pub fn app_data_dir() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("dev.fetch.app")
+        .join("dev.fiber.app")
 }
 
 /// Serves MCP over stdio until the client disconnects.
 pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let data = app_data_dir();
-    let server = FetchMcp {
+    // Whichever of the app or this server starts first does the rename
+    // migration; the other finds it already done.
+    if crate::migrate::data_dir(&data) {
+        let sections = store::sections_dir(&data);
+        crate::migrate::secrets(crate::migrate::references(&sections).into_iter());
+    }
+    let server = FiberMcp {
         sections_dir: store::sections_dir(&data),
         loaders_dir: loader::loaders_dir(&data),
         http: Arc::new(HttpState::default()),
         auth: Arc::new(AuthState::default()),
         history: Arc::new(HistoryStore::open(&data)?),
-        tool_router: FetchMcp::tool_router(),
+        tool_router: FiberMcp::tool_router(),
     };
 
     let service = server.serve(rmcp::transport::stdio()).await?;
@@ -587,14 +593,14 @@ mod tests {
         }
     }
 
-    fn server(dir: &std::path::Path) -> FetchMcp {
-        FetchMcp {
+    fn server(dir: &std::path::Path) -> FiberMcp {
+        FiberMcp {
             sections_dir: dir.to_path_buf(),
             loaders_dir: dir.join("loaders"),
             http: Arc::new(HttpState::default()),
             auth: Arc::new(AuthState::default()),
             history: Arc::new(HistoryStore::open(dir).unwrap()),
-            tool_router: FetchMcp::tool_router(),
+            tool_router: FiberMcp::tool_router(),
         }
     }
 

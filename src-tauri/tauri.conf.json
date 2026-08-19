@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "fetch",
+  "productName": "Fiber",
   "version": "0.1.0",
-  "identifier": "dev.fetch.app",
+  "identifier": "dev.fiber.app",
   "build": {
     "frontendDist": "../build",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Fetch",
+        "title": "Fiber",
         "width": 1280,
         "height": 820,
         "minWidth": 900,
