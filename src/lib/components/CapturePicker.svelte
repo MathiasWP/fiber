@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
 	import { browserSnapshot, type CaptureKind, type Snapshot } from '$lib/api';
+	import { identify } from '$lib/providers';
 
 	interface Props {
 		open: boolean;
@@ -14,6 +15,7 @@
 	let snapshot = $state<Snapshot | null>(null);
 	let error = $state<string | null>(null);
 	let loading = $state(false);
+	let query = $state('');
 
 	interface Candidate {
 		capture: CaptureKind;
@@ -23,6 +25,8 @@
 		label: string;
 		detail: string;
 		preview: string;
+		/** Set when the key matches a known provider's storage format. */
+		provider: string | null;
 		/** Higher sorts first. */
 		score: number;
 	}
@@ -41,8 +45,12 @@
 	}
 
 	$effect(() => {
-		if (open) load();
-		else snapshot = null;
+		if (open) {
+			query = '';
+			load();
+		} else {
+			snapshot = null;
+		}
 	});
 
 	/** Flattens a JSON value into leaf paths, so a nested token is one click. */
@@ -72,22 +80,48 @@
 		return score;
 	}
 
+	function candidate(
+		capture: CaptureKind,
+		key: string,
+		path: string,
+		label: string,
+		detail: string,
+		value: string,
+		bonus = 0
+	): Candidate {
+		// A recognised provider outweighs every heuristic — if we know Auth0 keeps
+		// its token here, that beats guessing from the shape of the string.
+		const known = identify(capture, key, path);
+		return {
+			capture,
+			key,
+			path,
+			label,
+			detail,
+			preview: value,
+			provider: known?.provider ?? null,
+			score: scoreOf(`${key} ${path}`, value) + bonus + (known?.weight ?? 0)
+		};
+	}
+
 	const candidates = $derived.by<Candidate[]>(() => {
 		if (!snapshot) return [];
 		const found: Candidate[] = [];
 
 		for (const cookie of snapshot.cookies) {
-			found.push({
-				capture: 'cookie',
-				key: cookie.name,
-				path: '',
-				label: cookie.name,
-				detail: cookie.httpOnly ? `${cookie.domain} · HttpOnly` : cookie.domain,
-				preview: cookie.value,
-				// An HttpOnly cookie is almost always the session — and it's the
-				// case nothing but this app can reach.
-				score: scoreOf(cookie.name, cookie.value) + (cookie.httpOnly ? 4 : 0)
-			});
+			found.push(
+				candidate(
+					'cookie',
+					cookie.name,
+					'',
+					cookie.name,
+					cookie.httpOnly ? `${cookie.domain} · HttpOnly` : cookie.domain,
+					cookie.value,
+					// An HttpOnly cookie is almost always the session — and it's the
+					// case nothing but this app can reach.
+					cookie.httpOnly ? 4 : 0
+				)
+			);
 		}
 
 		for (const entry of snapshot.localStorage) {
@@ -100,30 +134,40 @@
 
 			if (parsed && typeof parsed === 'object') {
 				for (const leaf of leaves(parsed, '', [])) {
-					found.push({
-						capture: 'localStorage',
-						key: entry.key,
-						path: leaf.path,
-						label: leaf.path,
-						detail: entry.key,
-						preview: leaf.value,
-						score: scoreOf(`${entry.key} ${leaf.path}`, leaf.value)
-					});
+					found.push(
+						candidate(
+							'localStorage',
+							entry.key,
+							leaf.path,
+							leaf.path,
+							entry.key,
+							leaf.value
+						)
+					);
 				}
 			} else {
-				found.push({
-					capture: 'localStorage',
-					key: entry.key,
-					path: '',
-					label: entry.key,
-					detail: 'localStorage',
-					preview: entry.value,
-					score: scoreOf(entry.key, entry.value)
-				});
+				found.push(
+					candidate('localStorage', entry.key, '', entry.key, 'localStorage', entry.value)
+				);
 			}
 		}
 
 		return found.sort((a, b) => b.score - a.score);
+	});
+
+	/**
+	 * Every whitespace-separated term must appear somewhere in the row. Plain
+	 * substring rather than fuzzy: against a list containing base64 blobs, a
+	 * subsequence match finds almost everything, which is worse than useless.
+	 */
+	const visible = $derived.by(() => {
+		const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+		if (terms.length === 0) return candidates;
+		return candidates.filter((candidate) => {
+			const haystack =
+				`${candidate.label} ${candidate.detail} ${candidate.preview}`.toLowerCase();
+			return terms.every((term) => haystack.includes(term));
+		});
 	});
 
 	function truncate(text: string, max = 72) {
@@ -149,6 +193,20 @@
 					likeliest candidates are first. HttpOnly cookies are included; the page's own
 					JavaScript can't read those, but this app can.
 				</Dialog.Description>
+
+				<div class="relative mt-3">
+					<span
+						class="i-lucide-search absolute left-2 top-1/2 -translate-y-1/2 text-muted text-3"
+					></span>
+					<!-- svelte-ignore a11y_autofocus -->
+					<input
+						bind:value={query}
+						autofocus
+						spellcheck="false"
+						placeholder="Filter by name, path or value…"
+						class="input-base w-full text-xs pl-7"
+					/>
+				</div>
 			</div>
 
 			<div class="flex-1 overflow-y-auto min-h-0">
@@ -163,11 +221,20 @@
 						<button class="btn-ghost text-xs mt-2 px-0" onclick={load}>Try again</button>
 					</div>
 				{:else if candidates.length === 0}
-					<p class="p-4 text-xs text-muted leading-relaxed">
-						Nothing found. Make sure you've finished signing in, then try again.
+					<div class="p-4 text-xs text-muted leading-relaxed flex flex-col gap-2">
+						<p>Nothing found. Make sure you've finished signing in, then Refresh.</p>
+						<p class="text-2.5">
+							Some SDKs keep tokens where this can't reach: Firebase uses IndexedDB by default,
+							and MSAL v4 encrypts its storage unless “keep me signed in” was ticked. If that's
+							your setup, a cookie is usually still capturable.
+						</p>
+					</div>
+				{:else if visible.length === 0}
+					<p class="p-4 text-xs text-muted">
+						Nothing matches “{query}” — {candidates.length} values in this session.
 					</p>
 				{:else}
-					{#each candidates as candidate (candidate.capture + candidate.key + candidate.path)}
+					{#each visible as candidate (candidate.capture + candidate.key + candidate.path)}
 						<button
 							class="w-full text-left px-4 py-2 border-b border-border/50 hover:bg-raised transition-colors"
 							onclick={() =>
@@ -186,6 +253,14 @@
 									{candidate.capture === 'cookie' ? 'cookie' : 'storage'}
 								</span>
 								<span class="font-mono text-xs truncate">{candidate.label}</span>
+								{#if candidate.provider}
+									<span
+										class="font-medium text-2.5 px-1 rounded shrink-0 bg-warn/15 text-warn"
+										title="Matches {candidate.provider}'s documented storage format"
+									>
+										{candidate.provider}
+									</span>
+								{/if}
 								<span class="ml-auto text-2.5 text-muted truncate max-w-48">
 									{candidate.detail}
 								</span>
@@ -200,6 +275,13 @@
 
 			<div class="flex items-center gap-2 p-3 border-t border-border">
 				<button class="btn-ghost text-xs" onclick={load} disabled={loading}>Refresh</button>
+				{#if candidates.length}
+					<span class="text-2.5 text-muted">
+						{visible.length === candidates.length
+							? `${candidates.length} values`
+							: `${visible.length} of ${candidates.length}`}
+					</span>
+				{/if}
 				<button class="btn-ghost text-xs ml-auto" onclick={onClose}>Cancel</button>
 			</div>
 		</Dialog.Content>

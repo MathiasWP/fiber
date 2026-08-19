@@ -348,7 +348,10 @@
 
 								<ol class="text-2.5 text-muted leading-relaxed list-decimal pl-4 flex flex-col gap-0.5">
 									<li>Open the sign-in window and log in exactly as you normally would.</li>
-									<li>Come back here and pick which value is your credential.</li>
+									<li>
+										Pick which value is your credential — you can close the sign-in window first,
+										the session is remembered.
+									</li>
 								</ol>
 
 								<div class="flex items-center gap-2">

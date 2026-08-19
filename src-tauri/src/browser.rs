@@ -31,6 +31,10 @@ const EVAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Silent re-capture gives the identity provider this long to settle.
 const SILENT_ATTEMPTS: usize = 20;
 const SILENT_INTERVAL: Duration = Duration::from_millis(500);
+/// How long a window we opened ourselves gets to load before we trust an empty
+/// reading.
+const LOAD_ATTEMPTS: usize = 8;
+const LOAD_INTERVAL: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,12 +61,16 @@ pub struct Snapshot {
     pub cookies: Vec<CookieEntry>,
 }
 
+impl Snapshot {
+    fn is_empty(&self) -> bool {
+        self.local_storage.is_empty() && self.cookies.is_empty()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BrowserError {
     #[error("this section is not set up for browser sign-in")]
     NotConfigured,
-    #[error("the sign-in window isn't open")]
-    NoWindow,
     #[error("could not open the sign-in window: {0}")]
     Open(String),
     #[error("timed out reading the sign-in window")]
@@ -146,17 +154,47 @@ const SNAPSHOT_JS: &str = r#"
 })()
 "#;
 
-/// Reads `localStorage` and every cookie visible to the session.
-pub async fn snapshot(
-    app: &AppHandle,
+/// Reads the session, opening the sign-in window if it isn't already up.
+///
+/// The webview's storage is persistent, so a session survives closing the
+/// window — which means the user shouldn't have to keep it open just to pick a
+/// credential out of it. If we open the window here we open it hidden and close
+/// it again, so this stays invisible.
+pub async fn snapshot(app: &AppHandle, section: &Section) -> Result<Snapshot, BrowserError> {
+    let existing = app.get_webview_window(&window_label(&section.id));
+    let borrowed = existing.is_some();
+    let window = match existing {
+        Some(window) => window,
+        None => open(app, section, false)?,
+    };
+
+    let found = if borrowed {
+        read_session(&window, section).await
+    } else {
+        // Freshly opened: give the page time to load before believing an empty
+        // result, but stop as soon as there's anything there.
+        let mut last = Ok(Snapshot::default());
+        for _ in 0..LOAD_ATTEMPTS {
+            tokio::time::sleep(LOAD_INTERVAL).await;
+            last = read_session(&window, section).await;
+            if matches!(&last, Ok(found) if !found.is_empty()) {
+                break;
+            }
+        }
+        let _ = window.close();
+        last
+    };
+
+    found
+}
+
+/// Reads `localStorage` and every cookie visible to an open window.
+async fn read_session(
+    window: &WebviewWindow,
     section: &Section,
 ) -> Result<Snapshot, BrowserError> {
     let (login_url, ..) = browser_config(section)?;
-    let window = app
-        .get_webview_window(&window_label(&section.id))
-        .ok_or(BrowserError::NoWindow)?;
-
-    let local_storage = read_local_storage(&window).await?;
+    let local_storage = read_local_storage(window).await?;
 
     // Cookies for both origins: the API we'll be calling, and the identity
     // provider we just signed in to. Often they differ.
@@ -280,9 +318,11 @@ pub async fn silent_recapture(
         .is_some();
     let window = open(app, section, already_open)?;
 
+    // `read_session` rather than `snapshot`, which would open and close a window
+    // of its own on top of the one being polled here.
     for _ in 0..SILENT_ATTEMPTS {
         tokio::time::sleep(SILENT_INTERVAL).await;
-        if let Ok(found) = snapshot(app, section).await {
+        if let Ok(found) = read_session(&window, section).await {
             if let Some(value) = extract(&found, section) {
                 if !already_open {
                     let _ = window.close();
