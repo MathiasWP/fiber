@@ -44,21 +44,55 @@ pub enum AuthConfig {
         /// so it never touches the section file.
         secret_ref: String,
     },
+
+    /// A credential lifted out of a real browser session.
+    ///
+    /// For flows a request can't reproduce: an emailed verification code, an
+    /// SDK that mints the token in the page, or a session cookie the server
+    /// sets and marks HttpOnly. You sign in normally in a real webview; the app
+    /// takes the credential out afterwards.
+    Browser {
+        /// The page to open for signing in.
+        login_url: String,
+        capture: CaptureKind,
+        /// localStorage key, or cookie name.
+        capture_key: String,
+        /// Dotted path into the stored JSON. Empty means use the raw value —
+        /// Auth0's SDK, for instance, hides the token inside a JSON blob.
+        capture_path: String,
+        /// Composed with `prefix` into the outgoing header. `Cookie` with an
+        /// empty prefix for cookie captures; `Authorization`/`Bearer` for tokens.
+        header: String,
+        prefix: String,
+        ttl_seconds: u64,
+        secret_ref: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureKind {
+    LocalStorage,
+    Cookie,
 }
 
 impl AuthConfig {
     pub fn secret_ref(&self) -> Option<&str> {
         match self {
             AuthConfig::None => None,
-            AuthConfig::Bearer { secret_ref } | AuthConfig::Login { secret_ref, .. } => {
-                Some(secret_ref)
-            }
+            AuthConfig::Bearer { secret_ref }
+            | AuthConfig::Login { secret_ref, .. }
+            | AuthConfig::Browser { secret_ref, .. } => Some(secret_ref),
         }
     }
 
-    /// Whether a 401 is worth retrying. A static token won't have changed.
+    /// Whether a 401 is worth retrying. A static token won't have changed;
+    /// a login can be re-run, and a browser session can be re-captured.
     pub fn can_refresh(&self) -> bool {
-        matches!(self, AuthConfig::Login { .. })
+        matches!(
+            self,
+            AuthConfig::Login { .. } | AuthConfig::Browser { .. }
+        )
     }
 }
 
@@ -66,6 +100,8 @@ impl AuthConfig {
 pub enum AuthError {
     #[error("no credentials stored for this section")]
     MissingSecret,
+    #[error("not signed in — open Section settings and sign in")]
+    NotSignedIn,
     #[error("login request failed: {0}")]
     Transport(String),
     #[error("login returned {0}")]
@@ -156,18 +192,30 @@ pub async fn header_for(
                 }
             };
 
-            let name = if header.trim().is_empty() {
-                "Authorization".to_string()
-            } else {
-                header.trim().to_string()
-            };
-            let value = match prefix.trim() {
-                "" => token,
-                prefix => format!("{prefix} {token}"),
-            };
-            Ok(Some(Header { name, value }))
+            Ok(Some(compose(header, prefix, &token)))
+        }
+
+        // The credential was lifted out of a browser session and stored as-is.
+        // Re-capturing it needs a webview, which lives outside this module —
+        // see `browser.rs`. Here we only compose what's already stored.
+        AuthConfig::Browser { header, prefix, .. } => {
+            let captured = secret.ok_or(AuthError::NotSignedIn)?;
+            Ok(Some(compose(header, prefix, &captured)))
         }
     }
+}
+
+/// `Authorization` + `Bearer` + token, or `Cookie` + nothing + `sid=…`.
+fn compose(header: &str, prefix: &str, value: &str) -> Header {
+    let name = match header.trim() {
+        "" => "Authorization".to_string(),
+        header => header.to_string(),
+    };
+    let value = match prefix.trim() {
+        "" => value.trim().to_string(),
+        prefix => format!("{prefix} {}", value.trim()),
+    };
+    Header { name, value }
 }
 
 async fn log_in(
@@ -207,15 +255,18 @@ async fn log_in(
     }
 
     let parsed: Value = serde_json::from_str(&response.body).map_err(|_| AuthError::NotJson)?;
-    extract(&parsed, token_path).ok_or_else(|| AuthError::NoToken(token_path.to_string()))
+    value_at(&parsed, token_path).ok_or_else(|| AuthError::NoToken(token_path.to_string()))
 }
 
 /// Pulls a value out of a JSON document by dotted path.
 ///
+/// Shared with `browser.rs`, which uses it to dig a token out of whatever JSON
+/// blob an SDK left in `localStorage`.
+///
 /// Accepts an optional `$.` prefix, and numeric segments index into arrays:
 /// `$.data.tokens.0.value`. Deliberately not a full JSONPath — the extra syntax
 /// buys nothing for reading one field out of a login response.
-fn extract(value: &Value, path: &str) -> Option<String> {
+pub(crate) fn value_at(value: &Value, path: &str) -> Option<String> {
     let trimmed = path.trim().trim_start_matches('$').trim_start_matches('.');
     if trimmed.is_empty() {
         return None;
@@ -277,13 +328,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(extract(&doc, "$.data.access_token").as_deref(), Some("abc"));
-        assert_eq!(extract(&doc, "data.access_token").as_deref(), Some("abc"));
-        assert_eq!(extract(&doc, "$.data.tokens.0.value").as_deref(), Some("first"));
-        assert_eq!(extract(&doc, "$.n").as_deref(), Some("7"));
-        assert_eq!(extract(&doc, "$.missing"), None);
-        assert_eq!(extract(&doc, "$.data.tokens.9.value"), None);
-        assert_eq!(extract(&doc, ""), None);
+        assert_eq!(value_at(&doc, "$.data.access_token").as_deref(), Some("abc"));
+        assert_eq!(value_at(&doc, "data.access_token").as_deref(), Some("abc"));
+        assert_eq!(value_at(&doc, "$.data.tokens.0.value").as_deref(), Some("first"));
+        assert_eq!(value_at(&doc, "$.n").as_deref(), Some("7"));
+        assert_eq!(value_at(&doc, "$.missing"), None);
+        assert_eq!(value_at(&doc, "$.data.tokens.9.value"), None);
+        assert_eq!(value_at(&doc, ""), None);
     }
 
     #[tokio::test]

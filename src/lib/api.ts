@@ -105,9 +105,61 @@ export type AuthConfig =
 			ttlSeconds: number;
 			/** Keychain reference for the login request body. */
 			secretRef: string;
+	  }
+	| {
+			kind: 'browser';
+			/** The page to open for signing in. */
+			loginUrl: string;
+			capture: CaptureKind;
+			/** localStorage key, or cookie name. */
+			captureKey: string;
+			/** Dotted path into the stored JSON. Empty means the raw value. */
+			capturePath: string;
+			header: string;
+			prefix: string;
+			ttlSeconds: number;
+			secretRef: string;
 	  };
 
 export type AuthKind = AuthConfig['kind'];
+export type CaptureKind = 'localStorage' | 'cookie';
+
+export interface StorageEntry {
+	key: string;
+	value: string;
+}
+
+export interface CookieEntry {
+	name: string;
+	value: string;
+	domain: string;
+	/** True when the page's own JavaScript could not have read this. */
+	httpOnly: boolean;
+}
+
+/** Everything the signed-in browser session holds. */
+export interface Snapshot {
+	localStorage: StorageEntry[];
+	cookies: CookieEntry[];
+}
+
+/** Opens a real browser window at the section's login page. */
+export function browserSignIn(sectionId: string): Promise<void> {
+	return invoke<void>('browser_sign_in', { sectionId });
+}
+
+export function browserSnapshot(sectionId: string): Promise<Snapshot> {
+	return invoke<Snapshot>('browser_snapshot', { sectionId });
+}
+
+/** Applies the section's saved capture rule and stores what it finds. */
+export function browserCapture(sectionId: string): Promise<void> {
+	return invoke<void>('browser_capture', { sectionId });
+}
+
+export function browserClose(sectionId: string): Promise<void> {
+	return invoke<void>('browser_close', { sectionId });
+}
 
 /** A group of requests sharing a base URL. Loaders attach here later. */
 export interface Section {

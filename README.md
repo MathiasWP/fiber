@@ -66,9 +66,21 @@ Set per section, under *Section settings → Auth*:
 
 - **Bearer token** — a fixed token.
 - **Login request** — fetch a token by making a request. Point `tokenPath` at it
-  (`$.data.access_token`), and **any 401 silently re-runs the login and retries
-  the request once**. That's the whole point: no more pasting a fresh token every
-  hour.
+  (`$.data.access_token`). For machine-to-machine APIs.
+- **Browser session** — sign in in a real browser window, then lift the
+  credential out. This is the one for flows a request can't reproduce: emailed
+  verification codes, tokens an SDK mints in the page and stores in
+  `localStorage`, or a session cookie the server marks HttpOnly.
+
+Any 401 triggers exactly one re-authentication and retry. For a browser session
+that means reopening the sign-in page hidden — if your identity provider still
+considers you signed in, a fresh credential is captured and you never see a
+window.
+
+To set up a browser session: open the sign-in window, log in as you normally
+would, then *Pick credential…*. The app lists every cookie (HttpOnly included —
+the page can't read those, but this app can) and every `localStorage` entry
+flattened to leaf paths, ranked with the likeliest first. Click yours.
 
 Credentials live in the OS keychain; the section file holds only a reference, so
 it stays safe to share or commit. There is no command to read a secret back out

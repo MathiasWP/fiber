@@ -1,4 +1,5 @@
 mod auth;
+mod browser;
 mod history;
 mod http;
 mod secrets;
@@ -6,12 +7,13 @@ mod store;
 
 use std::path::PathBuf;
 
-use auth::AuthState;
+use auth::{AuthConfig, AuthState};
+use browser::{BrowserError, Snapshot};
 use history::{HistoryError, HistoryRecord, HistoryStore};
 use http::{HttpError, HttpState, RequestSpec, ResponseData};
 use secrets::SecretError;
 use store::{Section, StoreError};
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 /// How many history entries the UI gets on startup.
 const HISTORY_PAGE: usize = 500;
@@ -26,6 +28,7 @@ struct Paths {
 /// entry exists even if the window dies mid-flight.
 #[tauri::command]
 async fn send_request(
+    app: AppHandle,
     state: State<'_, HttpState>,
     log: State<'_, HistoryStore>,
     paths: State<'_, Paths>,
@@ -45,6 +48,7 @@ async fn send_request(
         section.as_ref(),
         spec.clone(),
         &secrets::get,
+        Some(&app),
     )
     .await;
 
@@ -68,6 +72,7 @@ async fn send_authenticated<F>(
     section: Option<&Section>,
     spec: RequestSpec,
     lookup: &F,
+    app: Option<&AppHandle>,
 ) -> Result<ResponseData, HttpError>
 where
     F: Fn(&str) -> Option<String>,
@@ -85,8 +90,30 @@ where
         return first;
     }
 
-    ::log::info!("401 from {}, refreshing token and retrying once", spec.url);
+    ::log::info!("401 from {}, re-authenticating and retrying once", spec.url);
     auth_state.invalidate(&section.id);
+
+    // A browser-captured credential can't be re-fetched by replaying a request,
+    // so try to lift a fresh one out of a hidden webview instead. If the
+    // identity provider's own session is still alive this is invisible.
+    if let (AuthConfig::Browser { .. }, Some(app)) = (&section.auth, app) {
+        match browser::silent_recapture(app, section).await {
+            Ok(value) => {
+                if let Some(reference) = section.auth.secret_ref() {
+                    if let Err(err) = secrets::set(reference, &value) {
+                        ::log::warn!("could not store re-captured credential: {err}");
+                    }
+                }
+            }
+            // The window is now visible for the user to sign in; the original
+            // 401 is the honest answer for this request.
+            Err(err) => {
+                ::log::info!("silent re-capture failed: {err}");
+                return first;
+            }
+        }
+    }
+
     match apply_auth(http_state, auth_state, section, spec, lookup).await {
         Ok(retry) => http::send(http_state, retry).await,
         // Re-authentication failed, so the original 401 is the honest answer.
@@ -144,6 +171,62 @@ fn delete_secret(reference: String) -> Result<(), SecretError> {
 #[tauri::command]
 fn forget_token(auth_state: State<'_, AuthState>, section_id: String) {
     auth_state.invalidate(&section_id);
+}
+
+fn section_by_id(paths: &Paths, id: &str) -> Result<Section, BrowserError> {
+    store::load_one(&paths.sections, id)
+        .ok()
+        .flatten()
+        .ok_or(BrowserError::NotConfigured)
+}
+
+/// Opens a real browser window at the section's login page. The user signs in
+/// there exactly as they normally would — verification codes and all.
+#[tauri::command]
+fn browser_sign_in(
+    app: AppHandle,
+    paths: State<'_, Paths>,
+    section_id: String,
+) -> Result<(), BrowserError> {
+    let section = section_by_id(&paths, &section_id)?;
+    browser::open(&app, &section, true).map(|_| ())
+}
+
+/// Everything the signed-in session holds, for the user to pick their
+/// credential out of. Cookies include HttpOnly ones the page can't read.
+#[tauri::command]
+async fn browser_snapshot(
+    app: AppHandle,
+    paths: State<'_, Paths>,
+    section_id: String,
+) -> Result<Snapshot, BrowserError> {
+    let section = section_by_id(&paths, &section_id)?;
+    browser::snapshot(&app, &section).await
+}
+
+/// Applies the section's saved capture rule and stores what it finds.
+#[tauri::command]
+async fn browser_capture(
+    app: AppHandle,
+    paths: State<'_, Paths>,
+    auth_state: State<'_, AuthState>,
+    section_id: String,
+) -> Result<(), BrowserError> {
+    let section = section_by_id(&paths, &section_id)?;
+    let found = browser::snapshot(&app, &section).await?;
+    let value = browser::extract(&found, &section).ok_or(BrowserError::NothingCaptured)?;
+
+    if let Some(reference) = section.auth.secret_ref() {
+        secrets::set(reference, &value).map_err(|err| BrowserError::Eval(err.to_string()))?;
+    }
+    auth_state.invalidate(&section_id);
+    browser::close(&app, &section_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn browser_close(app: AppHandle, section_id: String) {
+    browser::close(&app, &section_id);
 }
 
 #[tauri::command]
@@ -238,7 +321,11 @@ pub fn run() {
             set_secret,
             has_secret,
             delete_secret,
-            forget_token
+            forget_token,
+            browser_sign_in,
+            browser_snapshot,
+            browser_capture,
+            browser_close
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -403,6 +490,7 @@ mod tests {
             Some(&section),
             spec_for(&base),
             &secret,
+            None,
         )
         .await
         .unwrap();
@@ -429,6 +517,7 @@ mod tests {
             Some(&section),
             spec_for(&base),
             &secret,
+            None,
         )
         .await
         .unwrap();
@@ -471,7 +560,7 @@ mod tests {
         let http_state = HttpState::default();
         let auth_state = AuthState::default();
 
-        let response = send_authenticated(&http_state, &auth_state, None, spec_for(&base), &secret)
+        let response = send_authenticated(&http_state, &auth_state, None, spec_for(&base), &secret, None)
             .await
             .unwrap();
 

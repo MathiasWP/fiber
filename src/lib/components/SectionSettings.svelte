@@ -1,14 +1,19 @@
 <script lang="ts">
 	import { Dialog, Select, Tabs } from 'bits-ui';
 	import {
+		browserCapture,
+		browserClose,
+		browserSignIn,
 		deleteSecret,
 		forgetToken,
 		hasSecret,
 		setSecret,
 		type AuthKind,
+		type CaptureKind,
 		type Section
 	} from '$lib/api';
 	import { collections } from '$lib/collections.svelte';
+	import CapturePicker from './CapturePicker.svelte';
 
 	interface Props {
 		/** The section being edited, or null when closed. */
@@ -24,6 +29,8 @@
 	/** The pending value, only ever written — never read back. */
 	let draftSecret = $state('');
 	let secretSaved = $state(false);
+	let pickerOpen = $state(false);
+	let captureError = $state<string | null>(null);
 
 	const open = $derived(section !== null);
 
@@ -38,6 +45,11 @@
 			value: 'login',
 			label: 'Login request',
 			hint: 'Fetch a token by making a request. Refreshed automatically on 401.'
+		},
+		{
+			value: 'browser',
+			label: 'Browser session',
+			hint: 'Sign in in a real browser window, then lift the credential out. For verification codes, SDK-minted tokens and HttpOnly session cookies.'
 		}
 	];
 
@@ -64,6 +76,18 @@
 			section.auth = { kind: 'none' };
 		} else if (next === 'bearer') {
 			section.auth = { kind: 'bearer', secretRef };
+		} else if (next === 'browser') {
+			section.auth = {
+				kind: 'browser',
+				loginUrl: section.baseUrl || 'https://',
+				capture: 'localStorage',
+				captureKey: '',
+				capturePath: '',
+				header: 'Authorization',
+				prefix: 'Bearer',
+				ttlSeconds: 0,
+				secretRef
+			};
 		} else {
 			section.auth = {
 				kind: 'login',
@@ -96,9 +120,51 @@
 		await forgetToken(section.id);
 	}
 
+	async function signIn() {
+		if (!section) return;
+		captureError = null;
+		// The window is opened from the section on disk, so persist first.
+		await collections.flush(section);
+		try {
+			await browserSignIn(section.id);
+		} catch (failure) {
+			captureError = String(failure);
+		}
+	}
+
+	/**
+	 * A picked candidate becomes the section's capture rule, then we run the
+	 * capture itself so the credential lands in the keychain immediately.
+	 */
+	async function applyRule(rule: { capture: CaptureKind; key: string; path: string }) {
+		if (!section || section.auth.kind !== 'browser') return;
+		pickerOpen = false;
+		captureError = null;
+
+		section.auth.capture = rule.capture;
+		section.auth.captureKey = rule.key;
+		section.auth.capturePath = rule.path;
+		// A cookie goes out whole, as a Cookie header; a token gets a scheme.
+		section.auth.header = rule.capture === 'cookie' ? 'Cookie' : 'Authorization';
+		section.auth.prefix = rule.capture === 'cookie' ? '' : 'Bearer';
+
+		await collections.flush(section);
+		try {
+			await browserCapture(section.id);
+			stored = true;
+			secretSaved = true;
+		} catch (failure) {
+			captureError = String(failure);
+		}
+	}
+
 	function close() {
-		if (section) collections.flush(section);
+		if (section) {
+			collections.flush(section);
+			browserClose(section.id);
+		}
 		draftSecret = '';
+		captureError = null;
 		onClose();
 	}
 </script>
@@ -260,7 +326,66 @@
 							</p>
 						{/if}
 
-						{#if section.auth.kind !== 'none'}
+						{#if section.auth.kind === 'browser'}
+							<label class="flex flex-col gap-1">
+								<span class="text-xs text-muted">Sign-in page</span>
+								<input
+									bind:value={section.auth.loginUrl}
+									spellcheck="false"
+									placeholder="https://app.example.com/login"
+									class="input-base text-xs font-mono selectable"
+								/>
+							</label>
+
+							<div class="rounded border border-border p-3 flex flex-col gap-2">
+								<div class="flex items-center gap-2">
+									<span class="i-lucide-globe text-3 text-muted"></span>
+									<span class="text-xs font-medium">Browser session</span>
+									<span class="ml-auto text-2.5 {stored ? 'text-ok' : 'text-muted'}">
+										{stored ? 'captured' : 'not captured'}
+									</span>
+								</div>
+
+								<ol class="text-2.5 text-muted leading-relaxed list-decimal pl-4 flex flex-col gap-0.5">
+									<li>Open the sign-in window and log in exactly as you normally would.</li>
+									<li>Come back here and pick which value is your credential.</li>
+								</ol>
+
+								<div class="flex items-center gap-2">
+									<button class="btn-primary text-xs" onclick={signIn}>
+										<span class="i-lucide-external-link"></span>
+										Open sign-in
+									</button>
+									<button class="btn-ghost text-xs" onclick={() => (pickerOpen = true)}>
+										Pick credential…
+									</button>
+									{#if stored}
+										<button class="btn-ghost text-xs" onclick={removeSecret}>Remove</button>
+									{/if}
+								</div>
+
+								{#if section.auth.captureKey}
+									<p class="text-2.5 text-muted font-mono truncate">
+										{section.auth.capture === 'cookie' ? 'cookie' : 'storage'} ·
+										{section.auth.captureKey}{section.auth.capturePath
+											? ` › ${section.auth.capturePath}`
+											: ''}
+									</p>
+								{/if}
+
+								{#if captureError}
+									<p class="text-2.5 text-bad">{captureError}</p>
+								{/if}
+
+								<p class="text-2.5 text-muted leading-relaxed">
+									On a 401 the sign-in page is reopened hidden. If the identity provider still
+									considers you signed in, a fresh credential is captured and you never see a
+									window; otherwise it comes forward so you can sign in again.
+								</p>
+							</div>
+						{/if}
+
+						{#if section.auth.kind === 'bearer' || section.auth.kind === 'login'}
 							<div class="rounded border border-border p-3 flex flex-col gap-2">
 								<div class="flex items-center gap-2">
 									<span class="i-lucide-key-round text-3 text-muted"></span>
@@ -323,3 +448,12 @@
 		</Dialog.Content>
 	</Dialog.Portal>
 </Dialog.Root>
+
+{#if section}
+	<CapturePicker
+		open={pickerOpen}
+		sectionId={section.id}
+		onPick={applyRule}
+		onClose={() => (pickerOpen = false)}
+	/>
+{/if}
