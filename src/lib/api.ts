@@ -234,6 +234,16 @@ export interface Section {
 	overlay: SavedRequest[];
 }
 
+/**
+ * The reserved section holding requests that belong to no collection.
+ *
+ * It's an ordinary section on disk — same persistence, selection, history and
+ * editing — but it has no base URL and the sidebar renders its requests at the
+ * top rather than under a header, so it reads as "loose" rather than as a
+ * collection you have to name.
+ */
+export const LOOSE_SECTION_ID = 'loose';
+
 /** The stable identity that ties saved bodies and history to a loaded endpoint. */
 export function endpointKey(method: string, path: string): string {
 	return `${method.trim().toUpperCase()} ${path.trim()}`;

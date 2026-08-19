@@ -16,6 +16,7 @@
 		type SavedRequest,
 		type Section
 	} from '$lib/api';
+	import { LOOSE_SECTION_ID } from '$lib/api';
 	import { collections, type Selection } from '$lib/collections.svelte';
 	import { history, SCRATCH_ID, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
@@ -42,6 +43,10 @@
 	let bodyEditor = $state<Editor>();
 
 	const selection = $derived<Selection | null>(collections.selected);
+	/** A loose request has no collection to prefix it with. */
+	const inCollection = $derived(
+		selection !== null && selection.section.id !== LOOSE_SECTION_ID
+	);
 	const draft = $derived<SavedRequest>(selection?.request ?? scratch);
 	const requestKey = $derived(selection?.request.id ?? SCRATCH_ID);
 	const baseUrl = $derived(selection?.section.baseUrl ?? '');
@@ -247,7 +252,7 @@
 					<MethodSelect bind:value={draft.method} />
 
 					<div class="flex-1 flex items-stretch min-w-0" title={resolved}>
-						{#if selection}
+						{#if inCollection && selection}
 							<!-- The cascade, shown where you type. Read-only: the base URL
 							     belongs to the collection, so it's edited in its settings. -->
 							<span

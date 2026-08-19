@@ -1,6 +1,7 @@
 import {
 	deleteSection,
 	endpointKey,
+	LOOSE_SECTION_ID,
 	listSections,
 	loaderCache,
 	runLoader,
@@ -117,6 +118,39 @@ class Collections {
 			this.flush(section);
 		}
 		this.selectedRequestId = row.request.id;
+	}
+
+	/** Requests belonging to no collection, if any have been made. */
+	get looseSection(): Section | undefined {
+		return this.sections.find((section) => section.id === LOOSE_SECTION_ID);
+	}
+
+	/** Everything the sidebar shows as a collection — i.e. not the loose ones. */
+	get collectionSections(): Section[] {
+		return this.sections.filter((section) => section.id !== LOOSE_SECTION_ID);
+	}
+
+	/**
+	 * A blank request outside any collection. Creates the reserved section on
+	 * first use, so an app that never needs one never grows the file.
+	 */
+	async createLooseRequest(): Promise<SavedRequest> {
+		let section = this.looseSection;
+		if (!section) {
+			section = {
+				id: LOOSE_SECTION_ID,
+				name: 'Loose requests',
+				baseUrl: '',
+				collapsed: false,
+				auth: { kind: 'none' },
+				mcp: { enabled: false, allowWrites: false },
+				requests: [],
+				overlay: []
+			};
+			this.sections = [...this.sections, section];
+		}
+		// No base URL to hang a path off, so it starts empty and takes a full URL.
+		return this.createRequest(section, 'New request', '');
 	}
 
 	/** Reads the cached run for every section that has a loader. */
@@ -252,12 +286,16 @@ class Collections {
 		}
 	}
 
-	async createRequest(section: Section, name = 'New request'): Promise<SavedRequest> {
+	async createRequest(
+		section: Section,
+		name = 'New request',
+		path = '/'
+	): Promise<SavedRequest> {
 		const request: SavedRequest = {
 			id: crypto.randomUUID(),
 			name,
 			method: 'GET',
-			path: '/',
+			path,
 			body: '',
 			headers: []
 		};

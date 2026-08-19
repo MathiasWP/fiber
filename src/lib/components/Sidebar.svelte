@@ -29,10 +29,13 @@
 	const visible = $derived.by<VisibleSection[]>(() => {
 		const needle = query.trim();
 		if (!needle) {
-			return collections.sections.map((section) => ({ section, requests: section.requests }));
+			return collections.collectionSections.map((section) => ({
+				section,
+				requests: section.requests
+			}));
 		}
 
-		return collections.sections
+		return collections.collectionSections
 			.map((section) => ({
 				section,
 				requests: section.requests
@@ -76,6 +79,26 @@
 	function selectLoaded(section: Section, row: LoadedRow) {
 		history.stopViewing();
 		collections.selectLoaded(section, row);
+	}
+
+	const looseRequests = $derived.by(() => {
+		const section = collections.looseSection;
+		if (!section) return [];
+		const needle = query.trim();
+		if (!needle) return section.requests;
+		return section.requests
+			.map((request) => ({
+				request,
+				score: fuzzyScore(`${request.name} ${request.method} ${request.path}`, needle)
+			}))
+			.filter((match) => match.score !== null)
+			.sort((a, b) => a.score! - b.score!)
+			.map((match) => match.request);
+	});
+
+	async function addLooseRequest() {
+		history.stopViewing();
+		await collections.createLooseRequest();
 	}
 
 	function refresh(section: Section) {
@@ -144,6 +167,63 @@
 	}
 </script>
 
+{#snippet requestRow(section: Section, request: SavedRequest, indent: string)}
+	<ContextMenu.Root>
+		<ContextMenu.Trigger
+			class="flex items-center gap-2 {indent} pr-2 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
+				{collections.selectedRequestId === request.id ? 'bg-raised' : ''}"
+			onclick={() => selectRequest(request.id)}
+		>
+			<span
+				class="font-mono text-2.5 font-bold shrink-0 w-9 {methodColor(request.method)}"
+			>
+				{request.method}
+			</span>
+			{#if renamingId === request.id}
+				<!-- svelte-ignore a11y_autofocus -->
+				<input
+					bind:value={request.name}
+					autofocus
+					class="input-base text-xs py-0.5 flex-1 min-w-0"
+					onclick={(e) => e.stopPropagation()}
+					onblur={() => commitRequestRename(section, request)}
+					onkeydown={(e) => e.key === 'Enter' && commitRequestRename(section, request)}
+				/>
+			{:else}
+				<span class="truncate text-xs flex-1" title={request.path}>{request.name}</span>
+			{/if}
+		</ContextMenu.Trigger>
+
+		<ContextMenu.Portal>
+			<ContextMenu.Content class="menu-content">
+				<ContextMenu.Item class="menu-item" onSelect={() => (renamingId = request.id)}>
+					<span class="i-lucide-pencil text-3"></span>
+					Rename
+				</ContextMenu.Item>
+				<ContextMenu.Item
+					class="menu-item"
+					onSelect={() => collections.duplicateRequest(section, request)}
+				>
+					<span class="i-lucide-copy text-3"></span>
+					Duplicate
+				</ContextMenu.Item>
+				<ContextMenu.Item class="menu-item" onSelect={() => copyUrl(section, request)}>
+					<span class="i-lucide-link text-3"></span>
+					Copy URL
+				</ContextMenu.Item>
+				<ContextMenu.Separator class="menu-separator" />
+				<ContextMenu.Item
+					class="menu-item-bad"
+					onSelect={() => collections.removeRequest(section, request)}
+				>
+					<span class="i-lucide-trash-2 text-3"></span>
+					Delete request
+				</ContextMenu.Item>
+			</ContextMenu.Content>
+		</ContextMenu.Portal>
+	</ContextMenu.Root>
+{/snippet}
+
 <!-- Deleting a section throws away a file, so it asks first. Requests don't. -->
 <Dialog.Root
 	open={pendingDelete !== null}
@@ -197,13 +277,30 @@
 		>
 			History
 		</button>
-		<button
-			class="ml-auto p-1 rounded text-muted hover:(bg-raised text-text) transition-colors"
-			title={tab === 'history' ? 'Clear history' : 'New section'}
-			onclick={() => (tab === 'history' ? history.clear() : (creating = true))}
-		>
-			<span class={tab === 'history' ? 'i-lucide-trash-2' : 'i-lucide-folder-plus'}></span>
-		</button>
+		{#if tab === 'history'}
+			<button
+				class="ml-auto p-1 rounded text-muted hover:(bg-raised text-text) transition-colors"
+				title="Clear history"
+				onclick={() => history.clear()}
+			>
+				<span class="i-lucide-trash-2"></span>
+			</button>
+		{:else}
+			<button
+				class="ml-auto p-1 rounded text-muted hover:(bg-raised text-text) transition-colors"
+				title="New request — not in any collection"
+				onclick={addLooseRequest}
+			>
+				<span class="i-lucide-file-plus"></span>
+			</button>
+			<button
+				class="p-1 rounded text-muted hover:(bg-raised text-text) transition-colors"
+				title="New collection"
+				onclick={() => (creating = true)}
+			>
+				<span class="i-lucide-folder-plus"></span>
+			</button>
+		{/if}
 	</header>
 
 	{#if tab === 'collections'}
@@ -248,6 +345,14 @@
 		{/if}
 
 		<div class="flex-1 overflow-y-auto min-h-0">
+			{#if collections.looseSection && looseRequests.length}
+				<div class="border-b border-border/50 pb-1">
+					{#each looseRequests as request (request.id)}
+						{@render requestRow(collections.looseSection, request, 'pl-2')}
+					{/each}
+				</div>
+			{/if}
+
 			{#each visible as { section, requests } (section.id)}
 				{@const open = searching || !section.collapsed}
 				<div class="border-b border-border/50">
@@ -323,60 +428,7 @@
 
 					{#if open}
 						{#each requests as request (request.id)}
-							<ContextMenu.Root>
-								<ContextMenu.Trigger
-									class="flex items-center gap-2 pl-6 pr-2 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
-										{collections.selectedRequestId === request.id ? 'bg-raised' : ''}"
-									onclick={() => selectRequest(request.id)}
-								>
-									<span
-										class="font-mono text-2.5 font-bold shrink-0 w-9 {methodColor(request.method)}"
-									>
-										{request.method}
-									</span>
-									{#if renamingId === request.id}
-										<!-- svelte-ignore a11y_autofocus -->
-										<input
-											bind:value={request.name}
-											autofocus
-											class="input-base text-xs py-0.5 flex-1 min-w-0"
-											onclick={(e) => e.stopPropagation()}
-											onblur={() => commitRequestRename(section, request)}
-											onkeydown={(e) => e.key === 'Enter' && commitRequestRename(section, request)}
-										/>
-									{:else}
-										<span class="truncate text-xs flex-1" title={request.path}>{request.name}</span>
-									{/if}
-								</ContextMenu.Trigger>
-
-								<ContextMenu.Portal>
-									<ContextMenu.Content class="menu-content">
-										<ContextMenu.Item class="menu-item" onSelect={() => (renamingId = request.id)}>
-											<span class="i-lucide-pencil text-3"></span>
-											Rename
-										</ContextMenu.Item>
-										<ContextMenu.Item
-											class="menu-item"
-											onSelect={() => collections.duplicateRequest(section, request)}
-										>
-											<span class="i-lucide-copy text-3"></span>
-											Duplicate
-										</ContextMenu.Item>
-										<ContextMenu.Item class="menu-item" onSelect={() => copyUrl(section, request)}>
-											<span class="i-lucide-link text-3"></span>
-											Copy URL
-										</ContextMenu.Item>
-										<ContextMenu.Separator class="menu-separator" />
-										<ContextMenu.Item
-											class="menu-item-bad"
-											onSelect={() => collections.removeRequest(section, request)}
-										>
-											<span class="i-lucide-trash-2 text-3"></span>
-											Delete request
-										</ContextMenu.Item>
-									</ContextMenu.Content>
-								</ContextMenu.Portal>
-							</ContextMenu.Root>
+							{@render requestRow(section, request, 'pl-6')}
 						{/each}
 
 						<!-- Loader output. Regenerated on every refresh; the user's

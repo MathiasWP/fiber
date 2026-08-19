@@ -58,7 +58,12 @@ it.
 
 ## Endpoints
 
-Three ways to get them, and they compose — a section can use any mix:
+A request doesn't have to live anywhere: the **new request** button in the
+sidebar header makes a loose one that belongs to no collection, takes a full
+URL, and persists like any other. Collections are for when a shared base URL and
+credentials start earning their keep.
+
+Inside a collection, three ways to get endpoints, and they compose:
 
 1. **Type them.** A request is a method and a path.
 2. **Import an OpenAPI or Swagger file** — *Section settings → General → Import
