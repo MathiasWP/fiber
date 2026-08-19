@@ -1,15 +1,18 @@
 mod auth;
 mod browser;
 mod history;
+mod loader;
 mod http;
 mod secrets;
 mod store;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use auth::{AuthConfig, AuthState};
 use browser::{BrowserError, Snapshot};
 use history::{HistoryError, HistoryRecord, HistoryStore};
+use loader::{LoaderError, LoaderRun};
 use http::{HttpError, HttpState, RequestSpec, ResponseData};
 use secrets::SecretError;
 use store::{Section, StoreError};
@@ -21,6 +24,7 @@ const HISTORY_PAGE: usize = 500;
 /// Resolved once at startup so every command agrees on where collections live.
 struct Paths {
     sections: PathBuf,
+    loaders: PathBuf,
 }
 
 /// Sends, and records the outcome. History is written here rather than by the
@@ -29,10 +33,10 @@ struct Paths {
 #[tauri::command]
 async fn send_request(
     app: AppHandle,
-    state: State<'_, HttpState>,
+    state: State<'_, Arc<HttpState>>,
     log: State<'_, HistoryStore>,
     paths: State<'_, Paths>,
-    auth_state: State<'_, AuthState>,
+    auth_state: State<'_, Arc<AuthState>>,
     spec: RequestSpec,
 ) -> Result<ResponseData, HttpError> {
     let section = spec
@@ -43,8 +47,8 @@ async fn send_request(
     let at = history::now_millis();
     let url = spec.url.clone();
     let outcome = send_authenticated(
-        state.inner(),
-        auth_state.inner(),
+        state.inner().as_ref(),
+        auth_state.inner().as_ref(),
         section.as_ref(),
         spec.clone(),
         &secrets::get,
@@ -169,7 +173,7 @@ fn delete_secret(reference: String) -> Result<(), SecretError> {
 
 /// Forces the next send for this section to log in again.
 #[tauri::command]
-fn forget_token(auth_state: State<'_, AuthState>, section_id: String) {
+fn forget_token(auth_state: State<'_, Arc<AuthState>>, section_id: String) {
     auth_state.invalidate(&section_id);
 }
 
@@ -209,7 +213,7 @@ async fn browser_snapshot(
 async fn browser_capture(
     app: AppHandle,
     paths: State<'_, Paths>,
-    auth_state: State<'_, AuthState>,
+    auth_state: State<'_, Arc<AuthState>>,
     section_id: String,
 ) -> Result<(), BrowserError> {
     let section = section_by_id(&paths, &section_id)?;
@@ -227,6 +231,125 @@ async fn browser_capture(
 #[tauri::command]
 fn browser_close(app: AppHandle, section_id: String) {
     browser::close(&app, &section_id);
+}
+
+/// Runs a section's loader and caches what it reported.
+///
+/// The loader's `fetch` goes through exactly the same path as a request you'd
+/// send by hand — same base URL, same auth, same 401 refresh — which is what
+/// lets a loader call a discovery endpoint that's behind a login.
+#[tauri::command]
+async fn run_loader(
+    app: AppHandle,
+    http_state: State<'_, Arc<HttpState>>,
+    auth_state: State<'_, Arc<AuthState>>,
+    paths: State<'_, Paths>,
+    section_id: String,
+) -> Result<LoaderRun, LoaderError> {
+    let section = store::load_one(&paths.sections, &section_id)
+        .ok()
+        .flatten()
+        .ok_or_else(|| LoaderError::Engine(format!("no section `{section_id}`")))?;
+
+    let source = section
+        .loader
+        .as_ref()
+        .map(|loader| loader.source.clone())
+        .ok_or(LoaderError::Empty)?;
+
+    // Cloned into the fetcher because it outlives this call's borrows.
+    let http = http_state.inner().clone();
+    let auth = auth_state.inner().clone();
+    let app_handle = app.clone();
+    let owned = section.clone();
+
+    let fetcher: loader::Fetcher = Arc::new(move |request: loader::LoaderRequest| {
+        let http = http.clone();
+        let auth = auth.clone();
+        let app_handle = app_handle.clone();
+        let section = owned.clone();
+
+        Box::pin(async move {
+            let spec = RequestSpec {
+                id: format!("loader:{}", section.id),
+                request_id: String::new(),
+                section_id: Some(section.id.clone()),
+                method: if request.method.trim().is_empty() {
+                    "GET".into()
+                } else {
+                    request.method
+                },
+                url: store::join_url(&section.base_url, &request.path),
+                headers: request
+                    .headers
+                    .into_iter()
+                    .map(|(name, value)| http::Header { name, value })
+                    .collect(),
+                body: request.body,
+                timeout_ms: Some(30_000),
+                follow_redirects: true,
+                accept_invalid_certs: false,
+            };
+
+            let response = send_authenticated(
+                &http,
+                &auth,
+                Some(&section),
+                spec,
+                &secrets::get,
+                Some(&app_handle),
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+
+            Ok(loader::LoaderResponse {
+                status: response.status,
+                headers: response
+                    .headers
+                    .into_iter()
+                    .map(|header| (header.name, header.value))
+                    .collect(),
+                body: response.body,
+            })
+        })
+    });
+
+    let (endpoints, logs) = loader::run(&source, fetcher).await?;
+
+    let previous = loader::read_cache(&paths.loaders, &section_id).unwrap_or_default();
+    let (added, removed) = loader::diff(&previous.endpoints, &endpoints);
+    let loaded_at = history::now_millis();
+
+    if let Err(err) = loader::write_cache(
+        &paths.loaders,
+        &section_id,
+        &loader::LoaderCache {
+            loaded_at,
+            endpoints: endpoints.clone(),
+        },
+    ) {
+        ::log::warn!("could not cache loader output: {err}");
+    }
+
+    Ok(LoaderRun {
+        endpoints,
+        logs,
+        added,
+        removed,
+        loaded_at,
+    })
+}
+
+/// The last successful run, read from disk. Lets the UI show endpoints
+/// immediately — and while offline — without waiting on the network.
+#[tauri::command]
+fn loader_cache(paths: State<'_, Paths>, section_id: String) -> loader::LoaderCache {
+    loader::read_cache(&paths.loaders, &section_id).unwrap_or_default()
+}
+
+#[tauri::command]
+fn default_loader_source() -> &'static str {
+    loader::DEFAULT_SOURCE
 }
 
 #[tauri::command]
@@ -262,7 +385,7 @@ fn history_clear_all(log: State<'_, HistoryStore>) -> Result<(), HistoryError> {
 
 /// Returns whether a request with this id was actually in flight.
 #[tauri::command]
-fn cancel_request(state: State<'_, HttpState>, id: String) -> bool {
+fn cancel_request(state: State<'_, Arc<HttpState>>, id: String) -> bool {
     state.cancel(&id)
 }
 
@@ -284,6 +407,8 @@ fn save_section(paths: State<'_, Paths>, section: Section) -> Result<(), StoreEr
 
 #[tauri::command]
 fn delete_section(paths: State<'_, Paths>, id: String) -> Result<(), StoreError> {
+    // The loader cache is derived data; it has no business outliving its section.
+    loader::forget_cache(&paths.loaders, &id);
     store::delete(&paths.sections, &id)
 }
 
@@ -303,8 +428,8 @@ fn sections_path(paths: State<'_, Paths>) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(HttpState::default())
-        .manage(AuthState::default())
+        .manage(Arc::new(HttpState::default()))
+        .manage(Arc::new(AuthState::default()))
         .invoke_handler(tauri::generate_handler![
             send_request,
             cancel_request,
@@ -325,7 +450,10 @@ pub fn run() {
             browser_sign_in,
             browser_snapshot,
             browser_capture,
-            browser_close
+            browser_close,
+            run_loader,
+            loader_cache,
+            default_loader_source
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -339,6 +467,7 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             app.manage(Paths {
                 sections: store::sections_dir(&app_data_dir),
+                loaders: loader::loaders_dir(&app_data_dir),
             });
             app.manage(HistoryStore::open(&app_data_dir)?);
 
@@ -427,7 +556,9 @@ mod tests {
                 ttl_seconds: 0,
                 secret_ref: "sec-1:login".into(),
             },
+            loader: None,
             requests: vec![],
+            overlay: vec![],
         }
     }
 

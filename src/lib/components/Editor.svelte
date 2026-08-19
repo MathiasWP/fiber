@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { javascript } from '@codemirror/lang-javascript';
 	import { json, jsonParseLinter } from '@codemirror/lang-json';
 	import { linter, lintGutter } from '@codemirror/lint';
 	import { Compartment, EditorState } from '@codemirror/state';
@@ -12,7 +13,7 @@
 		value?: string;
 		readonly?: boolean;
 		/** JSON gets highlighting, folding and inline parse errors. */
-		language?: 'json' | 'text';
+		language?: 'json' | 'text' | 'typescript';
 		placeholder?: string;
 	}
 
@@ -32,7 +33,8 @@
 
 	const parseJson = jsonParseLinter();
 
-	function languageExtensions(lang: 'json' | 'text') {
+	function languageExtensions(lang: 'json' | 'text' | 'typescript') {
+		if (lang === 'typescript') return [javascript({ typescript: true })];
 		if (lang !== 'json') return [];
 		return [
 			json(),

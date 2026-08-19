@@ -1,7 +1,13 @@
 import {
 	deleteSection,
+	endpointKey,
 	listSections,
+	loaderCache,
+	runLoader,
 	saveSection,
+	type LoadedEndpoint,
+	type LoaderCache,
+	type LoaderRun,
 	type SavedRequest,
 	type Section
 } from './api';
@@ -11,6 +17,16 @@ const SAVE_DEBOUNCE_MS = 400;
 export interface Selection {
 	section: Section;
 	request: SavedRequest;
+}
+
+/**
+ * A row in a loader-backed section: the request the UI edits, plus whether the
+ * loader still reports it.
+ */
+export interface LoadedRow {
+	request: SavedRequest;
+	/** The loader used to report this and no longer does. */
+	missing: boolean;
 }
 
 /**
@@ -29,13 +45,94 @@ class Collections {
 	#timers = new Map<string, ReturnType<typeof setTimeout>>();
 	#lastSaved = new Map<string, string>();
 
+	/** Last loader run per section id, mirrored from disk. */
+	loaderCaches = $state<Record<string, LoaderCache>>({});
+	/** Sections whose loader is currently running. */
+	loading = $state<Record<string, boolean>>({});
+
 	get selected(): Selection | null {
 		if (!this.selectedRequestId) return null;
 		for (const section of this.sections) {
-			const request = section.requests.find((r) => r.id === this.selectedRequestId);
+			const request =
+				section.requests.find((r) => r.id === this.selectedRequestId) ??
+				section.overlay.find((r) => r.id === this.selectedRequestId);
 			if (request) return { section, request };
 		}
 		return null;
+	}
+
+	/**
+	 * Loaded endpoints merged with the user data hanging off them.
+	 *
+	 * The loader owns identity and naming; the user owns body and headers. An
+	 * endpoint the loader has stopped reporting keeps its overlay and is marked
+	 * `missing` rather than being deleted — losing a body to a refresh is the
+	 * one thing this model exists to prevent.
+	 */
+	rowsFor(section: Section): LoadedRow[] {
+		const cache = this.loaderCaches[section.id];
+		if (!cache) return [];
+
+		const rows: LoadedRow[] = cache.endpoints.map((endpoint: LoadedEndpoint) => {
+			const id = endpointKey(endpoint.method, endpoint.path);
+			const saved = section.overlay.find((entry) => entry.id === id);
+			return {
+				request: {
+					id,
+					name: endpoint.name || endpoint.path,
+					method: endpoint.method,
+					path: endpoint.path,
+					body: saved?.body ?? '',
+					headers: saved?.headers ?? []
+				},
+				missing: false
+			};
+		});
+
+		const reported = new Set(rows.map((row) => row.request.id));
+		for (const entry of section.overlay) {
+			if (!reported.has(entry.id)) rows.push({ request: entry, missing: true });
+		}
+		return rows;
+	}
+
+	/**
+	 * Promotes a loaded endpoint into a real overlay entry so edits have
+	 * somewhere to live. Called on selection, not on load — otherwise opening a
+	 * section would write an entry for every endpoint it reports.
+	 */
+	selectLoaded(section: Section, row: LoadedRow): void {
+		if (!section.overlay.some((entry) => entry.id === row.request.id)) {
+			section.overlay.push({ ...row.request });
+			this.flush(section);
+		}
+		this.selectedRequestId = row.request.id;
+	}
+
+	/** Reads the cached run for every section that has a loader. */
+	async loadCaches(): Promise<void> {
+		for (const section of this.sections) {
+			if (!section.loader) continue;
+			try {
+				this.loaderCaches[section.id] = await loaderCache(section.id);
+			} catch {
+				// A missing cache is simply "nothing loaded yet".
+			}
+		}
+	}
+
+	/** Runs a section's loader and refreshes its cache. Never throws. */
+	async refresh(section: Section): Promise<LoaderRun | string> {
+		this.loading[section.id] = true;
+		try {
+			const run = await runLoader(section.id);
+			this.loaderCaches[section.id] = { loadedAt: run.loadedAt, endpoints: run.endpoints };
+			return run;
+		} catch (error) {
+			return String(error);
+		} finally {
+			this.loading[section.id] = false;
+		}
 	}
 
 	async load(): Promise<void> {
@@ -45,6 +142,7 @@ class Collections {
 				this.#lastSaved.set(section.id, JSON.stringify(section));
 			}
 			this.error = null;
+			await this.loadCaches();
 		} catch (error) {
 			this.error = String(error);
 		} finally {
@@ -79,7 +177,7 @@ class Collections {
 		const snapshot = $state.snapshot(section) as Section;
 		// The header table keeps a trailing blank row for editing; it has no
 		// business in a file someone might read or diff.
-		for (const request of snapshot.requests) {
+		for (const request of [...snapshot.requests, ...snapshot.overlay]) {
 			request.headers = request.headers.filter((header) => header.name.trim().length > 0);
 		}
 
@@ -99,7 +197,8 @@ class Collections {
 			baseUrl: baseUrl.trim(),
 			collapsed: false,
 			auth: { kind: 'none' },
-			requests: []
+			requests: [],
+			overlay: []
 		};
 		this.sections = [...this.sections, section].sort((a, b) =>
 			a.name.toLowerCase().localeCompare(b.name.toLowerCase())

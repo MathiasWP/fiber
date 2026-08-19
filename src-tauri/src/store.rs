@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthConfig;
+use crate::loader::LoaderConfig;
 use crate::http::Header;
 
 /// A group of requests that share a base URL. Auth and loaders attach here too,
@@ -31,8 +32,20 @@ pub struct Section {
     // invalid. `auth` holds only a keychain reference, never a credential.
     #[serde(default)]
     pub auth: AuthConfig,
+    /// A script that reports this section's endpoints. Absent for hand-written
+    /// sections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loader: Option<LoaderConfig>,
+    /// Hand-written requests.
     #[serde(default)]
     pub requests: Vec<SavedRequest>,
+    /// User data attached to *loaded* endpoints, keyed by `id` = `"GET /path"`.
+    ///
+    /// Kept apart from `requests` because loader output is regenerated on every
+    /// refresh and must never be the source of truth for a body someone spent
+    /// ten minutes writing. See §6 of the design doc.
+    #[serde(default)]
+    pub overlay: Vec<SavedRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -261,6 +274,7 @@ mod tests {
             base_url: "https://api.acme.com".into(),
             collapsed: false,
             auth: crate::auth::AuthConfig::None,
+            loader: None,
             requests: vec![SavedRequest {
                 id: "req1".into(),
                 name: "Get user".into(),
@@ -272,6 +286,7 @@ mod tests {
                     value: "application/json".into(),
                 }],
             }],
+            overlay: vec![],
         };
 
         save(&dir, &section).unwrap();
@@ -310,7 +325,9 @@ mod tests {
                 base_url: String::new(),
                 collapsed: false,
                 auth: crate::auth::AuthConfig::None,
+                loader: None,
                 requests: vec![],
+                overlay: vec![],
             },
         )
         .unwrap();

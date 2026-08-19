@@ -655,7 +655,9 @@ mod tests {
                 ttl_seconds: 0,
                 secret_ref: "sec-1:auth".into(),
             },
+            loader: None,
             requests: vec![],
+            overlay: vec![],
         }
     }
 

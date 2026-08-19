@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { ContextMenu, Dialog } from 'bits-ui';
 	import { methodColor, statusColor, type SavedRequest, type Section } from '$lib/api';
-	import { collections, fuzzyScore } from '$lib/collections.svelte';
+	import { collections, fuzzyScore, type LoadedRow } from '$lib/collections.svelte';
 	import { history, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
 
@@ -43,7 +43,9 @@
 					.sort((a, b) => a.score! - b.score!)
 					.map((match) => match.request)
 			}))
-			.filter((entry) => entry.requests.length > 0);
+			.filter(
+				(entry) => entry.requests.length > 0 || loadedRows(entry.section).length > 0
+			);
 	});
 
 	// A search hides the collapsed state — matches are no use if you can't see them.
@@ -56,6 +58,31 @@
 				? 'i-lucide-moon'
 				: 'i-lucide-sun'
 	);
+
+	function loadedRows(section: Section): LoadedRow[] {
+		const rows = collections.rowsFor(section);
+		const needle = query.trim();
+		if (!needle) return rows;
+		return rows
+			.map((row) => ({
+				row,
+				score: fuzzyScore(`${row.request.name} ${row.request.method} ${row.request.path}`, needle)
+			}))
+			.filter((match) => match.score !== null)
+			.sort((a, b) => a.score! - b.score!)
+			.map((match) => match.row);
+	}
+
+	function refresh(section: Section) {
+		collections.refresh(section);
+	}
+
+	/** Drops user data for an endpoint the loader no longer reports. */
+	function dropOverlay(section: Section, id: string) {
+		section.overlay = section.overlay.filter((entry) => entry.id !== id);
+		if (collections.selectedRequestId === id) collections.selectedRequestId = null;
+		collections.flush(section);
+	}
 
 	function toggle(section: Section) {
 		section.collapsed = !section.collapsed;
@@ -237,7 +264,7 @@
 
 							<!-- Static: nothing appears or disappears on hover, so nothing shifts. -->
 							<span class="text-2.5 text-muted shrink-0 tabular-nums">
-								{section.requests.length}
+								{section.requests.length + collections.rowsFor(section).length}
 							</span>
 						</ContextMenu.Trigger>
 
@@ -254,6 +281,16 @@
 									<span class="i-lucide-pencil text-3"></span>
 									Rename
 								</ContextMenu.Item>
+								{#if section.loader}
+									<ContextMenu.Item class="menu-item" onSelect={() => refresh(section)}>
+										<span
+											class="i-lucide-refresh-cw text-3 {collections.loading[section.id]
+												? 'animate-spin'
+												: ''}"
+										></span>
+										Refresh endpoints
+									</ContextMenu.Item>
+								{/if}
 								<ContextMenu.Item class="menu-item" onSelect={() => onOpenSettings(section)}>
 									<span class="i-lucide-settings text-3"></span>
 									Section settings…
@@ -327,9 +364,68 @@
 									</ContextMenu.Content>
 								</ContextMenu.Portal>
 							</ContextMenu.Root>
-						{:else}
-							<p class="pl-6 pr-2 py-1 text-2.5 text-muted">No requests yet.</p>
 						{/each}
+
+						<!-- Loader output. Regenerated on every refresh; the user's
+						     bodies live in the section's overlay and survive it. -->
+						{#each loadedRows(section) as row (row.request.id)}
+							<ContextMenu.Root>
+								<ContextMenu.Trigger
+									class="flex items-center gap-2 pl-6 pr-2 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
+										{collections.selectedRequestId === row.request.id ? 'bg-raised' : ''}"
+									onclick={() => collections.selectLoaded(section, row)}
+								>
+									<span
+										class="font-mono text-2.5 font-bold shrink-0 w-9 {methodColor(row.request.method)}"
+									>
+										{row.request.method}
+									</span>
+									<span
+										class="truncate text-xs flex-1 {row.missing ? 'text-muted line-through' : ''}"
+										title={row.missing
+											? `${row.request.path} — no longer reported by the loader`
+											: row.request.path}
+									>
+										{row.request.name}
+									</span>
+									{#if row.missing}
+										<span
+											class="i-lucide-unlink text-3 text-warn shrink-0"
+											title="No longer reported by the loader"
+										></span>
+									{/if}
+								</ContextMenu.Trigger>
+
+								<ContextMenu.Portal>
+									<ContextMenu.Content class="menu-content">
+										<ContextMenu.Item class="menu-item" onSelect={() => refresh(section)}>
+											<span class="i-lucide-refresh-cw text-3"></span>
+											Refresh endpoints
+										</ContextMenu.Item>
+										<ContextMenu.Item class="menu-item" onSelect={() => copyUrl(section, row.request)}>
+											<span class="i-lucide-link text-3"></span>
+											Copy URL
+										</ContextMenu.Item>
+										{#if row.missing}
+											<ContextMenu.Separator class="menu-separator" />
+											<ContextMenu.Item
+												class="menu-item-bad"
+												onSelect={() => dropOverlay(section, row.request.id)}
+											>
+												<span class="i-lucide-trash-2 text-3"></span>
+												Forget this endpoint
+											</ContextMenu.Item>
+										{/if}
+									</ContextMenu.Content>
+								</ContextMenu.Portal>
+							</ContextMenu.Root>
+						{/each}
+
+						{#if requests.length === 0 && loadedRows(section).length === 0}
+							<p class="pl-6 pr-2 py-1 text-2.5 text-muted">
+								{section.loader ? 'No endpoints loaded yet.' : 'No requests yet.'}
+							</p>
+						{/if}
 					{/if}
 				</div>
 			{:else}

@@ -307,7 +307,9 @@ mod tests {
             base_url: base_url.into(),
             collapsed: false,
             auth,
+            loader: None,
             requests: vec![],
+            overlay: vec![],
         }
     }
 

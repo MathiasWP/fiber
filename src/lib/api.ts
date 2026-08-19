@@ -170,14 +170,64 @@ export function browserClose(sectionId: string): Promise<void> {
 	return invoke<void>('browser_close', { sectionId });
 }
 
-/** A group of requests sharing a base URL. Loaders attach here later. */
+/** A script that reports a section's endpoints. TypeScript is allowed. */
+export interface LoaderConfig {
+	enabled: boolean;
+	source: string;
+	/** 0 means "only when asked". */
+	ttlSeconds: number;
+}
+
+/** One endpoint as reported by a loader. Never the source of truth for user data. */
+export interface LoadedEndpoint {
+	method: string;
+	path: string;
+	name: string;
+	description: string;
+}
+
+export interface LoaderCache {
+	loadedAt: number;
+	endpoints: LoadedEndpoint[];
+}
+
+export interface LoaderRun extends LoaderCache {
+	logs: string[];
+	added: string[];
+	removed: string[];
+}
+
+/** A group of requests sharing a base URL. */
 export interface Section {
 	id: string;
 	name: string;
 	baseUrl: string;
 	collapsed: boolean;
 	auth: AuthConfig;
+	loader?: LoaderConfig | null;
+	/** Hand-written requests. */
 	requests: SavedRequest[];
+	/** User data for *loaded* endpoints, keyed by `id` = `"GET /path"`. */
+	overlay: SavedRequest[];
+}
+
+/** The stable identity that ties saved bodies and history to a loaded endpoint. */
+export function endpointKey(method: string, path: string): string {
+	return `${method.trim().toUpperCase()} ${path.trim()}`;
+}
+
+/** Runs the loader. Its `fetch` uses the section's base URL and auth. */
+export function runLoader(sectionId: string): Promise<LoaderRun> {
+	return invoke<LoaderRun>('run_loader', { sectionId });
+}
+
+/** The last successful run, from disk — available immediately and offline. */
+export function loaderCache(sectionId: string): Promise<LoaderCache> {
+	return invoke<LoaderCache>('loader_cache', { sectionId });
+}
+
+export function defaultLoaderSource(): Promise<string> {
+	return invoke<string>('default_loader_source');
 }
 
 /** Write-only by design: there is no command to read a secret back out. */
