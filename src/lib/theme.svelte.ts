@@ -34,9 +34,18 @@ class Theme {
 		localStorage.setItem(STORAGE_KEY, mode);
 	}
 
-	/** Cycles system → light → dark, for the toolbar button. */
-	cycle(): void {
-		this.set(MODES[(MODES.indexOf(this.mode) + 1) % MODES.length]);
+	/**
+	 * Flips between light and dark. `system` is the starting point rather than a
+	 * third stop on the cycle — following the OS is the default until you say
+	 * otherwise, and "otherwise" only has two answers.
+	 */
+	toggle(): void {
+		this.set(this.resolved === 'dark' ? 'light' : 'dark');
+	}
+
+	/** Back to following the OS. */
+	followSystem(): void {
+		this.set('system');
 	}
 
 	apply(): void {

@@ -38,7 +38,6 @@
 	let inflightId = $state<string | null>(null);
 	let paletteOpen = $state(false);
 	let settingsFor = $state<Section | null>(null);
-	let editingBase = $state(false);
 	let resolved = $state('');
 	let bodyEditor = $state<Editor>();
 
@@ -49,8 +48,9 @@
 	const bodilessMethod = $derived(draft.method === 'GET' || draft.method === 'HEAD');
 	const canSend = $derived(resolved.trim().length > 0 && !inflightId);
 
-	// Each request only ever shows its own responses.
-	const shown = $derived(history.selectedFor(requestKey));
+	// An entry opened from the History tab wins; otherwise a request shows its
+	// own most recent response and never another request's.
+	const shown = $derived(history.viewing ?? history.selectedFor(requestKey));
 	const mine = $derived(history.forRequest(requestKey));
 
 	$effect(() => {
@@ -168,8 +168,13 @@
 		if (inflightId) await cancelRequest(inflightId);
 	}
 
-	/** Jumps to the request a history entry belongs to and shows that response. */
+	/**
+	 * Shows a history entry, and jumps to the request it belongs to when there
+	 * still is one. The entry is shown either way — its request may have been
+	 * deleted, or never have existed if it was sent from scratch.
+	 */
 	function openHistory(entry: HistoryEntry) {
+		history.viewingId = entry.id;
 		collections.selectedRequestId = entry.requestId === SCRATCH_ID ? null : entry.requestId;
 		history.select(entry.requestId, entry.id);
 		if (entry.requestId === SCRATCH_ID) {
@@ -177,11 +182,6 @@
 			scratch.path = entry.url;
 			if (entry.requestBody) scratch.body = entry.requestBody;
 		}
-	}
-
-	function commitBaseUrl() {
-		editingBase = false;
-		if (selection) collections.flush(selection.section);
 	}
 
 	function onKeydown(event: KeyboardEvent) {
@@ -208,7 +208,10 @@
 
 <CommandPalette
 	bind:open={paletteOpen}
-	onSelect={(match) => (collections.selectedRequestId = match.request.id)}
+	onSelect={(match) => {
+		history.stopViewing();
+		collections.selectedRequestId = match.request.id;
+	}}
 />
 
 <SectionSettings section={settingsFor} onClose={() => (settingsFor = null)} />
@@ -227,72 +230,48 @@
 		/>
 
 		<Pane defaultSize={80}>
-			<main class="grid grid-rows-[auto_auto_1fr] min-h-0 min-w-0 h-full">
+			<main class="grid grid-rows-[auto_1fr] min-h-0 min-w-0 h-full">
 				<!-- URL bar -->
 				<div class="flex items-center gap-2 px-3 h-11 border-b border-border bg-panel shrink-0">
 					<MethodSelect bind:value={draft.method} />
 
-					<div class="flex-1 flex items-stretch min-w-0">
+					<div class="flex-1 flex items-stretch min-w-0" title={resolved}>
 						{#if selection}
-							<!-- The cascade, shown where you type: the section owns the base,
-							     the request owns the path. -->
-							{#if editingBase}
-								<!-- svelte-ignore a11y_autofocus -->
-								<input
-									bind:value={selection.section.baseUrl}
-									autofocus
-									spellcheck="false"
-									placeholder="https://api.example.com"
-									class="input-base rounded-r-none border-r-0 font-mono text-xs w-64 selectable"
-									onblur={commitBaseUrl}
-									onkeydown={(e) => e.key === 'Enter' && commitBaseUrl()}
-								/>
-							{:else}
-								<button
-									class="shrink-0 max-w-64 truncate bg-raised/60 border border-border border-r-0 rounded-l px-2 font-mono text-xs text-muted hover:text-text transition-colors"
-									title="{selection.section.name} base URL — click to edit, or right-click the section for settings"
-									onclick={() => (editingBase = true)}
-								>
-									{selection.section.baseUrl || 'set base URL'}
-								</button>
-							{/if}
+							<!-- The cascade, shown where you type. Read-only: the base URL
+							     belongs to the collection, so it's edited in its settings. -->
+							<span
+								class="shrink-0 max-w-64 truncate flex items-center bg-raised/60 border border-border border-r-0 rounded-l px-2 font-mono text-xs text-muted select-none"
+								title="{selection.section.name} · base URL is set in section settings"
+							>
+								{selection.section.baseUrl || 'no base URL'}
+							</span>
 							<input
 								bind:value={draft.path}
 								spellcheck="false"
 								placeholder="/user/get"
-								class="input-base rounded-l-none flex-1 min-w-0 font-mono selectable"
+								class="input-base h-8 rounded-l-none flex-1 min-w-0 font-mono selectable"
 							/>
 						{:else}
 							<input
 								bind:value={draft.path}
 								spellcheck="false"
 								placeholder="https://api.example.com/users"
-								class="input-base flex-1 min-w-0 font-mono selectable"
+								class="input-base h-8 flex-1 min-w-0 font-mono selectable"
 							/>
 						{/if}
 					</div>
 
 					{#if inflightId}
-						<button class="btn-base bg-bad text-white hover:bg-bad/85" onclick={cancel}>
+						<button class="btn-base h-8 bg-bad text-white hover:bg-bad/85" onclick={cancel}>
 							<span class="i-lucide-square"></span>
 							Cancel
 						</button>
 					{:else}
-						<button class="btn-primary" disabled={!canSend} onclick={send}>
+						<button class="btn-primary h-8" disabled={!canSend} onclick={send}>
 							<span class="i-lucide-send"></span>
 							Send
 						</button>
 					{/if}
-				</div>
-
-				<!-- What will actually be sent. -->
-				<div
-					class="flex items-center gap-2 px-3 h-6 border-b border-border bg-panel/50 shrink-0 text-2.5"
-				>
-					<span class="font-mono text-muted truncate selectable">{resolved || '—'}</span>
-					<span class="ml-auto text-muted shrink-0">
-						{selection ? selection.section.name : 'Scratch'}
-					</span>
 				</div>
 
 				<!-- Input | output. This split is the app. -->

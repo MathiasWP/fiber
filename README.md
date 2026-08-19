@@ -49,11 +49,12 @@ src-tauri/
 |---|---|
 | `⌘↵` | send |
 | `⌘K` | search endpoints |
-| right-click | context menu — on sections, requests, history and responses |
-| double-click | rename a section or request |
+| `⌘A` | select the whole response, when focused in it |
+| right-click | context menu — rename, duplicate, delete, refresh, copy |
 
-Panes are draggable and their sizes persist. Theme is system/light/dark, toggled
-bottom-left of the sidebar.
+Panes are draggable and their sizes persist. Theme follows the system until you
+pick one, bottom-left of the sidebar; right-click there to go back to following
+it.
 
 ## Endpoints
 

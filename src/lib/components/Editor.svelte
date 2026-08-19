@@ -57,7 +57,12 @@
 					basicSetup,
 					themeConf.of(untrack(() => (theme.resolved === 'dark' ? oneDark : []))),
 					languageConf.of(languageExtensions(untrack(() => language))),
-					editable.of(EditorView.editable.of(!untrack(() => readonly))),
+					// Editable, but read-only: `EditorView.editable.of(false)` sets
+					// contenteditable=false, which makes the editor unfocusable —
+					// and an unfocused editor means ⌘A selects the whole app
+					// instead of the response. `EditorState.readOnly` blocks edits
+					// while keeping focus and selection.
+					editable.of(EditorView.editable.of(true)),
 					EditorState.readOnly.of(untrack(() => readonly)),
 					EditorView.lineWrapping,
 					placeholderExt(untrack(() => placeholder)),
@@ -104,8 +109,10 @@
 	});
 
 	$effect(() => {
+		// Read-only is enforced by the state facet above; the view stays editable
+		// so it can hold focus.
 		view?.dispatch({
-			effects: editable.reconfigure(EditorView.editable.of(!readonly))
+			effects: editable.reconfigure(EditorView.editable.of(true))
 		});
 	});
 

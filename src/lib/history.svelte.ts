@@ -57,6 +57,15 @@ class History {
 	error = $state<string | null>(null);
 	/** requestId → entryId the user last looked at. */
 	#selected = $state<Record<string, string>>({});
+	/**
+	 * An entry opened straight from the History tab.
+	 *
+	 * Without this, clicking an entry whose request has since been deleted — or
+	 * which belonged to scratch — resolved to no request, so the response pane
+	 * fell back to "send a request to see the response" and the entry you just
+	 * clicked went nowhere.
+	 */
+	viewingId = $state<string | null>(null);
 
 	async load(): Promise<void> {
 		try {
@@ -83,6 +92,17 @@ class History {
 		this.#selected[requestId] = entryId;
 	}
 
+	/** The entry opened from the History tab, if it's still around. */
+	get viewing(): HistoryEntry | undefined {
+		if (!this.viewingId) return undefined;
+		return this.entries.find((entry) => entry.id === this.viewingId);
+	}
+
+	/** Picking a request in the sidebar means you're no longer viewing history. */
+	stopViewing(): void {
+		this.viewingId = null;
+	}
+
 	async ensureBody(entry: HistoryEntry): Promise<void> {
 		if (entry.bodyLoaded || entry.pending) return;
 		// Set first so concurrent calls for the same entry don't both fetch.
@@ -96,6 +116,8 @@ class History {
 	}
 
 	start(entry: Omit<HistoryEntry, 'pending' | 'bodyLoaded'>): void {
+		// Sending shows the new response, not whatever history was open.
+		this.viewingId = null;
 		this.entries.unshift({ ...entry, pending: true, bodyLoaded: false });
 		this.select(entry.requestId, entry.id);
 	}

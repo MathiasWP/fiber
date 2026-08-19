@@ -14,6 +14,7 @@
 
 	let tab = $state<'collections' | 'history'>('collections');
 	let query = $state('');
+	let historyQuery = $state('');
 	let creating = $state(false);
 	let newName = $state('');
 	let newBaseUrl = $state('');
@@ -51,13 +52,7 @@
 	// A search hides the collapsed state — matches are no use if you can't see them.
 	const searching = $derived(query.trim().length > 0);
 
-	const themeIcon = $derived(
-		theme.mode === 'system'
-			? 'i-lucide-monitor'
-			: theme.mode === 'dark'
-				? 'i-lucide-moon'
-				: 'i-lucide-sun'
-	);
+	const themeIcon = $derived(theme.resolved === 'dark' ? 'i-lucide-moon' : 'i-lucide-sun');
 
 	function loadedRows(section: Section): LoadedRow[] {
 		const rows = collections.rowsFor(section);
@@ -71,6 +66,16 @@
 			.filter((match) => match.score !== null)
 			.sort((a, b) => a.score! - b.score!)
 			.map((match) => match.row);
+	}
+
+	function selectRequest(id: string) {
+		history.stopViewing();
+		collections.selectedRequestId = id;
+	}
+
+	function selectLoaded(section: Section, row: LoadedRow) {
+		history.stopViewing();
+		collections.selectLoaded(section, row);
 	}
 
 	function refresh(section: Section) {
@@ -119,6 +124,16 @@
 		const absolute = /^https?:\/\//.test(path);
 		navigator.clipboard.writeText(absolute ? path : `${base}/${path.replace(/^\/+/, '')}`);
 	}
+
+	/** Matched against method, URL and status, so `404` or `POST` both work. */
+	const visibleHistory = $derived.by(() => {
+		const needle = historyQuery.trim().toLowerCase();
+		if (!needle) return history.entries;
+		return history.entries.filter((entry) => {
+			const status = entry.response ? String(entry.response.status) : entry.error ? 'error' : '';
+			return `${entry.method} ${entry.url} ${status}`.toLowerCase().includes(needle);
+		});
+	});
 
 	function clockTime(at: number) {
 		return new Date(at).toLocaleTimeString(undefined, {
@@ -240,7 +255,6 @@
 						<ContextMenu.Trigger
 							class="flex items-center gap-1 px-2 py-1.5 w-full text-left hover:bg-raised/60 transition-colors cursor-default"
 							onclick={() => toggle(section)}
-							ondblclick={() => (renamingId = section.id)}
 						>
 							<span
 								class="i-lucide-chevron-right text-3 text-muted transition-transform shrink-0 {open
@@ -313,8 +327,7 @@
 								<ContextMenu.Trigger
 									class="flex items-center gap-2 pl-6 pr-2 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
 										{collections.selectedRequestId === request.id ? 'bg-raised' : ''}"
-									onclick={() => (collections.selectedRequestId = request.id)}
-									ondblclick={() => (renamingId = request.id)}
+									onclick={() => selectRequest(request.id)}
 								>
 									<span
 										class="font-mono text-2.5 font-bold shrink-0 w-9 {methodColor(request.method)}"
@@ -373,7 +386,7 @@
 								<ContextMenu.Trigger
 									class="flex items-center gap-2 pl-6 pr-2 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
 										{collections.selectedRequestId === row.request.id ? 'bg-raised' : ''}"
-									onclick={() => collections.selectLoaded(section, row)}
+									onclick={() => selectLoaded(section, row)}
 								>
 									<span
 										class="font-mono text-2.5 font-bold shrink-0 w-9 {methodColor(row.request.method)}"
@@ -446,8 +459,22 @@
 			</p>
 		{/if}
 	{:else}
+		<div class="px-2 py-2 shrink-0">
+			<div class="relative">
+				<span
+					class="i-lucide-search absolute left-2 top-1/2 -translate-y-1/2 text-muted text-3"
+				></span>
+				<input
+					bind:value={historyQuery}
+					spellcheck="false"
+					placeholder="Search history…"
+					class="input-base w-full text-xs pl-7"
+				/>
+			</div>
+		</div>
+
 		<div class="flex-1 overflow-y-auto min-h-0">
-			{#each history.entries as entry (entry.id)}
+			{#each visibleHistory as entry (entry.id)}
 				<ContextMenu.Root>
 					<ContextMenu.Trigger
 						class="block w-full text-left px-3 py-2 border-b border-border/50 hover:bg-raised transition-colors cursor-default"
@@ -496,21 +523,37 @@
 				</ContextMenu.Root>
 			{:else}
 				<p class="px-3 py-2 text-xs text-muted leading-relaxed">
-					No requests yet. Hit <kbd class="font-mono">⌘↵</kbd> to send.
+					{#if historyQuery.trim()}
+						Nothing matches “{historyQuery}”.
+					{:else}
+						No requests yet. Hit <kbd class="font-mono">⌘↵</kbd> to send.
+					{/if}
 				</p>
 			{/each}
 		</div>
 	{/if}
 
 	<footer class="flex items-center gap-2 px-2 h-8 border-t border-border shrink-0">
-		<button
-			class="flex items-center gap-1.5 px-1.5 py-1 rounded text-2.5 text-muted hover:(bg-raised text-text) transition-colors"
-			title="Theme: {theme.mode}"
-			onclick={() => theme.cycle()}
-		>
-			<span class={themeIcon}></span>
-			<span class="capitalize">{theme.mode}</span>
-		</button>
+		<ContextMenu.Root>
+			<ContextMenu.Trigger
+				class="flex items-center gap-1.5 px-1.5 py-1 rounded text-2.5 text-muted hover:(bg-raised text-text) transition-colors cursor-default"
+				title="Switch to {theme.resolved === 'dark' ? 'light' : 'dark'}{theme.mode === 'system'
+					? ' — currently following the system'
+					: ''}"
+				onclick={() => theme.toggle()}
+			>
+				<span class={themeIcon}></span>
+				<span class="capitalize">{theme.resolved}</span>
+			</ContextMenu.Trigger>
+			<ContextMenu.Portal>
+				<ContextMenu.Content class="menu-content">
+					<ContextMenu.Item class="menu-item" onSelect={() => theme.followSystem()}>
+						<span class="i-lucide-monitor text-3"></span>
+						Follow the system
+					</ContextMenu.Item>
+				</ContextMenu.Content>
+			</ContextMenu.Portal>
+		</ContextMenu.Root>
 		<span class="ml-auto text-2.5 text-muted">
 			<kbd class="font-mono">⌘K</kbd> search
 		</span>
