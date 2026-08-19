@@ -306,6 +306,7 @@ mod tests {
             name: "Test".into(),
             base_url: base_url.into(),
             collapsed: false,
+            order: 0,
             auth,
             loader: None,
             mcp: Default::default(),

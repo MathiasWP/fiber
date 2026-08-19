@@ -28,6 +28,10 @@ pub struct Section {
     pub base_url: String,
     #[serde(default)]
     pub collapsed: bool,
+    /// Where this sits in the sidebar. Sections used to be sorted by name, which
+    /// left no way to express an order you'd chosen by dragging.
+    #[serde(default)]
+    pub order: i32,
     // Tables and array-of-tables must come after the scalars, or the TOML is
     // invalid. `auth` holds only a keychain reference, never a credential.
     #[serde(default)]
@@ -149,7 +153,13 @@ pub fn load_all(dir: &Path) -> Result<Vec<Section>, StoreError> {
         }
     }
 
-    sections.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    // Explicit order first, name as the tie-break so sections written before
+    // ordering existed still come out somewhere sensible.
+    sections.sort_by(|a, b| {
+        a.order
+            .cmp(&b.order)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
     Ok(sections)
 }
 
@@ -289,6 +299,7 @@ mod tests {
             name: "Acme API".into(),
             base_url: "https://api.acme.com".into(),
             collapsed: false,
+            order: 0,
             auth: crate::auth::AuthConfig::None,
             loader: None,
             mcp: Default::default(),
@@ -341,6 +352,7 @@ mod tests {
                 name: "Good".into(),
                 base_url: String::new(),
                 collapsed: false,
+                order: 0,
                 auth: crate::auth::AuthConfig::None,
                 loader: None,
                 mcp: Default::default(),

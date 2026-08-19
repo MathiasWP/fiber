@@ -613,6 +613,7 @@ mod tests {
             name: "Test".into(),
             base_url: base_url.into(),
             collapsed: false,
+            order: 0,
             auth: AuthConfig::Login {
                 method: "POST".into(),
                 url: "/login".into(),

@@ -96,3 +96,19 @@ body {
 .cm-editor .cm-activeLineGutter {
 	background-color: rgb(var(--c-raised) / 0.6) !important;
 }
+
+/* Drop indicators. Plain CSS rather than arbitrary utilities: these class names
+   are chosen at runtime, and an arbitrary value containing `rgb(var(--…))`
+   isn't picked up by the class scanner — it would silently render nothing. */
+.drop-above {
+	box-shadow: inset 0 2px 0 0 rgb(var(--c-accent));
+}
+
+.drop-below {
+	box-shadow: inset 0 -2px 0 0 rgb(var(--c-accent));
+}
+
+.drop-into {
+	background: rgb(var(--c-accent) / 0.12);
+	box-shadow: inset 0 0 0 1px rgb(var(--c-accent));
+}

@@ -51,6 +51,7 @@ src-tauri/
 | `⌘K` | search endpoints |
 | `⌘A` | select the whole response, when focused in it |
 | right-click | context menu — rename, duplicate, delete, refresh, copy |
+| drag | reorder requests and collections, or move a request between them |
 
 Panes are draggable and their sizes persist. Theme follows the system until you
 pick one, bottom-left of the sidebar; right-click there to go back to following

@@ -208,7 +208,7 @@ impl FiberMcp {
             Box::pin(async move {
                 let spec = RequestSpec {
                     id: format!("mcp-loader:{}", section.id),
-                        request_id: format!("loader:{}", section.id),
+                    request_id: format!("loader:{}", section.id),
                     section_id: Some(section.id.clone()),
                     method: request.method,
                     url: store::join_url(&section.base_url, &request.url),
@@ -575,6 +575,7 @@ mod tests {
             name: "Acme".into(),
             base_url: "https://api.acme.com".into(),
             collapsed: false,
+            order: 0,
             auth: crate::auth::AuthConfig::None,
             loader: None,
             mcp: crate::store::McpAccess {

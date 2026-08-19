@@ -645,6 +645,7 @@ mod tests {
             name: "Test".into(),
             base_url: "https://api.example.com".into(),
             collapsed: false,
+            order: 0,
             auth: AuthConfig::Browser {
                 login_url: "https://login.example.com".into(),
                 capture,

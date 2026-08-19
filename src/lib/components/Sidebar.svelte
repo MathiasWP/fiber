@@ -2,6 +2,7 @@
 	import { ContextMenu, Dialog } from 'bits-ui';
 	import { methodColor, statusColor, type SavedRequest, type Section } from '$lib/api';
 	import { collections, fuzzyScore, type LoadedRow } from '$lib/collections.svelte';
+	import { requestRow as dragRequest, sectionHeader, watchDrops, type DropHint } from '$lib/dnd.svelte';
 	import { history, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
 
@@ -158,6 +159,34 @@
 		});
 	});
 
+	/** Which row a drop would land on, and which side. Keyed by row id. */
+	let hints = $state<Record<string, DropHint | 'into'>>({});
+
+	function setHint(id: string, hint: DropHint | 'into') {
+		if (hint) hints[id] = hint;
+		else delete hints[id];
+	}
+
+	function edgeClass(id: string): string {
+		const hint = hints[id];
+		if (hint === 'into') return 'drop-into';
+		if (hint?.edge === 'top') return 'drop-above';
+		if (hint?.edge === 'bottom') return 'drop-below';
+		return '';
+	}
+
+	$effect(() =>
+		watchDrops((outcome) => {
+			hints = {};
+			if (outcome.request) {
+				collections.moveRequest(outcome.request.from, outcome.request.to);
+			} else if (outcome.section) {
+				const { movedId, targetId, edge } = outcome.section;
+				collections.reorderSections(movedId, targetId, edge);
+			}
+		})
+	);
+
 	function clockTime(at: number) {
 		return new Date(at).toLocaleTimeString(undefined, {
 			hour: '2-digit',
@@ -168,9 +197,16 @@
 </script>
 
 {#snippet requestRow(section: Section, request: SavedRequest, indent: string)}
-	<ContextMenu.Root>
+	<div
+		use:dragRequest={{
+			ref: { sectionId: section.id, requestId: request.id },
+			onHint: (hint) => setHint(request.id, hint)
+		}}
+		class="transition-shadow {edgeClass(request.id)}"
+	>
+		<ContextMenu.Root>
 		<ContextMenu.Trigger
-			class="flex items-center gap-2 {indent} pr-2 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
+			class="flex items-center gap-2 {indent} pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
 				{collections.selectedRequestId === request.id ? 'bg-raised' : ''}"
 			onclick={() => selectRequest(request.id)}
 		>
@@ -220,8 +256,9 @@
 					Delete request
 				</ContextMenu.Item>
 			</ContextMenu.Content>
-		</ContextMenu.Portal>
-	</ContextMenu.Root>
+			</ContextMenu.Portal>
+		</ContextMenu.Root>
+	</div>
 {/snippet}
 
 <!-- Deleting a section throws away a file, so it asks first. Requests don't. -->
@@ -348,7 +385,7 @@
 			{#if collections.looseSection && looseRequests.length}
 				<div class="border-b border-border/50 pb-1">
 					{#each looseRequests as request (request.id)}
-						{@render requestRow(collections.looseSection, request, 'pl-2')}
+						{@render requestRow(collections.looseSection, request, 'pl-4')}
 					{/each}
 				</div>
 			{/if}
@@ -356,9 +393,16 @@
 			{#each visible as { section, requests } (section.id)}
 				{@const open = searching || !section.collapsed}
 				<div class="border-b border-border/50">
+					<div
+						use:sectionHeader={{
+							ref: { sectionId: section.id },
+							onHint: (hint) => setHint(section.id, hint)
+						}}
+						class="transition-shadow {edgeClass(section.id)}"
+					>
 					<ContextMenu.Root>
 						<ContextMenu.Trigger
-							class="flex items-center gap-1 px-2 py-1.5 w-full text-left hover:bg-raised/60 transition-colors cursor-default"
+							class="flex items-center gap-1 px-4 py-1.5 w-full text-left hover:bg-raised/60 transition-colors cursor-default"
 							onclick={() => toggle(section)}
 						>
 							<span
@@ -425,10 +469,11 @@
 							</ContextMenu.Content>
 						</ContextMenu.Portal>
 					</ContextMenu.Root>
+					</div>
 
 					{#if open}
 						{#each requests as request (request.id)}
-							{@render requestRow(section, request, 'pl-6')}
+							{@render requestRow(section, request, 'pl-8')}
 						{/each}
 
 						<!-- Loader output. Regenerated on every refresh; the user's
@@ -436,7 +481,7 @@
 						{#each loadedRows(section) as row (row.request.id)}
 							<ContextMenu.Root>
 								<ContextMenu.Trigger
-									class="flex items-center gap-2 pl-6 pr-2 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
+									class="flex items-center gap-2 pl-8 pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
 										{collections.selectedRequestId === row.request.id ? 'bg-raised' : ''}"
 									onclick={() => selectLoaded(section, row)}
 								>
@@ -487,14 +532,14 @@
 						{/each}
 
 						{#if requests.length === 0 && loadedRows(section).length === 0}
-							<p class="pl-6 pr-2 py-1 text-2.5 text-muted">
+							<p class="pl-8 pr-4 py-1 text-2.5 text-muted">
 								{section.loader ? 'No endpoints loaded yet.' : 'No requests yet.'}
 							</p>
 						{/if}
 					{/if}
 				</div>
 			{:else}
-				<p class="px-3 py-2 text-xs text-muted leading-relaxed">
+				<p class="px-4 py-2 text-xs text-muted leading-relaxed">
 					{#if searching}
 						Nothing matches “{query}”.
 					{:else}
@@ -506,7 +551,7 @@
 		</div>
 
 		{#if collections.error}
-			<p class="px-3 py-2 text-2.5 text-bad border-t border-border shrink-0">
+			<p class="px-4 py-2 text-2.5 text-bad border-t border-border shrink-0">
 				{collections.error}
 			</p>
 		{/if}
@@ -529,7 +574,7 @@
 			{#each visibleHistory as entry (entry.id)}
 				<ContextMenu.Root>
 					<ContextMenu.Trigger
-						class="block w-full text-left px-3 py-2 border-b border-border/50 hover:bg-raised transition-colors cursor-default"
+						class="block w-full text-left px-4 py-2 border-b border-border/50 hover:bg-raised transition-colors cursor-default"
 						onclick={() => onPickHistory(entry)}
 					>
 						<div class="flex items-center gap-2">
@@ -574,7 +619,7 @@
 					</ContextMenu.Portal>
 				</ContextMenu.Root>
 			{:else}
-				<p class="px-3 py-2 text-xs text-muted leading-relaxed">
+				<p class="px-4 py-2 text-xs text-muted leading-relaxed">
 					{#if historyQuery.trim()}
 						Nothing matches “{historyQuery}”.
 					{:else}

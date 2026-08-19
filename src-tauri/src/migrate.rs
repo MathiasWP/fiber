@@ -150,6 +150,7 @@ mod tests {
             name: "Acme".into(),
             base_url: String::new(),
             collapsed: false,
+            order: 0,
             auth: crate::auth::AuthConfig::Bearer {
                 secret_ref: "sec-1:auth".into(),
             },

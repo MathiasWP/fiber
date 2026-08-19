@@ -225,6 +225,8 @@ export interface Section {
 	name: string;
 	baseUrl: string;
 	collapsed: boolean;
+	/** Where this sits in the sidebar; set by dragging. */
+	order: number;
 	auth: AuthConfig;
 	loader?: LoaderConfig | null;
 	mcp: McpAccess;

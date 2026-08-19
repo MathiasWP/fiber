@@ -142,6 +142,7 @@ class Collections {
 				name: 'Loose requests',
 				baseUrl: '',
 				collapsed: false,
+				order: -1,
 				auth: { kind: 'none' },
 				mcp: { enabled: false, allowWrites: false },
 				requests: [],
@@ -151,6 +152,60 @@ class Collections {
 		}
 		// No base URL to hang a path off, so it starts empty and takes a full URL.
 		return this.createRequest(section, 'New request', '');
+	}
+
+	/**
+	 * Moves a request within its collection, or into another one.
+	 *
+	 * Carries the request itself rather than copying fields, so its id survives
+	 * — which is what keeps its history and its place in the response pane
+	 * attached to it across the move.
+	 */
+	async moveRequest(
+		from: { sectionId: string; requestId: string },
+		to: { sectionId: string; requestId?: string; edge?: 'top' | 'bottom' }
+	): Promise<void> {
+		const source = this.sections.find((section) => section.id === from.sectionId);
+		const target = this.sections.find((section) => section.id === to.sectionId);
+		if (!source || !target) return;
+
+		const at = source.requests.findIndex((request) => request.id === from.requestId);
+		if (at < 0) return;
+		const [moved] = source.requests.splice(at, 1);
+
+		let index = target.requests.length;
+		if (to.requestId) {
+			const anchor = target.requests.findIndex((request) => request.id === to.requestId);
+			if (anchor >= 0) index = to.edge === 'bottom' ? anchor + 1 : anchor;
+		}
+		target.requests.splice(index, 0, moved);
+
+		await this.flush(target);
+		if (source.id !== target.id) await this.flush(source);
+	}
+
+	/** Reorders collections, renumbering so the order survives a restart. */
+	async reorderSections(movedId: string, targetId: string, edge: 'top' | 'bottom'): Promise<void> {
+		const ordered = this.collectionSections;
+		const from = ordered.findIndex((section) => section.id === movedId);
+		const anchor = ordered.findIndex((section) => section.id === targetId);
+		if (from < 0 || anchor < 0) return;
+
+		const [moved] = ordered.splice(from, 1);
+		// The anchor shifts when the moved item came from above it.
+		const adjusted = anchor - (from < anchor ? 1 : 0);
+		ordered.splice(edge === 'bottom' ? adjusted + 1 : adjusted, 0, moved);
+
+		// Renumber every one: sparse numbering would drift after enough moves.
+		await Promise.all(
+			ordered.map((section, index) => {
+				if (section.order === index) return Promise.resolve();
+				section.order = index;
+				return this.flush(section);
+			})
+		);
+		// Re-sort in place so the sidebar matches what was just written.
+		this.sections = [...this.sections].sort((a, b) => a.order - b.order);
 	}
 
 	/** Reads the cached run for every section that has a loader. */
@@ -259,14 +314,13 @@ class Collections {
 			name: name.trim() || 'Untitled',
 			baseUrl: baseUrl.trim(),
 			collapsed: false,
+			order: this.collectionSections.length,
 			auth: { kind: 'none' },
 			mcp: { enabled: false, allowWrites: false },
 			requests: [],
 			overlay: []
 		};
-		this.sections = [...this.sections, section].sort((a, b) =>
-			a.name.toLowerCase().localeCompare(b.name.toLowerCase())
-		);
+		this.sections = [...this.sections, section];
 		await this.flush(section);
 		return section;
 	}
