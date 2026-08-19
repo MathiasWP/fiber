@@ -207,6 +207,18 @@ export interface LoaderRun extends LoaderCache {
 	pages: number;
 }
 
+/**
+ * What the MCP server may do with a section. Off by default — a tool that can
+ * send authenticated requests is a confused deputy, so exposure is a decision
+ * made per collection.
+ */
+export interface McpAccess {
+	/** Whether agents can see this collection at all. */
+	enabled: boolean;
+	/** Whether they may use anything but GET, HEAD and OPTIONS. */
+	allowWrites: boolean;
+}
+
 /** A group of requests sharing a base URL. */
 export interface Section {
 	id: string;
@@ -215,6 +227,7 @@ export interface Section {
 	collapsed: boolean;
 	auth: AuthConfig;
 	loader?: LoaderConfig | null;
+	mcp: McpAccess;
 	/** Hand-written requests. */
 	requests: SavedRequest[];
 	/** User data for *loaded* endpoints, keyed by `id` = `"GET /path"`. */

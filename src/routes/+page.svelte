@@ -54,7 +54,9 @@
 	const mine = $derived(history.forRequest(requestKey));
 
 	$effect(() => {
-		collections.load();
+		// Loaders with a TTL refresh after the cached endpoints are on screen,
+		// never before — a slow discovery endpoint mustn't delay startup.
+		collections.load().then(() => collections.refreshStale());
 		history.load();
 		return theme.init();
 	});

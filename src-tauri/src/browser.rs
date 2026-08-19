@@ -656,6 +656,7 @@ mod tests {
                 secret_ref: "sec-1:auth".into(),
             },
             loader: None,
+            mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
         }

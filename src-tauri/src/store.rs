@@ -36,6 +36,11 @@ pub struct Section {
     /// sections.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loader: Option<LoaderConfig>,
+    /// What the MCP server may do with this section. Off by default: a tool
+    /// that can send authenticated requests is a confused deputy, so exposure
+    /// is a decision the user makes per collection.
+    #[serde(default)]
+    pub mcp: McpAccess,
     /// Hand-written requests.
     #[serde(default)]
     pub requests: Vec<SavedRequest>,
@@ -46,6 +51,17 @@ pub struct Section {
     /// ten minutes writing. See §6 of the design doc.
     #[serde(default)]
     pub overlay: Vec<SavedRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpAccess {
+    /// Whether agents can see this section at all.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Whether they may use anything but GET, HEAD and OPTIONS.
+    #[serde(default)]
+    pub allow_writes: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,6 +291,7 @@ mod tests {
             collapsed: false,
             auth: crate::auth::AuthConfig::None,
             loader: None,
+            mcp: Default::default(),
             requests: vec![SavedRequest {
                 id: "req1".into(),
                 name: "Get user".into(),
@@ -326,6 +343,7 @@ mod tests {
                 collapsed: false,
                 auth: crate::auth::AuthConfig::None,
                 loader: None,
+                mcp: Default::default(),
                 requests: vec![],
                 overlay: vec![],
             },

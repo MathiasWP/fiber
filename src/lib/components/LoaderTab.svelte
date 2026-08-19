@@ -255,18 +255,34 @@
 		</div>
 	</div>
 
-	<label class="flex flex-col gap-1">
-		<span class="text-xs text-muted">Next page (optional)</span>
-		<input
-			bind:value={section.loader.next}
-			spellcheck="false"
-			placeholder=".links.next"
-			class="input-base text-xs font-mono selectable"
-		/>
-		<span class="text-2.5 text-muted">
-			A filter yielding the next page's URL, or null when there are no more.
-		</span>
-	</label>
+	<div class="grid grid-cols-[2fr_1fr] gap-2">
+		<label class="flex flex-col gap-1">
+			<span class="text-xs text-muted">Next page (optional)</span>
+			<input
+				bind:value={section.loader.next}
+				spellcheck="false"
+				placeholder=".links.next"
+				class="input-base text-xs font-mono selectable"
+			/>
+			<span class="text-2.5 text-muted">
+				A filter yielding the next page's URL, or null when there are no more.
+			</span>
+		</label>
+
+		<label class="flex flex-col gap-1">
+			<span class="text-xs text-muted">Refresh after (s)</span>
+			<input
+				type="number"
+				min="0"
+				bind:value={section.loader.ttlSeconds}
+				class="input-base text-xs font-mono"
+			/>
+			<span class="text-2.5 text-muted">
+				0 only when asked. Otherwise refreshed in the background at startup once the cache is
+				older than this.
+			</span>
+		</label>
+	</div>
 
 	{#if runSummary}
 		<p class="text-2.5 text-ok">{runSummary}</p>

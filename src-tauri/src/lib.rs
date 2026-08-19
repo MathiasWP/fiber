@@ -2,6 +2,7 @@ mod auth;
 mod browser;
 mod history;
 mod loader;
+pub mod mcp;
 mod http;
 mod secrets;
 mod store;
@@ -70,7 +71,7 @@ async fn send_request(
 ///
 /// `lookup` resolves a keychain reference. Injected so the retry logic can be
 /// tested without touching the real keychain.
-async fn send_authenticated<F>(
+pub(crate) async fn send_authenticated<F>(
     http_state: &HttpState,
     auth_state: &AuthState,
     section: Option<&Section>,
@@ -605,6 +606,7 @@ mod tests {
                 secret_ref: "sec-1:login".into(),
             },
             loader: None,
+            mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
         }

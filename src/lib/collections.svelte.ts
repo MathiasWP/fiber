@@ -121,6 +121,25 @@ class Collections {
 		}
 	}
 
+	/**
+	 * Re-runs loaders whose cache has aged past their TTL.
+	 *
+	 * Deliberately fire-and-forget and never awaited by startup: the cached
+	 * endpoints are already on screen, so a slow or unreachable API delays
+	 * nothing. A TTL of 0 means "only when asked".
+	 */
+	refreshStale(): void {
+		const now = Date.now();
+		for (const section of this.sections) {
+			const loader = section.loader;
+			if (!loader?.enabled || loader.ttlSeconds <= 0) continue;
+
+			const cache = this.loaderCaches[section.id];
+			const age = now - (cache?.loadedAt ?? 0);
+			if (age > loader.ttlSeconds * 1000) this.refresh(section);
+		}
+	}
+
 	/** Runs a section's loader and refreshes its cache. Never throws. */
 	async refresh(section: Section): Promise<LoaderRun | string> {
 		this.loading[section.id] = true;
@@ -197,6 +216,7 @@ class Collections {
 			baseUrl: baseUrl.trim(),
 			collapsed: false,
 			auth: { kind: 'none' },
+			mcp: { enabled: false, allowWrites: false },
 			requests: [],
 			overlay: []
 		};

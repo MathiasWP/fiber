@@ -308,6 +308,7 @@ mod tests {
             collapsed: false,
             auth,
             loader: None,
+            mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
         }

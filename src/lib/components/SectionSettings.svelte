@@ -233,9 +233,31 @@
 							/>
 						</label>
 
-						<p class="text-2.5 text-muted leading-relaxed">
-							Dynamic endpoint loaders will live here too.
-						</p>
+						<div class="rounded border border-border p-3 flex flex-col gap-2">
+							<div class="flex items-center gap-2">
+								<span class="i-lucide-bot text-3 text-muted"></span>
+								<span class="text-xs font-medium">Share with agents (MCP)</span>
+							</div>
+
+							<label class="flex items-center gap-1.5 text-xs">
+								<input type="checkbox" bind:checked={section.mcp.enabled} />
+								Let agents see and call this collection
+							</label>
+							<label class="flex items-center gap-1.5 text-xs {section.mcp.enabled ? '' : 'opacity-40'}">
+								<input
+									type="checkbox"
+									disabled={!section.mcp.enabled}
+									bind:checked={section.mcp.allowWrites}
+								/>
+								Allow more than GET, HEAD and OPTIONS
+							</label>
+
+							<p class="text-2.5 text-muted leading-relaxed">
+								Off by default. An agent calling this collection is authenticated as you, so
+								nothing is exposed until you say so — a collection that isn't shared is invisible,
+								not merely read-only. Credentials are never returned to the agent.
+							</p>
+						</div>
 					</Tabs.Content>
 
 					<Tabs.Content value="loader" class="p-4 flex flex-col gap-3">

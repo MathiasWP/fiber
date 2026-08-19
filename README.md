@@ -99,6 +99,25 @@ it stays safe to share or commit. There is no command to read a secret back out
 
 An `Authorization` header typed on a request overrides the section's auth.
 
+## MCP
+
+The same binary is the MCP server:
+
+```jsonc
+// e.g. Claude Code's mcp config
+{ "fetch": { "command": "/path/to/fetch", "args": ["mcp"] } }
+```
+
+It reads the same collections on disk and needs no running app. **Nothing is
+exposed until you share it** — per collection, under *Section settings →
+General*, with a second switch for anything beyond GET/HEAD/OPTIONS. A collection
+you haven't shared is invisible, not merely read-only. Credentials are applied to
+outgoing requests and redacted from everything returned.
+
+Two of the tools exist for jq specifically: `loader_manifest` fetches your raw
+manifest and `try_loader_filter` tests a candidate filter against it — so you can
+ask an agent to write a loader filter for you rather than learning jq first.
+
 ## Status
 
 Steps 1–4 of the build order in the design doc: send requests from Rust, write a
@@ -108,4 +127,6 @@ history that survives restarts, and authenticate without babysitting tokens.
 History is SQLite in the app data dir, bucketed per request — the newest 50 per
 request, nothing older than 30 days. Bodies over 256KB spill to files.
 
-Not built yet: dynamic loaders, MCP server.
+Loaders keep a section's endpoints in step with the API: fetch its route
+manifest, map it with a jq filter. Filters are pure, so the editor previews them
+against a fetched sample as you type.
