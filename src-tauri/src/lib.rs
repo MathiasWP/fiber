@@ -233,11 +233,65 @@ fn browser_close(app: AppHandle, section_id: String) {
     browser::close(&app, &section_id);
 }
 
+/// Builds the fetcher a loader uses. Requests go through exactly the same path
+/// as one you'd send by hand — same base URL, same auth, same 401 refresh —
+/// because a discovery endpoint is usually behind the same login as everything
+/// it describes.
+fn loader_fetcher(
+    app: &AppHandle,
+    http_state: &Arc<HttpState>,
+    auth_state: &Arc<AuthState>,
+    section: &Section,
+) -> loader::Fetcher {
+    let http = http_state.clone();
+    let auth = auth_state.clone();
+    let app = app.clone();
+    let section = section.clone();
+
+    Arc::new(move |request: loader::LoaderRequest| {
+        let http = http.clone();
+        let auth = auth.clone();
+        let app = app.clone();
+        let section = section.clone();
+
+        Box::pin(async move {
+            let spec = RequestSpec {
+                id: format!("loader:{}", section.id),
+                request_id: String::new(),
+                section_id: Some(section.id.clone()),
+                method: request.method,
+                url: store::join_url(&section.base_url, &request.url),
+                headers: vec![http::Header {
+                    name: "Accept".into(),
+                    value: "application/json".into(),
+                }],
+                body: None,
+                timeout_ms: Some(30_000),
+                follow_redirects: true,
+                accept_invalid_certs: false,
+            };
+
+            let response =
+                send_authenticated(&http, &auth, Some(&section), spec, &secrets::get, Some(&app))
+                    .await
+                    .map_err(|err| err.to_string())?;
+
+            Ok(loader::LoaderResponse {
+                status: response.status,
+                body: response.body,
+            })
+        })
+    })
+}
+
+fn section_for_loader(paths: &Paths, id: &str) -> Result<Section, LoaderError> {
+    store::load_one(&paths.sections, id)
+        .ok()
+        .flatten()
+        .ok_or(LoaderError::NoUrl)
+}
+
 /// Runs a section's loader and caches what it reported.
-///
-/// The loader's `fetch` goes through exactly the same path as a request you'd
-/// send by hand — same base URL, same auth, same 401 refresh — which is what
-/// lets a loader call a discovery endpoint that's behind a login.
 #[tauri::command]
 async fn run_loader(
     app: AppHandle,
@@ -246,75 +300,11 @@ async fn run_loader(
     paths: State<'_, Paths>,
     section_id: String,
 ) -> Result<LoaderRun, LoaderError> {
-    let section = store::load_one(&paths.sections, &section_id)
-        .ok()
-        .flatten()
-        .ok_or_else(|| LoaderError::Engine(format!("no section `{section_id}`")))?;
+    let section = section_for_loader(&paths, &section_id)?;
+    let config = section.loader.clone().ok_or(LoaderError::NoUrl)?;
+    let fetcher = loader_fetcher(&app, http_state.inner(), auth_state.inner(), &section);
 
-    let source = section
-        .loader
-        .as_ref()
-        .map(|loader| loader.source.clone())
-        .ok_or(LoaderError::Empty)?;
-
-    // Cloned into the fetcher because it outlives this call's borrows.
-    let http = http_state.inner().clone();
-    let auth = auth_state.inner().clone();
-    let app_handle = app.clone();
-    let owned = section.clone();
-
-    let fetcher: loader::Fetcher = Arc::new(move |request: loader::LoaderRequest| {
-        let http = http.clone();
-        let auth = auth.clone();
-        let app_handle = app_handle.clone();
-        let section = owned.clone();
-
-        Box::pin(async move {
-            let spec = RequestSpec {
-                id: format!("loader:{}", section.id),
-                request_id: String::new(),
-                section_id: Some(section.id.clone()),
-                method: if request.method.trim().is_empty() {
-                    "GET".into()
-                } else {
-                    request.method
-                },
-                url: store::join_url(&section.base_url, &request.path),
-                headers: request
-                    .headers
-                    .into_iter()
-                    .map(|(name, value)| http::Header { name, value })
-                    .collect(),
-                body: request.body,
-                timeout_ms: Some(30_000),
-                follow_redirects: true,
-                accept_invalid_certs: false,
-            };
-
-            let response = send_authenticated(
-                &http,
-                &auth,
-                Some(&section),
-                spec,
-                &secrets::get,
-                Some(&app_handle),
-            )
-            .await
-            .map_err(|err| err.to_string())?;
-
-            Ok(loader::LoaderResponse {
-                status: response.status,
-                headers: response
-                    .headers
-                    .into_iter()
-                    .map(|header| (header.name, header.value))
-                    .collect(),
-                body: response.body,
-            })
-        })
-    });
-
-    let (endpoints, logs) = loader::run(&source, fetcher).await?;
+    let (endpoints, pages) = loader::run(&config, fetcher).await?;
 
     let previous = loader::read_cache(&paths.loaders, &section_id).unwrap_or_default();
     let (added, removed) = loader::diff(&previous.endpoints, &endpoints);
@@ -333,11 +323,58 @@ async fn run_loader(
 
     Ok(LoaderRun {
         endpoints,
-        logs,
         added,
         removed,
         loaded_at,
+        pages,
     })
+}
+
+/// Fetches the manifest and returns it untouched, for the filter editor to
+/// preview against. Separate from running the filter so typing re-maps the
+/// document that's already in hand instead of hammering the API.
+#[tauri::command]
+async fn loader_probe(
+    app: AppHandle,
+    http_state: State<'_, Arc<HttpState>>,
+    auth_state: State<'_, Arc<AuthState>>,
+    paths: State<'_, Paths>,
+    section_id: String,
+) -> Result<serde_json::Value, LoaderError> {
+    let section = section_for_loader(&paths, &section_id)?;
+    let config = section.loader.clone().ok_or(LoaderError::NoUrl)?;
+    if config.url.trim().is_empty() {
+        return Err(LoaderError::NoUrl);
+    }
+
+    let fetcher = loader_fetcher(&app, http_state.inner(), auth_state.inner(), &section);
+    let method = match config.method.trim() {
+        "" => "GET".to_string(),
+        method => method.to_string(),
+    };
+
+    let response = fetcher(loader::LoaderRequest {
+        url: config.url.trim().to_string(),
+        method,
+    })
+    .await
+    .map_err(LoaderError::Fetch)?;
+
+    if !(200..300).contains(&response.status) {
+        return Err(LoaderError::Status(response.status));
+    }
+    serde_json::from_str(&response.body).map_err(|err| LoaderError::NotJson(err.to_string()))
+}
+
+/// Applies a filter to a document already in hand. Pure — no network, no
+/// section, no state — which is what lets the editor re-run it on every
+/// keystroke, and what makes it safe to hand to an agent.
+#[tauri::command]
+fn loader_preview(
+    document: serde_json::Value,
+    query: String,
+) -> Result<Vec<loader::LoadedEndpoint>, LoaderError> {
+    loader::to_endpoints(&loader::apply(&query, &document)?)
 }
 
 /// The last successful run, read from disk. Lets the UI show endpoints
@@ -348,8 +385,17 @@ fn loader_cache(paths: State<'_, Paths>, section_id: String) -> loader::LoaderCa
 }
 
 #[tauri::command]
-fn default_loader_source() -> &'static str {
-    loader::DEFAULT_SOURCE
+fn default_loader() -> loader::LoaderConfig {
+    loader::LoaderConfig::default()
+}
+
+/// Worked filters for the manifest shapes people actually hit.
+#[tauri::command]
+fn loader_examples() -> Vec<(String, String)> {
+    loader::EXAMPLES
+        .iter()
+        .map(|(name, query)| (name.to_string(), query.to_string()))
+        .collect()
 }
 
 #[tauri::command]
@@ -383,7 +429,6 @@ fn history_clear_all(log: State<'_, HistoryStore>) -> Result<(), HistoryError> {
     log.clear_all()
 }
 
-/// Returns whether a request with this id was actually in flight.
 #[tauri::command]
 fn cancel_request(state: State<'_, Arc<HttpState>>, id: String) -> bool {
     state.cancel(&id)
@@ -452,8 +497,11 @@ pub fn run() {
             browser_capture,
             browser_close,
             run_loader,
+            loader_probe,
+            loader_preview,
             loader_cache,
-            default_loader_source
+            default_loader,
+            loader_examples
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

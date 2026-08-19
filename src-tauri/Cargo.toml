@@ -31,8 +31,9 @@ reqwest = { version = "0.13.4", features = ["cookies", "gzip", "brotli", "deflat
 toml = "1.1.4"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
-rquickjs = { version = "0.12.2", features = ["futures", "parallel"] }
-oxc = { version = "0.110.0", features = ["transformer", "codegen", "semantic"] }
+jaq-core = "3.1.0"
+jaq-std = "3.0.2"
+jaq-json = "2.0.2"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }

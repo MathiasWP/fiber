@@ -170,10 +170,20 @@ export function browserClose(sectionId: string): Promise<void> {
 	return invoke<void>('browser_close', { sectionId });
 }
 
-/** A script that reports a section's endpoints. TypeScript is allowed. */
+/**
+ * How a section discovers its endpoints: fetch a manifest, map it with a jq
+ * filter. A filter is a transformation, not a program — it can't reach anything
+ * but the document, which is what lets the editor preview it as you type.
+ */
 export interface LoaderConfig {
 	enabled: boolean;
-	source: string;
+	/** Where the manifest lives, relative to the section's base URL. */
+	url: string;
+	method: string;
+	/** jq filter producing `{method, path, name?}` objects. */
+	query: string;
+	/** jq filter yielding the next page's URL, or null when done. */
+	next: string;
 	/** 0 means "only when asked". */
 	ttlSeconds: number;
 }
@@ -192,9 +202,9 @@ export interface LoaderCache {
 }
 
 export interface LoaderRun extends LoaderCache {
-	logs: string[];
 	added: string[];
 	removed: string[];
+	pages: number;
 }
 
 /** A group of requests sharing a base URL. */
@@ -226,8 +236,26 @@ export function loaderCache(sectionId: string): Promise<LoaderCache> {
 	return invoke<LoaderCache>('loader_cache', { sectionId });
 }
 
-export function defaultLoaderSource(): Promise<string> {
-	return invoke<string>('default_loader_source');
+/** Fetches the manifest untouched, for the filter editor to preview against. */
+export function loaderProbe(sectionId: string): Promise<unknown> {
+	return invoke<unknown>('loader_probe', { sectionId });
+}
+
+/**
+ * Applies a filter to a document already in hand. Pure — no network, no
+ * section — so it's safe to call on every keystroke.
+ */
+export function loaderPreview(document: unknown, query: string): Promise<LoadedEndpoint[]> {
+	return invoke<LoadedEndpoint[]>('loader_preview', { document, query });
+}
+
+export function defaultLoader(): Promise<LoaderConfig> {
+	return invoke<LoaderConfig>('default_loader');
+}
+
+/** Worked filters for the manifest shapes people actually hit. */
+export function loaderExamples(): Promise<[string, string][]> {
+	return invoke<[string, string][]>('loader_examples');
 }
 
 /** Write-only by design: there is no command to read a secret back out. */

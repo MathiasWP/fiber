@@ -4,7 +4,6 @@
 		browserCapture,
 		browserClose,
 		browserSignIn,
-		defaultLoaderSource,
 		deleteSecret,
 		forgetToken,
 		hasSecret,
@@ -15,7 +14,7 @@
 	} from '$lib/api';
 	import { collections } from '$lib/collections.svelte';
 	import CapturePicker from './CapturePicker.svelte';
-	import Editor from './Editor.svelte';
+	import LoaderTab from './LoaderTab.svelte';
 
 	interface Props {
 		/** The section being edited, or null when closed. */
@@ -33,54 +32,6 @@
 	let secretSaved = $state(false);
 	let pickerOpen = $state(false);
 	let captureError = $state<string | null>(null);
-	let loaderError = $state<string | null>(null);
-	let loaderSummary = $state<string | null>(null);
-	let loaderLogs = $state<string[]>([]);
-
-	const running = $derived(section ? collections.loading[section.id] === true : false);
-	const loaderCount = $derived(
-		section && collections.loaderCaches[section.id]
-			? collections.loaderCaches[section.id].endpoints.length
-			: null
-	);
-
-	async function addLoader() {
-		if (!section) return;
-		section.loader = { enabled: true, source: await defaultLoaderSource(), ttlSeconds: 0 };
-		await collections.flush(section);
-	}
-
-	async function removeLoader() {
-		if (!section) return;
-		section.loader = null;
-		loaderError = null;
-		loaderSummary = null;
-		loaderLogs = [];
-		await collections.flush(section);
-	}
-
-	async function runNow(target: Section) {
-		loaderError = null;
-		loaderSummary = null;
-		loaderLogs = [];
-		// The loader runs from the section on disk, so persist the edits first.
-		await collections.flush(target);
-
-		const outcome = await collections.refresh(target);
-		if (typeof outcome === 'string') {
-			loaderError = outcome;
-			return;
-		}
-
-		loaderLogs = outcome.logs;
-		const changes = [
-			outcome.added.length ? `${outcome.added.length} new` : '',
-			outcome.removed.length ? `${outcome.removed.length} removed` : ''
-		].filter(Boolean);
-		loaderSummary = `${outcome.endpoints.length} endpoints${
-			changes.length ? ` · ${changes.join(', ')}` : ''
-		}`;
-	}
 
 	const open = $derived(section !== null);
 
@@ -288,68 +239,7 @@
 					</Tabs.Content>
 
 					<Tabs.Content value="loader" class="p-4 flex flex-col gap-3">
-						{#if !section.loader}
-							<p class="text-xs text-muted leading-relaxed">
-								A loader is a script that returns this section's endpoints, for APIs that
-								publish their own route manifest. Its <code class="font-mono">fetch</code> uses
-								this section's base URL and auth, so it can call an endpoint that's behind a
-								login.
-							</p>
-							<div>
-								<button class="btn-primary text-xs" onclick={addLoader}>
-									<span class="i-lucide-plus"></span>
-									Add a loader
-								</button>
-							</div>
-						{:else}
-							<div class="flex items-center gap-2">
-								<label class="flex items-center gap-1.5 text-xs">
-									<input type="checkbox" bind:checked={section.loader.enabled} />
-									Enabled
-								</label>
-								<span class="ml-auto text-2.5 text-muted">
-									{loaderCount === null ? 'never run' : `${loaderCount} endpoints`}
-								</span>
-								<button
-									class="btn-ghost text-xs"
-									disabled={running}
-									onclick={() => section && runNow(section)}
-								>
-									{#if running}
-										<span class="i-lucide-loader-circle animate-spin"></span>
-									{/if}
-									Run now
-								</button>
-								<button class="btn-ghost text-xs" onclick={removeLoader}>Remove</button>
-							</div>
-
-							<div class="h-64 rounded border border-border overflow-hidden">
-								<Editor bind:value={section.loader.source} language="typescript" />
-							</div>
-
-							<p class="text-2.5 text-muted leading-relaxed">
-								Define <code class="font-mono">async function load()</code> returning
-								<code class="font-mono">{'{ method, path, name? }'}</code> objects. TypeScript is
-								fine — types are stripped before it runs.
-							</p>
-
-							{#if loaderError}
-								<p class="text-2.5 text-bad font-mono whitespace-pre-wrap">{loaderError}</p>
-							{/if}
-
-							{#if loaderSummary}
-								<p class="text-2.5 text-ok">{loaderSummary}</p>
-							{/if}
-
-							{#if loaderLogs.length}
-								<div class="rounded border border-border p-2 max-h-32 overflow-y-auto">
-									<p class="text-2.5 text-muted mb-1">console</p>
-									{#each loaderLogs as line, index (index)}
-										<p class="font-mono text-2.5 selectable">{line}</p>
-									{/each}
-								</div>
-							{/if}
-						{/if}
+						<LoaderTab {section} />
 					</Tabs.Content>
 
 					<Tabs.Content value="auth" class="p-4 flex flex-col gap-3">
