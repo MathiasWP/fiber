@@ -1,6 +1,12 @@
 <script lang="ts">
 	import { ContextMenu, Dialog } from 'bits-ui';
-	import { methodColor, statusColor, type SavedRequest, type Section } from '$lib/api';
+	import {
+		LOOSE_SECTION_ID,
+		methodColor,
+		statusColor,
+		type SavedRequest,
+		type Section
+	} from '$lib/api';
 	import { collections, fuzzyScore, type LoadedRow } from '$lib/collections.svelte';
 	import { requestRow as dragRequest, sectionHeader, watchDrops, type DropHint } from '$lib/dnd.svelte';
 	import { history, type HistoryEntry } from '$lib/history.svelte';
@@ -102,6 +108,18 @@
 		await collections.createLooseRequest();
 	}
 
+	/** Everywhere a request could move to, other than where it already is. */
+	function moveTargets(from: Section): { id: string; name: string }[] {
+		const targets = collections.collectionSections
+			.filter((section) => section.id !== from.id)
+			.map((section) => ({ id: section.id, name: section.name }));
+
+		if (from.id !== LOOSE_SECTION_ID) {
+			targets.push({ id: LOOSE_SECTION_ID, name: 'No collection' });
+		}
+		return targets;
+	}
+
 	function refresh(section: Section) {
 		collections.refresh(section);
 	}
@@ -159,25 +177,33 @@
 		});
 	});
 
-	/** Which row a drop would land on, and which side. Keyed by row id. */
-	let hints = $state<Record<string, DropHint | 'into'>>({});
+	/**
+	 * Where a drop would land — one place at a time, deliberately.
+	 *
+	 * The gap between two rows is a single position, but it has two names:
+	 * below the row above, and above the row below. Keeping a hint per row let
+	 * both be set at once and drew two lines in the one gap. A single hint can't.
+	 */
+	let hint = $state<{ id: string; kind: 'above' | 'below' | 'into' } | null>(null);
 
-	function setHint(id: string, hint: DropHint | 'into') {
-		if (hint) hints[id] = hint;
-		else delete hints[id];
+	function setHint(id: string, next: DropHint | 'into') {
+		if (!next) {
+			// Only clear our own: the row being left often reports after the row
+			// being entered has already claimed the hint.
+			if (hint?.id === id) hint = null;
+			return;
+		}
+		hint = { id, kind: next === 'into' ? 'into' : next.edge === 'top' ? 'above' : 'below' };
 	}
 
 	function edgeClass(id: string): string {
-		const hint = hints[id];
-		if (hint === 'into') return 'drop-into';
-		if (hint?.edge === 'top') return 'drop-above';
-		if (hint?.edge === 'bottom') return 'drop-below';
-		return '';
+		if (hint?.id !== id) return '';
+		return hint.kind === 'into' ? 'drop-into' : hint.kind === 'above' ? 'drop-above' : 'drop-below';
 	}
 
 	$effect(() =>
 		watchDrops((outcome) => {
-			hints = {};
+			hint = null;
 			if (outcome.request) {
 				collections.moveRequest(outcome.request.from, outcome.request.to);
 			} else if (outcome.section) {
@@ -202,7 +228,7 @@
 			ref: { sectionId: section.id, requestId: request.id },
 			onHint: (hint) => setHint(request.id, hint)
 		}}
-		class="transition-shadow {edgeClass(request.id)}"
+		class="draggable-row transition-shadow {edgeClass(request.id)}"
 	>
 		<ContextMenu.Root>
 		<ContextMenu.Trigger
@@ -247,6 +273,33 @@
 					<span class="i-lucide-link text-3"></span>
 					Copy URL
 				</ContextMenu.Item>
+
+				<!-- Dragging is the quick way; this is the one that always works,
+				     and the only one available from the keyboard. -->
+				{#if moveTargets(section).length}
+					<ContextMenu.Sub>
+						<ContextMenu.SubTrigger class="menu-item">
+							<span class="i-lucide-corner-down-right text-3"></span>
+							Move to
+							<span class="i-lucide-chevron-right text-3 ml-auto"></span>
+						</ContextMenu.SubTrigger>
+						<ContextMenu.SubContent class="menu-content">
+							{#each moveTargets(section) as target (target.id)}
+								<ContextMenu.Item
+									class="menu-item"
+									onSelect={() =>
+										collections.moveRequest(
+											{ sectionId: section.id, requestId: request.id },
+											{ sectionId: target.id }
+										)}
+								>
+									{target.name}
+								</ContextMenu.Item>
+							{/each}
+						</ContextMenu.SubContent>
+					</ContextMenu.Sub>
+				{/if}
+
 				<ContextMenu.Separator class="menu-separator" />
 				<ContextMenu.Item
 					class="menu-item-bad"
@@ -398,7 +451,7 @@
 							ref: { sectionId: section.id },
 							onHint: (hint) => setHint(section.id, hint)
 						}}
-						class="transition-shadow {edgeClass(section.id)}"
+						class="draggable-row transition-shadow {edgeClass(section.id)}"
 					>
 					<ContextMenu.Root>
 						<ContextMenu.Trigger

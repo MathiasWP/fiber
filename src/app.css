@@ -97,6 +97,18 @@ body {
 	background-color: rgb(var(--c-raised) / 0.6) !important;
 }
 
+/* The window sets `user-select: none`, and WebKit won't start an HTML5 drag
+   from an unselectable element unless it's told to explicitly. Without this the
+   rows simply never begin dragging. */
+.draggable-row {
+	-webkit-user-drag: element;
+	cursor: grab;
+}
+
+.draggable-row:active {
+	cursor: grabbing;
+}
+
 /* Drop indicators. Plain CSS rather than arbitrary utilities: these class names
    are chosen at runtime, and an arbitrary value containing `rgb(var(--…))`
    isn't picked up by the class scanner — it would silently render nothing. */

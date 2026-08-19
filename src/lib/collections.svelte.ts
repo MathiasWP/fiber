@@ -135,23 +135,28 @@ class Collections {
 	 * first use, so an app that never needs one never grows the file.
 	 */
 	async createLooseRequest(): Promise<SavedRequest> {
-		let section = this.looseSection;
-		if (!section) {
-			section = {
-				id: LOOSE_SECTION_ID,
-				name: 'Loose requests',
-				baseUrl: '',
-				collapsed: false,
-				order: -1,
-				auth: { kind: 'none' },
-				mcp: { enabled: false, allowWrites: false },
-				requests: [],
-				overlay: []
-			};
-			this.sections = [...this.sections, section];
-		}
 		// No base URL to hang a path off, so it starts empty and takes a full URL.
-		return this.createRequest(section, 'New request', '');
+		return this.createRequest(this.ensureLooseSection(), 'New request', '');
+	}
+
+	/** The reserved section, created if this is the first thing to need it. */
+	ensureLooseSection(): Section {
+		const existing = this.looseSection;
+		if (existing) return existing;
+
+		const section: Section = {
+			id: LOOSE_SECTION_ID,
+			name: 'Loose requests',
+			baseUrl: '',
+			collapsed: false,
+			order: -1,
+			auth: { kind: 'none' },
+			mcp: { enabled: false, allowWrites: false },
+			requests: [],
+			overlay: []
+		};
+		this.sections = [...this.sections, section];
+		return section;
 	}
 
 	/**
@@ -166,7 +171,12 @@ class Collections {
 		to: { sectionId: string; requestId?: string; edge?: 'top' | 'bottom' }
 	): Promise<void> {
 		const source = this.sections.find((section) => section.id === from.sectionId);
-		const target = this.sections.find((section) => section.id === to.sectionId);
+		// Moving something out of every collection is what creates the loose
+		// section, if nothing has needed it yet.
+		const target =
+			to.sectionId === LOOSE_SECTION_ID
+				? this.ensureLooseSection()
+				: this.sections.find((section) => section.id === to.sectionId);
 		if (!source || !target) return;
 
 		const at = source.requests.findIndex((request) => request.id === from.requestId);
