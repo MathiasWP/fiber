@@ -28,13 +28,18 @@ src/
   routes/+page.svelte             url bar, body editor, response viewer
   lib/api.ts                      typed wrapper over the Tauri commands
   lib/collections.svelte.ts       sections mirrored from disk, debounced autosave
-  lib/history.svelte.ts           session history (SQLite in step 3)
+  lib/history.svelte.ts           history, bucketed per request
+  lib/components/LoaderTab.svelte jq filter editor with live preview
   lib/components/Sidebar.svelte   sections, search, history
   lib/components/CommandPalette.svelte   ⌘K search across every endpoint
   lib/components/Editor.svelte    CodeMirror 6 wrapper
 src-tauri/
   src/http.rs                     the HTTP core — reqwest, streaming, cancellation
   src/store.rs                    collections as TOML on disk, URL resolution
+  src/auth.rs                     token cache, 401 refresh
+  src/browser.rs                  browser session capture
+  src/loader.rs                   jq-based endpoint discovery
+  src/mcp.rs                      the MCP server
   src/lib.rs                      Tauri commands
 ```
 
@@ -120,9 +125,10 @@ ask an agent to write a loader filter for you rather than learning jq first.
 
 ## Status
 
-Steps 1–4 of the build order in the design doc: send requests from Rust, write a
+Steps 1–6 of the build order in the design doc: send requests from Rust, write a
 JSON body, read the response, organise requests into sections on disk, keep
-history that survives restarts, and authenticate without babysitting tokens.
+history that survives restarts, authenticate without babysitting tokens, keep
+endpoints in step with the API, and serve the lot over MCP.
 
 History is SQLite in the app data dir, bucketed per request — the newest 50 per
 request, nothing older than 30 days. Bodies over 256KB spill to files.
