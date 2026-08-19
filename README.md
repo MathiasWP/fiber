@@ -82,18 +82,16 @@ would, then *Pick credential…* — you can close the sign-in window first, the
 session is remembered. The app lists everything the session holds, searchable and
 ranked with the likeliest first:
 
-- every **cookie**, HttpOnly included — the page can't read those, but this app can
-- every **localStorage** entry, flattened to leaf paths
+- every **cookie** in the session — HttpOnly included, and from every domain, not
+  just the API base and login URL
+- every **localStorage** entry, flattened to leaf paths, with MSAL v4's encrypted
+  entries decrypted in place
 - every **IndexedDB** record, addressed as `database/store/key` — this is where
   Firebase's SDK keeps its session by default
 
 Values matching a known provider's documented storage format are labelled and
 sorted to the top: Auth0, Supabase, Firebase, MSAL, Cognito, Okta, Clerk,
-Keycloak, Auth.js/NextAuth and others (`src/lib/providers.ts`).
-
-One thing capture can't read, in case the list comes up empty: **encrypted SDK
-storage** (MSAL v4 without "keep me signed in"). A cookie is usually still
-capturable in that case.
+Keycloak, Auth.js/NextAuth, Better Auth and others (`src/lib/providers.ts`).
 
 Credentials live in the OS keychain; the section file holds only a reference, so
 it stays safe to share or commit. There is no command to read a secret back out

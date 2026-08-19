@@ -102,6 +102,21 @@ const RULES: Rule[] = [
 		weight: 45
 	},
 	{ provider: 'Auth0', where: 'cookie', key: /^appSession$/, weight: 45 },
+	{
+		provider: 'Better Auth',
+		where: 'cookie',
+		// `${prefix}.session_token`, with `__Secure-`/`__Host-` added when secure.
+		// The prefix defaults to `better-auth` but is commonly renamed per
+		// environment, e.g. __Secure-auth-staging.session_token.
+		key: /^(__Secure-|__Host-)?[\w-]*\.?session_token$/,
+		weight: 45
+	},
+	{
+		provider: 'Better Auth',
+		where: 'cookie',
+		key: /^(__Secure-|__Host-)?[\w-]*\.?session_data$/,
+		weight: 30
+	},
 	{ provider: 'Keycloak', where: 'cookie', key: /^(KEYCLOAK_(IDENTITY|SESSION)|kc-access)$/, weight: 40 },
 	{ provider: 'SuperTokens', where: 'cookie', key: /^sAccessToken$/, weight: 40 },
 	{ provider: 'Ory', where: 'cookie', key: /^ory_(kratos_)?session/, weight: 40 },

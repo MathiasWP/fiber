@@ -38,9 +38,10 @@ const SILENT_INTERVAL: Duration = Duration::from_millis(500);
 /// reading.
 const LOAD_ATTEMPTS: usize = 8;
 const LOAD_INTERVAL: Duration = Duration::from_millis(400);
-/// IndexedDB is read asynchronously in the page, so we poll for the result.
-const INDEXED_ATTEMPTS: usize = 10;
-const INDEXED_INTERVAL: Duration = Duration::from_millis(250);
+/// IndexedDB reads and MSAL decryption both run asynchronously in the page and
+/// park their result, so we poll for it.
+const PARKED_ATTEMPTS: usize = 10;
+const PARKED_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -297,15 +298,125 @@ const INDEXED_DB_JS: &str = r#"
 })()
 "#;
 
-async fn read_indexed_db(window: &WebviewWindow) -> Vec<IndexedEntry> {
-    for attempt in 0..INDEXED_ATTEMPTS {
-        if attempt > 0 {
-            tokio::time::sleep(INDEXED_INTERVAL).await;
+/// MSAL v4 encrypts its localStorage cache unless the user ticked "keep me
+/// signed in", which would otherwise leave a Microsoft-authenticated section
+/// with nothing to capture.
+///
+/// The scheme is documented by its own source: the base key lives in a
+/// `msal.cache.encryption` session cookie as `{"id","key"}` with the key
+/// url-safe base64; each entry is `{"id","nonce","data"}`; the per-entry key is
+/// HKDF-SHA256 over the base key with the 16-byte nonce as salt and the app's
+/// clientId as info; the cipher is AES-GCM-256 with a zero 12-byte IV.
+///
+/// We don't know the clientId, but MSAL only uses it as context when the cache
+/// key contains it — so it's always either empty or a GUID inside the key
+/// itself. Trying that short list is enough, and AES-GCM authentication rejects
+/// a wrong guess cleanly rather than yielding garbage.
+///
+/// MSAL is explicit that this encryption exists to limit how long artifacts
+/// persist, not to secure them. Decrypting here reads the user's own session on
+/// their own machine, in the same browser profile that wrote it.
+const MSAL_DECRYPT_JS: &str = r#"
+(() => {
+  const SLOT = "__fetchMsalSnapshot";
+  const parked = window[SLOT];
+  if (parked && parked.done) return JSON.stringify(parked.items);
+  if (parked && parked.running) return "";
+  window[SLOT] = { running: true, done: false, items: [] };
+
+  const fromBase64Url = (text) => {
+    const standard = text.replace(/-/g, "+").replace(/_/g, "/");
+    const padding = (4 - (standard.length % 4)) % 4;
+    const binary = atob(standard + "=".repeat(padding));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  };
+
+  const cookie = (name) => {
+    for (const part of (document.cookie || "").split(";")) {
+      const at = part.indexOf("=");
+      if (at < 0) continue;
+      if (part.slice(0, at).trim() === name) {
+        return decodeURIComponent(part.slice(at + 1).trim());
+      }
+    }
+    return null;
+  };
+
+  const GUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/g;
+
+  const run = async () => {
+    const raw = cookie("msal.cache.encryption");
+    if (!raw) return [];
+    let envelope;
+    try { envelope = JSON.parse(raw); } catch (error) { return []; }
+    if (!envelope || typeof envelope.key !== "string") return [];
+
+    const baseKey = await crypto.subtle.importKey(
+      "raw", fromBase64Url(envelope.key), "HKDF", false, ["deriveKey"]
+    );
+
+    const items = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      const value = localStorage.getItem(key);
+      if (!value || value.charAt(0) !== "{") continue;
+
+      let blob;
+      try { blob = JSON.parse(value); } catch (error) { continue; }
+      if (!blob || typeof blob.nonce !== "string" || typeof blob.data !== "string") continue;
+
+      for (const context of [""].concat(key.match(GUID) || [])) {
+        try {
+          const derived = await crypto.subtle.deriveKey(
+            {
+              name: "HKDF",
+              hash: "SHA-256",
+              salt: fromBase64Url(blob.nonce),
+              info: new TextEncoder().encode(context)
+            },
+            baseKey,
+            { name: "AES-GCM", length: 256 },
+            false,
+            ["decrypt"]
+          );
+          const plain = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: new Uint8Array(12) },
+            derived,
+            fromBase64Url(blob.data)
+          );
+          items.push({ key, value: new TextDecoder().decode(plain) });
+          break;
+        } catch (error) {
+          // Wrong context — authentication failed, try the next candidate.
         }
-        let Ok(raw) = eval_json(window, INDEXED_DB_JS).await else {
+      }
+    }
+    return items;
+  };
+
+  run()
+    .then((items) => { window[SLOT] = { running: false, done: true, items }; })
+    .catch(() => { window[SLOT] = { running: false, done: true, items: [] }; });
+
+  return "";
+})()
+"#;
+
+/// Runs a script that parks its result on `window`, polling until it lands.
+/// `""` means "still working".
+async fn read_parked<T: serde::de::DeserializeOwned>(
+    window: &WebviewWindow,
+    js: &str,
+) -> Vec<T> {
+    for attempt in 0..PARKED_ATTEMPTS {
+        if attempt > 0 {
+            tokio::time::sleep(PARKED_INTERVAL).await;
+        }
+        let Ok(raw) = eval_json(window, js).await else {
             return Vec::new();
         };
-        // `""` while the read is still in flight; anything else is the answer.
         if raw.trim().is_empty() || raw.trim() == "\"\"" {
             continue;
         }
@@ -314,44 +425,75 @@ async fn read_indexed_db(window: &WebviewWindow) -> Vec<IndexedEntry> {
     Vec::new()
 }
 
+/// Swaps decrypted values in for the ciphertext blobs they came from, so
+/// everything downstream sees ordinary readable storage entries.
+fn merge_decrypted(entries: &mut Vec<StorageEntry>, decrypted: Vec<StorageEntry>) {
+    for entry in decrypted {
+        match entries.iter_mut().find(|existing| existing.key == entry.key) {
+            Some(existing) => existing.value = entry.value,
+            None => entries.push(entry),
+        }
+    }
+}
+
 /// Reads `localStorage` and every cookie visible to an open window.
 async fn read_session(
     window: &WebviewWindow,
     section: &Section,
 ) -> Result<Snapshot, BrowserError> {
     let (login_url, ..) = browser_config(section)?;
-    let local_storage = read_local_storage(window).await?;
+
+    let mut local_storage = read_local_storage(window).await?;
+    // MSAL entries arrive as ciphertext; put the plaintext in their place.
+    merge_decrypted(&mut local_storage, read_parked(window, MSAL_DECRYPT_JS).await);
 
     // Cookies for both origins: the API we'll be calling, and the identity
     // provider we just signed in to. Often they differ.
+    // The whole cookie store, not just the two origins we happen to know about.
+    // A sign-in commonly ends up setting the session cookie on a host that is
+    // neither the API base nor the login URL — a staging subdomain, an apex
+    // domain, the identity provider — and asking only about known URLs makes
+    // those invisible.
     let mut cookies = Vec::new();
+    let mut collect = |found: Vec<tauri::webview::Cookie<'static>>| {
+        for cookie in found {
+            let name = cookie.name().to_string();
+            let domain = cookie.domain().unwrap_or_default().to_string();
+            // Keyed by name *and* domain: the same name on two hosts is two
+            // different cookies, and only one of them is the one you want.
+            if cookies
+                .iter()
+                .any(|existing: &CookieEntry| existing.name == name && existing.domain == domain)
+            {
+                continue;
+            }
+            cookies.push(CookieEntry {
+                name,
+                value: cookie.value().to_string(),
+                domain,
+                http_only: cookie.http_only().unwrap_or(false),
+            });
+        }
+    };
+
+    if let Ok(found) = window.cookies() {
+        collect(found);
+    }
+    // Belt and braces: ask about the known origins too, in case the whole-store
+    // read under-reports on some platform.
     for candidate in [section.base_url.as_str(), login_url] {
         let Ok(url) = candidate.trim().parse() else {
             continue;
         };
         if let Ok(found) = window.cookies_for_url(url) {
-            for cookie in found {
-                let name = cookie.name().to_string();
-                if cookies
-                    .iter()
-                    .any(|existing: &CookieEntry| existing.name == name)
-                {
-                    continue;
-                }
-                cookies.push(CookieEntry {
-                    name,
-                    value: cookie.value().to_string(),
-                    domain: cookie.domain().unwrap_or_default().to_string(),
-                    http_only: cookie.http_only().unwrap_or(false),
-                });
-            }
+            collect(found);
         }
     }
 
     Ok(Snapshot {
         local_storage,
         cookies,
-        indexed_db: read_indexed_db(window).await,
+        indexed_db: read_parked(window, INDEXED_DB_JS).await,
     })
 }
 
@@ -637,6 +779,44 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn decrypted_msal_entries_replace_their_ciphertext() {
+        let mut entries = vec![
+            StorageEntry {
+                key: "acct.env-accesstoken-cid--scope".into(),
+                // What MSAL v4 actually leaves behind: an encrypted envelope.
+                value: r#"{"id":"abc","nonce":"n0nce","data":"c1ph3r"}"#.into(),
+            },
+            StorageEntry {
+                key: "untouched".into(),
+                value: "plain".into(),
+            },
+        ];
+
+        merge_decrypted(
+            &mut entries,
+            vec![
+                StorageEntry {
+                    key: "acct.env-accesstoken-cid--scope".into(),
+                    value: r#"{"secret":"tok-msal"}"#.into(),
+                },
+                StorageEntry {
+                    key: "only-in-decrypted".into(),
+                    value: "extra".into(),
+                },
+            ],
+        );
+
+        assert_eq!(entries.len(), 3, "decryption replaces, it doesn't duplicate");
+        assert_eq!(entries[0].value, r#"{"secret":"tok-msal"}"#);
+        assert_eq!(entries[1].value, "plain");
+        assert_eq!(entries[2].key, "only-in-decrypted");
+
+        // And the replaced entry now reads like any other storage value, so the
+        // ordinary capture rule finds the token.
+        assert_eq!(dig(&entries[0].value, "secret").as_deref(), Some("tok-msal"));
     }
 
     #[test]
