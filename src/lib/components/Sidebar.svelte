@@ -8,7 +8,12 @@
 		type Section
 	} from '$lib/api';
 	import { collections, fuzzyScore, type LoadedRow } from '$lib/collections.svelte';
-	import { requestRow as dragRequest, sectionHeader, watchDrops, type DropHint } from '$lib/dnd.svelte';
+	import {
+		requestRow as dragRequest,
+		sectionHeader,
+		watchDrag,
+		type DragHint
+	} from '$lib/dnd.svelte';
 	import { history, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
 
@@ -177,38 +182,59 @@
 		});
 	});
 
-	/**
-	 * Where a drop would land — one place at a time, deliberately.
-	 *
-	 * The gap between two rows is a single position, but it has two names:
-	 * below the row above, and above the row below. Keeping a hint per row let
-	 * both be set at once and drew two lines in the one gap. A single hint can't.
-	 */
-	let hint = $state<{ id: string; kind: 'above' | 'below' | 'into' } | null>(null);
+	let hint = $state<DragHint>(null);
 
-	function setHint(id: string, next: DropHint | 'into') {
-		if (!next) {
-			// Only clear our own: the row being left often reports after the row
-			// being entered has already claimed the hint.
-			if (hint?.id === id) hint = null;
-			return;
-		}
-		hint = { id, kind: next === 'into' ? 'into' : next.edge === 'top' ? 'above' : 'below' };
+	/**
+	 * The class a row should wear, given where the drop would land.
+	 *
+	 * A hint arrives as "an edge of some row", but the gap between two rows has
+	 * two such names — below the one above, above the one below — and honouring
+	 * both made the line jump between them as the pointer crossed the midpoint.
+	 * So an edge is first reduced to an insertion index, and exactly one row
+	 * draws the line for that index: the row that would be pushed down, or the
+	 * last row when the drop lands at the end.
+	 */
+	function lineFor(listId: string, rows: { id: string }[], index: number): string {
+		// Captured, so the narrowing survives into the callbacks below.
+		const current = hint;
+		if (current?.kind !== 'request' || current.sectionId !== listId) return '';
+
+		const anchor = rows.findIndex((row) => row.id === current.requestId);
+		if (anchor < 0) return '';
+
+		const insertAt = anchor + (current.edge === 'bottom' ? 1 : 0);
+		if (insertAt === index) return 'drop-above';
+		if (insertAt === rows.length && index === rows.length - 1) return 'drop-below';
+		return '';
 	}
 
-	function edgeClass(id: string): string {
-		if (hint?.id !== id) return '';
-		return hint.kind === 'into' ? 'drop-into' : hint.kind === 'above' ? 'drop-above' : 'drop-below';
+	/** The same reduction, for the list of collections. */
+	function sectionLineFor(sectionId: string): string {
+		const current = hint;
+		if (current?.kind === 'into') return current.sectionId === sectionId ? 'drop-into' : '';
+		if (current?.kind !== 'section') return '';
+
+		const ordered = collections.collectionSections;
+		const anchor = ordered.findIndex((section) => section.id === current.sectionId);
+		const index = ordered.findIndex((section) => section.id === sectionId);
+		if (anchor < 0 || index < 0) return '';
+
+		const insertAt = anchor + (current.edge === 'bottom' ? 1 : 0);
+		if (insertAt === index) return 'drop-above';
+		if (insertAt === ordered.length && index === ordered.length - 1) return 'drop-below';
+		return '';
 	}
 
 	$effect(() =>
-		watchDrops((outcome) => {
-			hint = null;
-			if (outcome.request) {
-				collections.moveRequest(outcome.request.from, outcome.request.to);
-			} else if (outcome.section) {
-				const { movedId, targetId, edge } = outcome.section;
-				collections.reorderSections(movedId, targetId, edge);
+		watchDrag({
+			onHint: (next) => (hint = next),
+			onDrop: (outcome) => {
+				if (outcome.request) {
+					collections.moveRequest(outcome.request.from, outcome.request.to);
+				} else if (outcome.section) {
+					const { movedId, targetId, edge } = outcome.section;
+					collections.reorderSections(movedId, targetId, edge);
+				}
 			}
 		})
 	);
@@ -222,13 +248,16 @@
 	}
 </script>
 
-{#snippet requestRow(section: Section, request: SavedRequest, indent: string)}
+{#snippet requestRow(
+	section: Section,
+	request: SavedRequest,
+	indent: string,
+	rows: { id: string }[],
+	index: number
+)}
 	<div
-		use:dragRequest={{
-			ref: { sectionId: section.id, requestId: request.id },
-			onHint: (hint) => setHint(request.id, hint)
-		}}
-		class="draggable-row transition-shadow {edgeClass(request.id)}"
+		use:dragRequest={{ sectionId: section.id, requestId: request.id }}
+		class="draggable-row transition-shadow {lineFor(section.id, rows, index)}"
 	>
 		<ContextMenu.Root>
 		<ContextMenu.Trigger
@@ -437,8 +466,8 @@
 		<div class="flex-1 overflow-y-auto min-h-0">
 			{#if collections.looseSection && looseRequests.length}
 				<div class="border-b border-border/50 pb-1">
-					{#each looseRequests as request (request.id)}
-						{@render requestRow(collections.looseSection, request, 'pl-4')}
+					{#each looseRequests as request, index (request.id)}
+						{@render requestRow(collections.looseSection, request, 'pl-4', looseRequests, index)}
 					{/each}
 				</div>
 			{/if}
@@ -447,11 +476,8 @@
 				{@const open = searching || !section.collapsed}
 				<div class="border-b border-border/50">
 					<div
-						use:sectionHeader={{
-							ref: { sectionId: section.id },
-							onHint: (hint) => setHint(section.id, hint)
-						}}
-						class="draggable-row transition-shadow {edgeClass(section.id)}"
+						use:sectionHeader={{ sectionId: section.id }}
+						class="draggable-row transition-shadow {sectionLineFor(section.id)}"
 					>
 					<ContextMenu.Root>
 						<ContextMenu.Trigger
@@ -525,8 +551,8 @@
 					</div>
 
 					{#if open}
-						{#each requests as request (request.id)}
-							{@render requestRow(section, request, 'pl-8')}
+						{#each requests as request, index (request.id)}
+							{@render requestRow(section, request, 'pl-8', requests, index)}
 						{/each}
 
 						<!-- Loader output. Regenerated on every refresh; the user's

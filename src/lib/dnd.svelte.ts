@@ -44,8 +44,18 @@ export interface SectionRef {
 	sectionId: string;
 }
 
-/** Where a dragged thing would land, for drawing the line. */
-export type DropHint = { edge: VerticalEdge } | null;
+/**
+ * What's under the pointer right now.
+ *
+ * Reported from a single monitor rather than by each row, because "below row 1"
+ * and "above row 2" are the same gap: letting each row decide made the line jump
+ * between two names for one position as the pointer crossed the midpoint.
+ */
+export type DragHint =
+	| { kind: 'request'; sectionId: string; requestId: string; edge: VerticalEdge }
+	| { kind: 'section'; sectionId: string; edge: VerticalEdge }
+	| { kind: 'into'; sectionId: string }
+	| null;
 
 function isRequest(data: Record<string, unknown>): data is Record<string, unknown> & RequestRef {
 	return data[REQUEST] === true;
@@ -55,105 +65,102 @@ function isSection(data: Record<string, unknown>): data is Record<string, unknow
 	return data[SECTION] === true;
 }
 
-interface RowOptions {
-	ref: RequestRef;
-	/** Called with the edge a drop would land on, or null when not hovered. */
-	onHint: (hint: DropHint) => void;
-}
-
 /** A request row: draggable, and a target for reordering around it. */
-export function requestRow(node: HTMLElement, options: RowOptions) {
-	let current = options;
+export function requestRow(node: HTMLElement, ref: RequestRef) {
+	let current = ref;
 
 	const cleanup = combine(
 		draggable({
 			element: node,
-			getInitialData: () => ({ [REQUEST]: true, ...current.ref })
+			getInitialData: () => ({ [REQUEST]: true, ...current })
 		}),
 		dropTargetForElements({
 			element: node,
 			canDrop: ({ source }) => isRequest(source.data),
 			getData: ({ input, element }) =>
-				attachClosestEdge({ [REQUEST]: true, ...current.ref }, {
+				attachClosestEdge({ [REQUEST]: true, ...current }, {
 					input,
 					element,
 					allowedEdges: ['top', 'bottom']
-				}),
-			onDrag: ({ self, source }) => {
-				// Hovering a row over itself would draw a line either side of the
-				// thing you're holding, which reads as a move that isn't one.
-				if (isRequest(source.data) && source.data.requestId === current.ref.requestId) {
-					current.onHint(null);
-					return;
-				}
-				const edge = verticalEdge(self.data);
-				current.onHint(edge ? { edge } : null);
-			},
-			onDragLeave: () => current.onHint(null),
-			onDrop: () => current.onHint(null)
+				})
 		})
 	);
 
 	return {
-		update(next: RowOptions) {
+		update(next: RequestRef) {
 			current = next;
 		},
 		destroy: cleanup
 	};
-}
-
-interface HeaderOptions {
-	ref: SectionRef;
-	/** Reordering collections, or dropping a request into this one. */
-	onHint: (hint: DropHint | 'into') => void;
 }
 
 /**
  * A collection header: draggable to reorder, and a target for both collections
  * (reorder around it) and requests (move into it).
  */
-export function sectionHeader(node: HTMLElement, options: HeaderOptions) {
-	let current = options;
+export function sectionHeader(node: HTMLElement, ref: SectionRef) {
+	let current = ref;
 
 	const cleanup = combine(
 		draggable({
 			element: node,
-			getInitialData: () => ({ [SECTION]: true, ...current.ref })
+			getInitialData: () => ({ [SECTION]: true, ...current })
 		}),
 		dropTargetForElements({
 			element: node,
 			canDrop: ({ source }) => isRequest(source.data) || isSection(source.data),
 			getData: ({ input, element }) =>
-				attachClosestEdge({ [SECTION]: true, ...current.ref }, {
+				attachClosestEdge({ [SECTION]: true, ...current }, {
 					input,
 					element,
 					allowedEdges: ['top', 'bottom']
-				}),
-			onDrag: ({ self, source }) => {
-				if (isRequest(source.data)) {
-					// A request dropped on a header joins that collection at the end,
-					// so there's no edge to show — highlight the whole header instead.
-					current.onHint(source.data.sectionId === current.ref.sectionId ? null : 'into');
-					return;
-				}
-				if (isSection(source.data) && source.data.sectionId === current.ref.sectionId) {
-					current.onHint(null);
-					return;
-				}
-				const edge = verticalEdge(self.data);
-				current.onHint(edge ? { edge } : null);
-			},
-			onDragLeave: () => current.onHint(null),
-			onDrop: () => current.onHint(null)
+				})
 		})
 	);
 
 	return {
-		update(next: HeaderOptions) {
+		update(next: SectionRef) {
 			current = next;
 		},
 		destroy: cleanup
 	};
+}
+
+/** What the target under the pointer means, or null when there isn't one. */
+function hintFrom(
+	source: Record<string, unknown>,
+	target: { data: Record<string, unknown> } | undefined
+): DragHint {
+	if (!target) return null;
+
+	if (isRequest(target.data)) {
+		// A row hovering itself would offer to move it where it already is.
+		if (isRequest(source) && source.requestId === target.data.requestId) return null;
+		const edge = verticalEdge(target.data);
+		return edge
+			? {
+					kind: 'request',
+					sectionId: target.data.sectionId,
+					requestId: target.data.requestId,
+					edge
+				}
+			: null;
+	}
+
+	if (isSection(target.data)) {
+		if (isRequest(source)) {
+			// A request dropped on a header joins that collection at the end, so
+			// there's no gap to point at — the header itself is the target.
+			return source.sectionId === target.data.sectionId
+				? null
+				: { kind: 'into', sectionId: target.data.sectionId };
+		}
+		if (isSection(source) && source.sectionId === target.data.sectionId) return null;
+		const edge = verticalEdge(target.data);
+		return edge ? { kind: 'section', sectionId: target.data.sectionId, edge } : null;
+	}
+
+	return null;
 }
 
 export interface DropOutcome {
@@ -168,12 +175,22 @@ export interface DropOutcome {
 }
 
 /**
- * One monitor for the whole sidebar rather than a handler per row: the drop is
- * resolved once, from the source and the target that was under the pointer.
+ * One monitor for the whole sidebar rather than a handler per row: both the
+ * indicator and the drop are resolved in a single place, from the source and
+ * whichever target is under the pointer.
  */
-export function watchDrops(onDrop: (outcome: DropOutcome) => void): () => void {
+export function watchDrag(handlers: {
+	onHint: (hint: DragHint) => void;
+	onDrop: (outcome: DropOutcome) => void;
+}): () => void {
+	const { onHint, onDrop } = handlers;
+
 	return monitorForElements({
+		onDrag: ({ source, location }) =>
+			onHint(hintFrom(source.data, location.current.dropTargets[0])),
+		onDragStart: () => onHint(null),
 		onDrop: ({ source, location }) => {
+			onHint(null);
 			const target = location.current.dropTargets[0];
 			if (!target) return;
 
