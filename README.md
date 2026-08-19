@@ -79,17 +79,21 @@ window.
 
 To set up a browser session: open the sign-in window, log in as you normally
 would, then *Pick credential…* — you can close the sign-in window first, the
-session is remembered. The app lists every cookie (HttpOnly included — the page
-can't read those, but this app can) and every `localStorage` entry flattened to
-leaf paths, searchable and ranked with the likeliest first.
+session is remembered. The app lists everything the session holds, searchable and
+ranked with the likeliest first:
+
+- every **cookie**, HttpOnly included — the page can't read those, but this app can
+- every **localStorage** entry, flattened to leaf paths
+- every **IndexedDB** record, addressed as `database/store/key` — this is where
+  Firebase's SDK keeps its session by default
 
 Values matching a known provider's documented storage format are labelled and
 sorted to the top: Auth0, Supabase, Firebase, MSAL, Cognito, Okta, Clerk,
 Keycloak, Auth.js/NextAuth and others (`src/lib/providers.ts`).
 
-Two things capture can't read, in case the list comes up empty: **IndexedDB**
-(Firebase's default) and **encrypted SDK storage** (MSAL v4 without "keep me
-signed in"). A cookie is usually still capturable in both cases.
+One thing capture can't read, in case the list comes up empty: **encrypted SDK
+storage** (MSAL v4 without "keep me signed in"). A cookie is usually still
+capturable in that case.
 
 Credentials live in the OS keychain; the section file holds only a reference, so
 it stays safe to share or commit. There is no command to read a secret back out

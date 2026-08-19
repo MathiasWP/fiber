@@ -56,6 +56,12 @@
 	const kind = $derived(section?.auth.kind ?? 'none');
 	const hint = $derived(KINDS.find((entry) => entry.value === kind)?.hint ?? '');
 
+	const SOURCE_LABEL: Record<CaptureKind, string> = {
+		cookie: 'cookie',
+		localStorage: 'storage',
+		indexedDb: 'indexeddb'
+	};
+
 	// Ask whether a credential exists whenever the dialog opens on a section.
 	$effect(() => {
 		const reference = section && 'secretRef' in section.auth ? section.auth.secretRef : null;
@@ -369,7 +375,7 @@
 
 								{#if section.auth.captureKey}
 									<p class="text-2.5 text-muted font-mono truncate">
-										{section.auth.capture === 'cookie' ? 'cookie' : 'storage'} ·
+										{SOURCE_LABEL[section.auth.capture]} ·
 										{section.auth.captureKey}{section.auth.capturePath
 											? ` › ${section.auth.capturePath}`
 											: ''}

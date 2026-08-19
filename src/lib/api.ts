@@ -122,9 +122,17 @@ export type AuthConfig =
 	  };
 
 export type AuthKind = AuthConfig['kind'];
-export type CaptureKind = 'localStorage' | 'cookie';
+export type CaptureKind = 'localStorage' | 'cookie' | 'indexedDb';
 
 export interface StorageEntry {
+	key: string;
+	value: string;
+}
+
+/** One IndexedDB record. Identified by `database/store/key`. */
+export interface IndexedEntry {
+	database: string;
+	store: string;
 	key: string;
 	value: string;
 }
@@ -141,6 +149,7 @@ export interface CookieEntry {
 export interface Snapshot {
 	localStorage: StorageEntry[];
 	cookies: CookieEntry[];
+	indexedDb: IndexedEntry[];
 }
 
 /** Opens a real browser window at the section's login page. */

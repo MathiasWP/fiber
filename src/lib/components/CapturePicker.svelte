@@ -152,8 +152,42 @@
 			}
 		}
 
+		for (const entry of snapshot.indexedDb) {
+			const identity = `${entry.database}/${entry.store}/${entry.key}`;
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(entry.value);
+			} catch {
+				parsed = undefined;
+			}
+
+			if (parsed && typeof parsed === 'object') {
+				for (const leaf of leaves(parsed, '', [])) {
+					found.push(
+						candidate('indexedDb', identity, leaf.path, leaf.path, identity, leaf.value)
+					);
+				}
+			} else {
+				found.push(
+					candidate('indexedDb', identity, '', entry.key, `${entry.database}/${entry.store}`, entry.value)
+				);
+			}
+		}
+
 		return found.sort((a, b) => b.score - a.score);
 	});
+
+	const SOURCE_STYLE: Record<CaptureKind, string> = {
+		cookie: 'bg-accent/15 text-accent',
+		localStorage: 'bg-ok/15 text-ok',
+		indexedDb: 'bg-bad/15 text-bad'
+	};
+
+	const SOURCE_LABEL: Record<CaptureKind, string> = {
+		cookie: 'cookie',
+		localStorage: 'storage',
+		indexedDb: 'indexeddb'
+	};
 
 	/**
 	 * Every whitespace-separated term must appear somewhere in the row. Plain
@@ -224,9 +258,9 @@
 					<div class="p-4 text-xs text-muted leading-relaxed flex flex-col gap-2">
 						<p>Nothing found. Make sure you've finished signing in, then Refresh.</p>
 						<p class="text-2.5">
-							Some SDKs keep tokens where this can't reach: Firebase uses IndexedDB by default,
-							and MSAL v4 encrypts its storage unless “keep me signed in” was ticked. If that's
-							your setup, a cookie is usually still capturable.
+							Cookies, localStorage and IndexedDB are all read. One thing still isn't
+							recoverable: MSAL v4 encrypts its storage unless “keep me signed in” was ticked.
+							If that's your setup, a cookie is usually still capturable.
 						</p>
 					</div>
 				{:else if visible.length === 0}
@@ -246,11 +280,9 @@
 						>
 							<div class="flex items-center gap-2">
 								<span
-									class="font-mono text-2.5 px-1 rounded shrink-0 {candidate.capture === 'cookie'
-										? 'bg-accent/15 text-accent'
-										: 'bg-ok/15 text-ok'}"
+									class="font-mono text-2.5 px-1 rounded shrink-0 {SOURCE_STYLE[candidate.capture]}"
 								>
-									{candidate.capture === 'cookie' ? 'cookie' : 'storage'}
+									{SOURCE_LABEL[candidate.capture]}
 								</span>
 								<span class="font-mono text-xs truncate">{candidate.label}</span>
 								{#if candidate.provider}

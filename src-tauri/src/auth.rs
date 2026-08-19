@@ -74,6 +74,8 @@ pub enum AuthConfig {
 pub enum CaptureKind {
     LocalStorage,
     Cookie,
+    /// Keyed by `database/store/key` — see `browser::IndexedEntry`.
+    IndexedDb,
 }
 
 impl AuthConfig {

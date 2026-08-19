@@ -51,6 +51,18 @@ const RULES: Rule[] = [
 		path: /stsTokenManager\.accessToken$/,
 		weight: 50
 	},
+
+	// ---- IndexedDB -----------------------------------------------------------
+	{
+		provider: 'Firebase',
+		where: 'indexedDb',
+		// Where the JS SDK actually puts it by default:
+		// firebaseLocalStorageDb/firebaseLocalStorage/firebase:authUser:<apiKey>
+		key: /^firebaseLocalStorageDb\//,
+		path: /stsTokenManager\.accessToken$/,
+		weight: 50
+	},
+	{ provider: 'Firebase', where: 'indexedDb', key: /^firebaseLocalStorageDb\//, weight: 25 },
 	{
 		provider: 'Microsoft (MSAL)',
 		where: 'localStorage',

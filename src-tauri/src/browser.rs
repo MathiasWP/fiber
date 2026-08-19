@@ -5,12 +5,15 @@
 //! server marks HttpOnly. So we open a real webview, let the user sign in
 //! normally, and take the credential out afterwards.
 //!
+//! Three storage locations are read, because SDKs disagree about where a
+//! session belongs: cookies, `localStorage`, and IndexedDB (Firebase's default).
+//!
 //! Two things make this work where a JavaScript-only approach wouldn't:
 //!
 //! - `cookies_for_url` returns **HttpOnly** cookies. The page can't read them;
 //!   we can. That's the entire cookie-session case.
 //! - `eval_with_callback` runs as host-evaluated script, so the page's CSP
-//!   doesn't get a say in whether we can read `localStorage`.
+//!   doesn't get a say in whether we can read storage.
 //!
 //! This is the one module that must know about Tauri — webviews are Tauri. The
 //! rest of the auth path stays headless so the MCP server can use a stored
@@ -35,6 +38,9 @@ const SILENT_INTERVAL: Duration = Duration::from_millis(500);
 /// reading.
 const LOAD_ATTEMPTS: usize = 8;
 const LOAD_INTERVAL: Duration = Duration::from_millis(400);
+/// IndexedDB is read asynchronously in the page, so we poll for the result.
+const INDEXED_ATTEMPTS: usize = 10;
+const INDEXED_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,17 +59,35 @@ pub struct CookieEntry {
     pub http_only: bool,
 }
 
+/// One record from an IndexedDB object store. Identified by `database/store/key`
+/// so a capture rule can name it the same way a localStorage key is named.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexedEntry {
+    pub database: String,
+    pub store: String,
+    pub key: String,
+    pub value: String,
+}
+
+impl IndexedEntry {
+    pub fn identity(&self) -> String {
+        format!("{}/{}/{}", self.database, self.store, self.key)
+    }
+}
+
 /// Everything we could find in the signed-in session, for the user to pick from.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     pub local_storage: Vec<StorageEntry>,
     pub cookies: Vec<CookieEntry>,
+    pub indexed_db: Vec<IndexedEntry>,
 }
 
 impl Snapshot {
     fn is_empty(&self) -> bool {
-        self.local_storage.is_empty() && self.cookies.is_empty()
+        self.local_storage.is_empty() && self.cookies.is_empty() && self.indexed_db.is_empty()
     }
 }
 
@@ -188,6 +212,108 @@ pub async fn snapshot(app: &AppHandle, section: &Section) -> Result<Snapshot, Br
     found
 }
 
+/// Reading IndexedDB is asynchronous, and a script that returns a Promise is no
+/// use to `eval_with_callback` — the Promise itself is what would come back. So
+/// the first call starts the read and parks the result on `window`; later calls
+/// return it once it's there. `""` means "still working".
+///
+/// `indexedDB.databases()` enumerates them where it exists; well-known names are
+/// tried regardless, since that call is comparatively recent.
+const INDEXED_DB_JS: &str = r#"
+(() => {
+  const SLOT = "__fetchIdbSnapshot";
+  const known = ["firebaseLocalStorageDb"];
+  const MAX_ROWS_PER_STORE = 50;
+  const MAX_VALUE_CHARS = 20000;
+
+  const parked = window[SLOT];
+  if (parked && parked.done) return JSON.stringify(parked.items);
+  if (parked && parked.running) return "";
+  window[SLOT] = { running: true, done: false, items: [] };
+
+  const request = (req) =>
+    new Promise((resolve) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+      req.onblocked = () => resolve(null);
+    });
+
+  const read = async () => {
+    const items = [];
+    let names = [];
+    try {
+      if (indexedDB.databases) {
+        names = (await indexedDB.databases()).map((entry) => entry.name).filter(Boolean);
+      }
+    } catch (error) {
+      names = [];
+    }
+    for (const name of known) if (!names.includes(name)) names.push(name);
+
+    for (const name of names) {
+      let db = null;
+      try {
+        db = await request(indexedDB.open(name));
+        if (!db) continue;
+        for (const store of Array.from(db.objectStoreNames)) {
+          try {
+            const transaction = db.transaction(store, "readonly");
+            const target = transaction.objectStore(store);
+            const rows = (await request(target.getAll())) || [];
+            const keys = (await request(target.getAllKeys())) || [];
+            rows.slice(0, MAX_ROWS_PER_STORE).forEach((row, index) => {
+              let value = "";
+              try {
+                value = typeof row === "string" ? row : JSON.stringify(row);
+              } catch (error) {
+                return;
+              }
+              if (typeof value !== "string") return;
+              items.push({
+                database: name,
+                store,
+                key: String(keys[index] ?? index),
+                value: value.slice(0, MAX_VALUE_CHARS)
+              });
+            });
+          } catch (error) {
+            // Unreadable store; the rest may still be fine.
+          }
+        }
+      } catch (error) {
+        // Unopenable database; likewise.
+      } finally {
+        try { if (db) db.close(); } catch (error) {}
+      }
+    }
+    return items;
+  };
+
+  read()
+    .then((items) => { window[SLOT] = { running: false, done: true, items }; })
+    .catch(() => { window[SLOT] = { running: false, done: true, items: [] }; });
+
+  return "";
+})()
+"#;
+
+async fn read_indexed_db(window: &WebviewWindow) -> Vec<IndexedEntry> {
+    for attempt in 0..INDEXED_ATTEMPTS {
+        if attempt > 0 {
+            tokio::time::sleep(INDEXED_INTERVAL).await;
+        }
+        let Ok(raw) = eval_json(window, INDEXED_DB_JS).await else {
+            return Vec::new();
+        };
+        // `""` while the read is still in flight; anything else is the answer.
+        if raw.trim().is_empty() || raw.trim() == "\"\"" {
+            continue;
+        }
+        return parse_json_list(&raw);
+    }
+    Vec::new()
+}
+
 /// Reads `localStorage` and every cookie visible to an open window.
 async fn read_session(
     window: &WebviewWindow,
@@ -225,33 +351,39 @@ async fn read_session(
     Ok(Snapshot {
         local_storage,
         cookies,
+        indexed_db: read_indexed_db(window).await,
     })
 }
 
-async fn read_local_storage(window: &WebviewWindow) -> Result<Vec<StorageEntry>, BrowserError> {
+/// Runs a script and waits for its result. `eval_with_callback` is one-shot, so
+/// the callback hands the value over a channel.
+async fn eval_json(window: &WebviewWindow, js: &str) -> Result<String, BrowserError> {
     let (sender, receiver) = oneshot::channel();
     let sender = Mutex::new(Some(sender));
 
     window
-        .eval_with_callback(SNAPSHOT_JS, move |raw| {
+        .eval_with_callback(js, move |raw| {
             if let Some(sender) = sender.lock().unwrap().take() {
                 let _ = sender.send(raw);
             }
         })
         .map_err(|err| BrowserError::Eval(err.to_string()))?;
 
-    let raw = tokio::time::timeout(EVAL_TIMEOUT, receiver)
+    tokio::time::timeout(EVAL_TIMEOUT, receiver)
         .await
         .map_err(|_| BrowserError::Timeout)?
-        .map_err(|_| BrowserError::Timeout)?;
+        .map_err(|_| BrowserError::Timeout)
+}
 
-    Ok(parse_entries(&raw))
+async fn read_local_storage(window: &WebviewWindow) -> Result<Vec<StorageEntry>, BrowserError> {
+    let raw = eval_json(window, SNAPSHOT_JS).await?;
+    Ok(parse_json_list(&raw))
 }
 
 /// The callback hands back the evaluation result already JSON-encoded, and our
-/// script returns a JSON string — so what arrives is usually double-encoded.
+/// scripts return a JSON string — so what arrives is usually double-encoded.
 /// Tolerate both shapes rather than depending on which.
-fn parse_entries(raw: &str) -> Vec<StorageEntry> {
+fn parse_json_list<T: serde::de::DeserializeOwned>(raw: &str) -> Vec<T> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return Vec::new();
     };
@@ -279,27 +411,49 @@ pub fn extract(snapshot: &Snapshot, section: &Section) -> Option<String> {
             .find(|cookie| cookie.name == key)
             .map(|cookie| format!("{}={}", cookie.name, cookie.value)),
 
+        // Auth0's storage key embeds a client id and audience, and Firebase's
+        // embeds an API key, so an exact match is brittle across environments;
+        // falling back to a prefix isn't.
         CaptureKind::LocalStorage => {
+            let entry = find_by_key(&snapshot.local_storage, key, |entry| &entry.key)?;
+            dig(&entry.value, path)
+        }
+
+        CaptureKind::IndexedDb => {
             let entry = snapshot
-                .local_storage
+                .indexed_db
                 .iter()
-                // Auth0's key embeds a client id and audience, so an exact
-                // match is brittle across environments; a prefix isn't.
-                .find(|entry| entry.key == key)
+                .find(|entry| entry.identity() == key)
                 .or_else(|| {
                     snapshot
-                        .local_storage
+                        .indexed_db
                         .iter()
-                        .find(|entry| entry.key.starts_with(key))
+                        .find(|entry| entry.identity().starts_with(key))
                 })?;
-
-            if path.trim().is_empty() {
-                return Some(entry.value.clone());
-            }
-            let parsed: serde_json::Value = serde_json::from_str(&entry.value).ok()?;
-            crate::auth::value_at(&parsed, path)
+            dig(&entry.value, path)
         }
     }
+}
+
+/// Exact key first, then prefix.
+fn find_by_key<'a, T>(
+    entries: &'a [T],
+    key: &str,
+    key_of: impl Fn(&'a T) -> &'a String + Copy,
+) -> Option<&'a T> {
+    entries
+        .iter()
+        .find(|entry| key_of(entry) == key)
+        .or_else(|| entries.iter().find(|entry| key_of(entry).starts_with(key)))
+}
+
+/// The whole stored value, or one field out of it when a path is given.
+fn dig(value: &str, path: &str) -> Option<String> {
+    if path.trim().is_empty() {
+        return Some(value.to_string());
+    }
+    let parsed: serde_json::Value = serde_json::from_str(value).ok()?;
+    crate::auth::value_at(&parsed, path)
 }
 
 /// Tries to refresh a browser-captured credential without bothering the user.
@@ -391,6 +545,14 @@ mod tests {
                     http_only: false,
                 },
             ],
+            indexed_db: vec![
+                IndexedEntry {
+                    database: "firebaseLocalStorageDb".into(),
+                    store: "firebaseLocalStorage".into(),
+                    key: "firebase:authUser:AIzaKEY:[DEFAULT]".into(),
+                    value: r#"{"value":{"stsTokenManager":{"accessToken":"idb-tok"}}}"#.into(),
+                },
+            ],
         }
     }
 
@@ -424,6 +586,35 @@ mod tests {
     }
 
     #[test]
+    fn digs_a_token_out_of_indexeddb() {
+        // Firebase's JS SDK keeps its session here rather than in localStorage,
+        // under firebaseLocalStorageDb/firebaseLocalStorage.
+        let section = section(
+            CaptureKind::IndexedDb,
+            "firebaseLocalStorageDb/firebaseLocalStorage/firebase:authUser:AIzaKEY:[DEFAULT]",
+            "value.stsTokenManager.accessToken",
+        );
+        assert_eq!(
+            extract(&auth0_snapshot(), &section).as_deref(),
+            Some("idb-tok")
+        );
+    }
+
+    #[test]
+    fn matches_an_indexeddb_record_by_prefix() {
+        // The API key in Firebase's record key differs per environment.
+        let section = section(
+            CaptureKind::IndexedDb,
+            "firebaseLocalStorageDb/firebaseLocalStorage/firebase:authUser:",
+            "value.stsTokenManager.accessToken",
+        );
+        assert_eq!(
+            extract(&auth0_snapshot(), &section).as_deref(),
+            Some("idb-tok")
+        );
+    }
+
+    #[test]
     fn captures_a_cookie_as_a_name_value_pair() {
         let section = section(CaptureKind::Cookie, "sid", "");
         assert_eq!(
@@ -452,11 +643,11 @@ mod tests {
     fn tolerates_double_encoded_eval_results() {
         let items = r#"[{"key":"a","value":"1"}]"#;
         // Returned as a bare JSON array…
-        assert_eq!(parse_entries(items).len(), 1);
+        assert_eq!(parse_json_list::<StorageEntry>(items).len(), 1);
         // …or as a JSON-encoded string containing that array.
         let wrapped = serde_json::to_string(items).unwrap();
-        assert_eq!(parse_entries(&wrapped).len(), 1);
+        assert_eq!(parse_json_list::<StorageEntry>(&wrapped).len(), 1);
         // …or as something unusable.
-        assert!(parse_entries("not json").is_empty());
+        assert!(parse_json_list::<StorageEntry>("not json").is_empty());
     }
 }
