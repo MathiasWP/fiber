@@ -260,7 +260,7 @@ fn loader_fetcher(
         Box::pin(async move {
             let spec = RequestSpec {
                 id: format!("loader:{}", section.id),
-                request_id: String::new(),
+                request_id: format!("loader:{}", section.id),
                 section_id: Some(section.id.clone()),
                 method: request.method,
                 url: store::join_url(&section.base_url, &request.url),

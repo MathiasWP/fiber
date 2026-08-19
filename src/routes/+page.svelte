@@ -51,7 +51,7 @@
 	// An entry opened from the History tab wins; otherwise a request shows its
 	// own most recent response and never another request's.
 	const shown = $derived(history.viewing ?? history.selectedFor(requestKey));
-	const mine = $derived(history.forRequest(requestKey));
+	const mine = $derived(history.forRequest(shown?.requestId ?? requestKey));
 
 	$effect(() => {
 		// Loaders with a TTL refresh after the cached endpoints are on screen,
@@ -170,18 +170,29 @@
 
 	/**
 	 * Shows a history entry, and jumps to the request it belongs to when there
-	 * still is one. The entry is shown either way — its request may have been
-	 * deleted, or never have existed if it was sent from scratch.
+	 * still is one.
+	 *
+	 * Plenty of entries have no live request: sent from scratch, sent by a
+	 * loader or the MCP server, or their request has since been deleted. Those
+	 * load into scratch so the request pane shows what you actually opened —
+	 * previously the id simply failed to resolve and you were left looking at an
+	 * unrelated scratch request.
 	 */
 	function openHistory(entry: HistoryEntry) {
 		history.viewingId = entry.id;
-		collections.selectedRequestId = entry.requestId === SCRATCH_ID ? null : entry.requestId;
 		history.select(entry.requestId, entry.id);
-		if (entry.requestId === SCRATCH_ID) {
-			scratch.method = entry.method;
-			scratch.path = entry.url;
-			if (entry.requestBody) scratch.body = entry.requestBody;
+
+		if (collections.findRequest(entry.requestId)) {
+			collections.selectedRequestId = entry.requestId;
+			return;
 		}
+
+		collections.selectedRequestId = null;
+		scratch.method = entry.method;
+		scratch.path = entry.url;
+		// Unconditionally, including when empty: what's on screen has to be what
+		// would be sent, and a leftover body would quietly change that.
+		scratch.body = entry.requestBody;
 	}
 
 	function onKeydown(event: KeyboardEvent) {

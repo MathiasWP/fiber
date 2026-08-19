@@ -51,11 +51,21 @@ class Collections {
 	loading = $state<Record<string, boolean>>({});
 
 	get selected(): Selection | null {
-		if (!this.selectedRequestId) return null;
+		return this.findRequest(this.selectedRequestId);
+	}
+
+	/**
+	 * The request an id names, if one still exists.
+	 *
+	 * History entries outlive their requests — a request can be deleted, and
+	 * some entries never had one, having come from a loader or the MCP server.
+	 */
+	findRequest(id: string | null): Selection | null {
+		if (!id) return null;
 		for (const section of this.sections) {
 			const request =
-				section.requests.find((r) => r.id === this.selectedRequestId) ??
-				section.overlay.find((r) => r.id === this.selectedRequestId);
+				section.requests.find((candidate) => candidate.id === id) ??
+				section.overlay.find((candidate) => candidate.id === id);
 			if (request) return { section, request };
 		}
 		return null;
