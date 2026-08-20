@@ -3,8 +3,6 @@ import { check, type Update } from '@tauri-apps/plugin-updater';
 
 /** Long enough that a machine left running still notices within a day. */
 const INTERVAL_MS = 6 * 60 * 60 * 1000;
-/** Which version the user has already said no to. */
-const DISMISSED_KEY = 'fiber:update-dismissed';
 
 export type UpdateStage =
 	| 'idle'
@@ -39,6 +37,16 @@ class Updates {
 	#downloaded = 0;
 	#total = 0;
 
+	/**
+	 * The version already turned down, for this run of the app only.
+	 *
+	 * Deliberately not persisted: saying "not now" means not now, not never.
+	 * Every launch is a fresh chance to offer it, which is the behaviour you
+	 * want from something you are eventually meant to install — while still
+	 * leaving you alone for as long as the app stays open.
+	 */
+	#declined: string | null = null;
+
 	/** Starts a check now and every few hours. Returns the teardown. */
 	watch(): () => void {
 		void this.check();
@@ -62,9 +70,9 @@ class Updates {
 		try {
 			const update = await check();
 			if (!update) return;
-			// Don't re-announce a version they've already waved away. A newer one
-			// than that still gets through.
-			if (localStorage.getItem(DISMISSED_KEY) === update.version) return;
+			// Don't re-announce a version already turned down this run. A newer
+			// one than that still gets through.
+			if (this.#declined === update.version) return;
 
 			this.#update = update;
 			this.version = update.version;
@@ -110,10 +118,12 @@ class Updates {
 			if (!restart) {
 				// Done, and staying out of the way until the app is next opened.
 				//
-				// Marked dismissed too: this process still reports the old version,
+				// Marked declined too: this process still reports the old version,
 				// so a later check would find the same update again and offer to
-				// install what is already sitting on disk.
-				localStorage.setItem(DISMISSED_KEY, this.version);
+				// install what is already sitting on disk. Not persisting it is
+				// fine — the next launch *is* the new version, so there is nothing
+				// left to offer.
+				this.#declined = this.version;
 				this.stage = 'staged';
 				return;
 			}
@@ -126,9 +136,9 @@ class Updates {
 		}
 	}
 
-	/** Hides this version until there's a newer one. */
+	/** Hides this version for the rest of this run. Offered again next launch. */
 	dismiss(): void {
-		if (this.version) localStorage.setItem(DISMISSED_KEY, this.version);
+		if (this.version) this.#declined = this.version;
 		this.reset();
 	}
 

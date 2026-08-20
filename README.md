@@ -163,8 +163,13 @@ behaviour is unchanged.
 
 The app updates itself. It checks GitHub on launch, when the window regains
 focus, and every six hours; a toast in the bottom-right offers the new version,
-and *Update* downloads it with a progress bar, swaps it in and restarts into it.
-*Not now* hides that version until a later one appears.
+with three ways out:
+
+- **Update** — downloads with a progress bar, swaps the app in, restarts into it.
+- **On next launch** — installs the same way but doesn't restart, so the new
+  version is simply what opens next time.
+- **Not now** — gone for the rest of this run, offered again next launch. Not
+  now means not now, rather than never.
 
 [Tauri's updater](https://v2.tauri.app/plugin/updater/) does the work. Each
 release carries a `latest.json` listing every platform's bundle, and each bundle
