@@ -161,18 +161,29 @@ behaviour is unchanged.
 
 ## Updates
 
-The app checks GitHub for a newer release on launch, when the window regains
-focus, and every six hours. If there is one, a toast in the bottom-right offers
-to open the release page. *Not now* hides that version until a later one
-appears.
+The app updates itself. It checks GitHub on launch, when the window regains
+focus, and every six hours; a toast in the bottom-right offers the new version,
+and *Update* downloads it with a progress bar, swaps it in and restarts into it.
+*Not now* hides that version until a later one appears.
 
-It notices; it does not install. Fiber is only ad-hoc signed, and a
-self-replacing app bundle is the thing Gatekeeper re-examines on the next
-launch — a broken auto-update is a worse outcome than a manual download. So
-`check_for_update` reads the public releases API, compares the tag to
-`CARGO_PKG_VERSION`, and stops there. No token ships in the app, and every
-failure — offline, rate-limited, no releases published yet — is silent, because
-there is nothing the user could do about any of them.
+[Tauri's updater](https://v2.tauri.app/plugin/updater/) does the work. Each
+release carries a `latest.json` listing every platform's bundle, and each bundle
+is signed with a key whose public half is in `tauri.conf.json`. The app refuses
+anything that doesn't verify against it — which is what makes downloading an
+executable and running it a reasonable thing to do. Nothing about that signature
+involves Apple: it protects the update channel, not Gatekeeper.
+
+Every failure before the user clicks *Update* is silent — offline,
+rate-limited, no release yet — because there is nothing to act on. Failures
+after are shown, because a download that dies halfway is worth knowing about.
+
+> [!IMPORTANT]
+> The private signing key lives outside this repo, at `~/.tauri/fiber.key`, and
+> in the `TAURI_SIGNING_PRIVATE_KEY` repository secret. **Back it up.** Its
+> public half is compiled into every copy of Fiber already installed, so losing
+> it means no future release can ever be verified by them — every existing
+> install stops updating, permanently, and the only fix is for each user to
+> download a new build by hand.
 
 ## Releasing
 
