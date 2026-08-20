@@ -7,7 +7,12 @@
 		type SavedRequest,
 		type Section
 	} from '$lib/api';
-	import { collections, fuzzyScore, type LoadedRow } from '$lib/collections.svelte';
+	import {
+		collections,
+		fuzzyScore,
+		NEW_REQUEST_NAME,
+		type LoadedRow
+	} from '$lib/collections.svelte';
 	import {
 		requestRow as dragRequest,
 		sectionHeader,
@@ -16,6 +21,7 @@
 	} from '$lib/dnd.svelte';
 	import { history, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
+	import DotLoader from '$lib/components/DotLoader.svelte';
 
 	interface Props {
 		onOpenSettings: (section: Section) => void;
@@ -81,6 +87,18 @@
 			.filter((match) => match.score !== null)
 			.sort((a, b) => a.score! - b.score!)
 			.map((match) => match.row);
+	}
+
+	/**
+	 * Leaving History puts every request back on the response it was showing.
+	 *
+	 * The entry you opened in History is an override that lives only while you
+	 * are looking at it; without dropping it here, coming back to Collections
+	 * kept showing that entry rather than the request's own current response.
+	 */
+	function showCollections() {
+		tab = 'collections';
+		history.stopViewing();
 	}
 
 	function selectRequest(id: string) {
@@ -150,7 +168,7 @@
 		newName = '';
 		newBaseUrl = '';
 		creating = false;
-		await collections.createRequest(section, 'New request');
+		await collections.createRequest(section, NEW_REQUEST_NAME);
 	}
 
 	function commitRename(section: Section) {
@@ -161,7 +179,9 @@
 
 	function commitRequestRename(section: Section, request: SavedRequest) {
 		renamingId = null;
-		if (!request.name.trim()) request.name = 'Untitled';
+		// Through `rename` rather than assigning: a name typed here is the user's,
+		// and stops the name following the path from now on.
+		collections.rename(request, request.name);
 		collections.flush(section);
 	}
 
@@ -384,7 +404,7 @@
 			class="px-2 py-1 rounded text-xs transition-colors {tab === 'collections'
 				? 'bg-raised text-text'
 				: 'text-muted hover:text-text'}"
-			onclick={() => (tab = 'collections')}
+			onclick={() => showCollections()}
 		>
 			Collections
 		</button>
@@ -664,7 +684,7 @@
 							     all occupy the same space, so rows never reflow. -->
 							<span class="w-8 shrink-0 font-mono text-2.5">
 								{#if entry.pending}
-									<span class="i-lucide-loader-circle animate-spin text-muted text-3"></span>
+									<DotLoader size={12} class="text-muted" />
 								{:else if entry.error}
 									<span class="i-lucide-circle-alert text-bad text-3"></span>
 								{:else if entry.response}

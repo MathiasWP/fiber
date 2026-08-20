@@ -2,6 +2,7 @@
 	import { Dialog } from 'bits-ui';
 	import { browserSnapshot, type CaptureKind, type Snapshot } from '$lib/api';
 	import { identify } from '$lib/providers';
+	import DotLoader from '$lib/components/DotLoader.svelte';
 
 	interface Props {
 		open: boolean;
@@ -246,7 +247,7 @@
 			<div class="flex-1 overflow-y-auto min-h-0">
 				{#if loading}
 					<p class="p-4 text-xs text-muted flex items-center gap-2">
-						<span class="i-lucide-loader-circle animate-spin"></span>
+						<DotLoader size={16} />
 						Reading the sign-in window…
 					</p>
 				{:else if error}

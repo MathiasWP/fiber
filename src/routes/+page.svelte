@@ -2,6 +2,7 @@
 	import { ContextMenu, Tabs } from 'bits-ui';
 	import { Pane, PaneGroup, PaneResizer } from 'paneforge';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import DotLoader from '$lib/components/DotLoader.svelte';
 	import Editor from '$lib/components/Editor.svelte';
 	import MethodSelect from '$lib/components/MethodSelect.svelte';
 	import SectionSettings from '$lib/components/SectionSettings.svelte';
@@ -29,7 +30,7 @@
 		id: SCRATCH_ID,
 		name: 'Scratch',
 		method: 'GET',
-		path: 'https://httpbin.org/anything',
+		path: '',
 		body: '{\n  "hello": "world"\n}',
 		headers: []
 	});
@@ -86,6 +87,16 @@
 		resolveUrl(base, path).then((value) => {
 			if (token === resolveToken) resolved = value;
 		});
+	});
+
+	// An unnamed request is named after whatever URL you type into it, until you
+	// name it yourself. Runs before `touch` below, so the rename is part of the
+	// same debounced write rather than provoking a second one.
+	$effect(() => {
+		const request = draft;
+		// Read so this re-runs on every keystroke in the URL bar.
+		void request.path;
+		collections.followPath(request);
 	});
 
 	// Reading the whole section deeply is what subscribes this effect to every
@@ -184,8 +195,11 @@
 	 * unrelated scratch request.
 	 */
 	function openHistory(entry: HistoryEntry) {
+		// Only `viewingId`. Emphatically not `select` — that is the request's own
+		// active response, which the Collections tab reads, and looking at
+		// something in History must not overwrite it. Doing both is what made a
+		// request come back showing whichever entry you last inspected.
 		history.viewingId = entry.id;
-		history.select(entry.requestId, entry.id);
 
 		if (collections.findRequest(entry.requestId)) {
 			collections.selectedRequestId = entry.requestId;
@@ -373,7 +387,7 @@
 							{:else if shown.pending}
 								<div class="flex-1 grid place-items-center text-muted text-xs">
 									<span class="flex items-center gap-2">
-										<span class="i-lucide-loader-circle animate-spin"></span>
+										<DotLoader size={16} />
 										Waiting…
 									</span>
 								</div>
@@ -432,10 +446,15 @@
 													class="shrink-0 px-1.5 py-0.5 rounded font-mono text-2.5 transition-colors
 														{entry.id === shown.id ? 'bg-raised text-text' : 'text-muted hover:bg-raised/60'}"
 													title={new Date(entry.at).toLocaleString()}
-													onclick={() => history.select(requestKey, entry.id)}
+													onclick={() => {
+														// Stop viewing first, or the History override outranks
+														// the pick and the click appears to do nothing.
+														history.stopViewing();
+														history.select(requestKey, entry.id);
+													}}
 												>
 													{#if entry.pending}
-														<span class="i-lucide-loader-circle animate-spin text-3"></span>
+														<DotLoader size={12} />
 													{:else if entry.error}
 														<span class="i-lucide-circle-alert text-bad text-3"></span>
 													{:else if entry.response}
