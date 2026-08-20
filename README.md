@@ -198,11 +198,19 @@ for Windows, and `.deb`, `.rpm` and `.AppImage` for Linux.
 
 The bundles are unsigned, so first launch needs a nudge: on macOS, right-click
 the app → Open, or `xattr -dr com.apple.quarantine /Applications/Fiber.app`; on
-Windows, More info → Run anyway. To ship signed and notarised macOS builds
-instead, add the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+Windows, More info → Run anyway.
+
+To ship signed and notarised macOS builds instead, two things are needed
+together: the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
 `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID`
-repository secrets — the workflow already passes them through, and picks them up
-the moment they exist.
+repository secrets, *and* the `env:` block that is commented out above the
+`tauri-action` step in [`release.yml`](.github/workflows/release.yml).
+
+The block can't just sit there waiting for the secrets. A secret that doesn't
+exist expands to the empty string, which still *defines* the variable, and Tauri
+signs whenever `APPLE_CERTIFICATE` is present rather than when it is non-empty —
+so an empty value runs `security import` on an empty certificate and fails the
+macOS build outright.
 
 ## Status
 
