@@ -434,19 +434,30 @@
 				<span class="i-lucide-trash-2"></span>
 			</button>
 		{:else}
+			<!--
+				Both icons sit in a 24x24 box, but lucide draws them to different
+				heights inside it: file-plus spans y2-22, folder-plus only y3-20. At
+				equal box sizes the file looks the taller of the two, which is what
+				made this row read as uneven.
+
+				So the boxes are deliberately unequal — 15px and 17.6px, in the ratio
+				20:17 — which lands both drawn glyphs on the same 12.5px height. The
+				buttons themselves are identical squares, so only the artwork is
+				being corrected.
+			-->
 			<button
-				class="ml-auto p-1 rounded text-muted hover:(bg-raised text-text) transition-colors"
+				class="ml-auto h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
 				title="New request — not in any collection"
 				onclick={addLooseRequest}
 			>
-				<span class="i-lucide-file-plus"></span>
+				<span class="i-lucide-file-plus text-[15px]"></span>
 			</button>
 			<button
-				class="p-1 rounded text-muted hover:(bg-raised text-text) transition-colors"
+				class="h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
 				title="New collection"
 				onclick={() => (creating = true)}
 			>
-				<span class="i-lucide-folder-plus"></span>
+				<span class="i-lucide-folder-plus text-[17.6px]"></span>
 			</button>
 		{/if}
 	</header>

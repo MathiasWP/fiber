@@ -269,8 +269,19 @@
 						{#if inCollection && selection}
 							<!-- The cascade, shown where you type. Read-only: the base URL
 							     belongs to the collection, so it's edited in its settings. -->
+							<!--
+								Sized by its own text, not by a fixed cap. It used to be
+								`shrink-0 max-w-64`, which is the wrong way round: the width was
+								pinned regardless of the URL, so anything past 16rem was
+								truncated even with room to spare beside it.
+
+								`w-max` takes the natural width of the base URL; dropping
+								`shrink-0` lets it give that up again when the row is genuinely
+								too narrow, at which point `truncate` does its job. The path
+								input keeps `min-w-0`, so it can always yield first.
+							-->
 							<span
-								class="shrink-0 max-w-64 truncate flex items-center bg-raised/60 border border-border border-r-0 rounded-l px-2 font-mono text-xs text-muted select-none"
+								class="w-max min-w-0 truncate flex items-center bg-raised/60 border border-border border-r-0 rounded-l px-2 font-mono text-xs text-muted select-none"
 								title="{selection.section.name} · base URL is set in section settings"
 							>
 								{selection.section.baseUrl || 'no base URL'}
@@ -385,9 +396,13 @@
 									{mine.length ? 'Pick a response.' : 'Send a request to see the response.'}
 								</div>
 							{:else if shown.pending}
+								<!-- The whole pane is empty while this shows, so the loader is
+								     sized for the space rather than squeezed onto the text
+								     baseline: stacked, and large enough to actually read as
+								     the helix it is. -->
 								<div class="flex-1 grid place-items-center text-muted text-xs">
-									<span class="flex items-center gap-2">
-										<DotLoader size={16} />
+									<span class="flex flex-col items-center gap-3">
+										<DotLoader size={56} class="text-accent" />
 										Waiting…
 									</span>
 								</div>
