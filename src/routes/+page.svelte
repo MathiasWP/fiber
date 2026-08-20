@@ -177,36 +177,41 @@
 	/**
 	 * What the response pane says while a request is out.
 	 *
-	 * Ordered, not shuffled: the first is the plain one almost everyone sees,
-	 * because most requests are done before the second arrives. The rest only show
-	 * up when something is genuinely slow, which is when a little company helps.
+	 * One line per request, chosen when it is sent and held until it lands —
+	 * changing it mid-wait would draw the eye back to a pane that has nothing new
+	 * to report. The novelty is meant to be per request, not per second.
+	 *
+	 * Every line has to read sensibly after 40ms as well as after 40 seconds,
+	 * which rules out anything about how long this is taking.
 	 */
 	const WAITING_MESSAGES = [
 		'Waiting for the server.',
-		'Still waiting.',
 		'Somewhere, a database is thinking.',
-		'The request has been sent. The rest is up to them.',
+		'Packets away.',
+		'Asking nicely.',
+		'The request is out there.',
 		'Holding the connection open.',
-		'This one is taking its time.',
-		'Any moment now.',
-		'You could have made tea by now.'
+		'Off it goes.',
+		'Listening for a reply.',
+		'Sent. Now we find out.',
+		'Over to them.'
 	];
-	const MESSAGE_MS = 3000;
 
 	let waitingMessage = $state(WAITING_MESSAGES[0]);
 
-	$effect(() => {
-		if (!shown?.pending) return;
+	/** Never the same line twice running — repetition is what makes it feel canned. */
+	function differentMessage(previous: string): string {
+		const others = WAITING_MESSAGES.filter((message) => message !== previous);
+		return others[Math.floor(Math.random() * others.length)];
+	}
 
-		// Restart from the top for each request, so a slow one earlier doesn't leave
-		// the next starting mid-sequence.
-		let at = 0;
-		waitingMessage = WAITING_MESSAGES[0];
-		const timer = setInterval(() => {
-			at = (at + 1) % WAITING_MESSAGES.length;
-			waitingMessage = WAITING_MESSAGES[at];
-		}, MESSAGE_MS);
-		return () => clearInterval(timer);
+	$effect(() => {
+		const entry = shown;
+		if (!entry?.pending) return;
+		// Read the id so each new request draws again, rather than only the
+		// first one after the pane was idle.
+		void entry.id;
+		waitingMessage = differentMessage(waitingMessage);
 	});
 
 	const shownBody = $derived(shown?.body ?? '');

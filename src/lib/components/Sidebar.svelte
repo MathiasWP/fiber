@@ -451,29 +451,26 @@
 			</button>
 		{:else}
 			<!--
-				Both icons sit in a 24x24 box, but lucide draws them to different
-				heights inside it: file-plus spans y2-22, folder-plus only y3-20. At
-				equal box sizes the file looks the taller of the two, which is what
-				made this row read as uneven.
-
-				So the boxes are deliberately unequal — 15px and 17.6px, in the ratio
-				20:17 — which lands both drawn glyphs on the same 12.5px height. The
-				buttons themselves are identical squares, so only the artwork is
-				being corrected.
+				square-plus and folder-plus rather than file-plus and folder-plus: the
+				geometric pair reads better at 24px, and it happens to solve the
+				height problem the old pair had. file-plus drew 20 units tall against
+				folder-plus's 17, which needed the two boxes deliberately mismatched
+				to look level. square-plus draws 18 against the same 17 — close enough
+				that a single size does, and the arithmetic can go.
 			-->
 			<button
 				class="ml-auto h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
 				title="New request — not in any collection"
 				onclick={addLooseRequest}
 			>
-				<span class="i-lucide-file-plus text-[15px]"></span>
+				<span class="i-lucide-square-plus text-4"></span>
 			</button>
 			<button
 				class="h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
 				title="New collection"
 				onclick={() => (creating = true)}
 			>
-				<span class="i-lucide-folder-plus text-[17.6px]"></span>
+				<span class="i-lucide-folder-plus text-4"></span>
 			</button>
 		{/if}
 	</header>
@@ -738,24 +735,40 @@
 					>
 						{@const name = requestName(entry)}
 						<div class="flex items-center gap-2">
-							<span class="font-mono text-2.5 font-bold w-9 shrink-0 {methodColor(entry.method)}">
-								{entry.method}
-							</span>
-							<!-- Fixed-width status slot: spinner, error icon and status code
-							     all occupy the same space, so rows never reflow. -->
-							<span class="w-8 shrink-0 font-mono text-2.5">
-								{#if entry.pending}
-									<DotLoader size={12} class="text-muted" />
-								{:else if entry.error}
-									<span class="i-lucide-circle-alert text-bad text-3"></span>
-								{:else if entry.response}
-									<span class={statusColor(entry.response.status)}>{entry.response.status}</span>
-								{/if}
-							</span>
+							<!--
+								Name first, then method, status and time together on the right.
+								Those three are the fixed-width part of the row, so keeping them
+								adjacent lets the name have all the space that's left.
+
+								Method and status share one tight group rather than each having
+								its own column: the method used to sit in a `w-9` box wide
+								enough for DELETE, which left GET floating well clear of its
+								status code. The status slot keeps a fixed width of its own —
+								spinner, error icon and code all occupy the same space, so a row
+								doesn't jump about as a request settles.
+							-->
 							{#if name}
 								<span class="min-w-0 flex-1 truncate text-xs text-text" title={name}>{name}</span>
+							{:else}
+								<!-- Unnamed entries still push the right-hand group over, so
+								     every row lines up down the list. -->
+								<span class="flex-1"></span>
 							{/if}
-							<span class="ml-auto pl-2 text-2.5 text-muted shrink-0">{clockTime(entry.at)}</span>
+							<span class="flex items-center gap-1 shrink-0">
+								<span class="font-mono text-2.5 font-bold {methodColor(entry.method)}">
+									{entry.method}
+								</span>
+								<span class="w-8 shrink-0 font-mono text-2.5">
+									{#if entry.pending}
+										<DotLoader size={12} class="text-text" />
+									{:else if entry.error}
+										<span class="i-lucide-circle-alert text-bad text-3"></span>
+									{:else if entry.response}
+										<span class={statusColor(entry.response.status)}>{entry.response.status}</span>
+									{/if}
+								</span>
+							</span>
+							<span class="text-2.5 text-muted shrink-0">{clockTime(entry.at)}</span>
 						</div>
 						<div class="truncate text-2.5 text-muted mt-0.5" title={entry.url}>{entry.url}</div>
 					</ContextMenu.Trigger>
