@@ -12,8 +12,11 @@
 		formatBytes,
 		resolveUrl,
 		sendRequest,
+		parseQuery,
 		statusColor,
 		tryFormatJson,
+		withQuery,
+		type QueryParam,
 		type SavedRequest,
 		type Section
 	} from '$lib/api';
@@ -105,6 +108,13 @@
 		if (section) collections.touch(section);
 	});
 
+	// A method that lost its body tab must not leave the pane on it, and vice
+	// versa — Tabs with no matching trigger renders nothing at all.
+	$effect(() => {
+		if (bodilessMethod && requestTab === 'body') requestTab = 'params';
+		if (!bodilessMethod && requestTab === 'params') requestTab = 'body';
+	});
+
 	// Keep one blank row at the end of the header table to type into. Blank rows
 	// are stripped on the way to disk, so they never show up in a diff.
 	$effect(() => {
@@ -114,6 +124,44 @@
 			headers.push({ name: '', value: '' });
 		}
 	});
+
+	/**
+	 * The query string, as a table.
+	 *
+	 * Bodiless methods get this where the body tab would be, because a GET with
+	 * a body is a dead tab and its parameters are the thing you actually edit.
+	 *
+	 * Kept as local state rather than derived straight from the path: an input
+	 * bound to a derived value fights whoever is typing into it. The path stays
+	 * the single source of truth, and `writtenPath` records what this pane last
+	 * wrote so the sync back in can tell a URL someone else changed from an echo
+	 * of its own edit.
+	 */
+	let queryParams = $state<QueryParam[]>([]);
+	let writtenPath = '';
+
+	$effect(() => {
+		const path = draft.path;
+		if (path === writtenPath) return;
+		queryParams = parseQuery(path);
+	});
+
+	// One blank row to type into, the same way the headers table does it.
+	$effect(() => {
+		const last = queryParams[queryParams.length - 1];
+		if (!last || last.name.trim() || last.value.trim()) {
+			queryParams.push({ name: '', value: '' });
+		}
+	});
+
+	function commitParams() {
+		const next = withQuery(draft.path, queryParams);
+		if (next === draft.path) return;
+		writtenPath = next;
+		draft.path = next;
+	}
+
+	const filledParams = $derived(queryParams.filter((param) => param.name.trim().length > 0));
 
 	const filledHeaders = $derived(draft.headers.filter((header) => header.name.trim().length > 0));
 
@@ -357,12 +405,23 @@
 								<Tabs.List
 									class="flex items-center gap-1 px-2 h-9 border-b border-border bg-panel shrink-0"
 								>
-									<Tabs.Trigger
-										value="body"
-										class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
-									>
-										Body
-									</Tabs.Trigger>
+									<!-- One or the other, never both: a GET has no body to edit and
+									 a POST's parameters belong in the URL bar. -->
+									{#if bodilessMethod}
+										<Tabs.Trigger
+											value="params"
+											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
+										>
+											Params{filledParams.length ? ` (${filledParams.length})` : ''}
+										</Tabs.Trigger>
+									{:else}
+										<Tabs.Trigger
+											value="body"
+											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
+										>
+											Body
+										</Tabs.Trigger>
+									{/if}
 									<Tabs.Trigger
 										value="headers"
 										class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
@@ -370,7 +429,7 @@
 										Headers{filledHeaders.length ? ` (${filledHeaders.length})` : ''}
 									</Tabs.Trigger>
 
-									{#if requestTab === 'body' && !bodilessMethod}
+									{#if requestTab === 'body'}
 										<button
 											class="btn-ghost ml-auto text-xs px-2 py-1"
 											onclick={() => bodyEditor?.format()}
@@ -381,15 +440,37 @@
 								</Tabs.List>
 
 								<Tabs.Content value="body" class="flex-1 min-h-0">
-									{#if bodilessMethod}
-										<p class="p-3 text-xs text-muted">
-											{draft.method} requests are sent without a body.
-										</p>
-									{:else}
-										{#key draft.id}
-											<Editor bind:this={bodyEditor} bind:value={draft.body} placeholder={'{}'} />
-										{/key}
-									{/if}
+									{#key draft.id}
+										<Editor bind:this={bodyEditor} bind:value={draft.body} placeholder={'{}'} />
+									{/key}
+								</Tabs.Content>
+
+								<!-- Editing a row rewrites the query on `draft.path`, so the URL
+								     bar above updates as you type and the two never disagree. -->
+								<Tabs.Content value="params" class="flex-1 min-h-0 overflow-y-auto p-2">
+									<div class="flex flex-col gap-1">
+										{#each queryParams as param, index (index)}
+											<div class="flex gap-1">
+												<input
+													bind:value={param.name}
+													oninput={commitParams}
+													spellcheck="false"
+													placeholder="Parameter"
+													class="input-base flex-1 font-mono text-xs"
+												/>
+												<input
+													bind:value={param.value}
+													oninput={commitParams}
+													spellcheck="false"
+													placeholder="Value"
+													class="input-base flex-[2] font-mono text-xs"
+												/>
+											</div>
+										{/each}
+									</div>
+									<p class="mt-2 text-2.5 text-muted">
+										Appended to the URL as a query string. Values are encoded for you.
+									</p>
 								</Tabs.Content>
 
 								<Tabs.Content value="headers" class="flex-1 min-h-0 overflow-y-auto p-2">
