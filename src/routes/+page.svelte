@@ -285,6 +285,20 @@
 
 	let waitingMessage = $state(WAITING_MESSAGES[0]);
 
+	/**
+	 * The line shown last, kept deliberately outside `$state`.
+	 *
+	 * The effect below writes `waitingMessage`, so it must not also read it.
+	 * `waitingMessage = differentMessage(waitingMessage)` did exactly that, and
+	 * since `differentMessage` never returns what it was given, the effect
+	 * re-triggered itself forever: every write changed a value the effect
+	 * depended on, and the next run was guaranteed to change it again. Svelte
+	 * stops that with `effect_update_depth_exceeded`, which throws — and a thrown
+	 * effect leaves the last paint on screen and no reactivity behind it, so the
+	 * window looks frozen while the styles still say otherwise.
+	 */
+	let lastWaitingMessage = WAITING_MESSAGES[0];
+
 	/** Never the same line twice running — repetition is what makes it feel canned. */
 	function differentMessage(previous: string): string {
 		const others = WAITING_MESSAGES.filter((message) => message !== previous);
@@ -297,7 +311,8 @@
 		// Read the id so each new request draws again, rather than only the
 		// first one after the pane was idle.
 		void entry.id;
-		waitingMessage = differentMessage(waitingMessage);
+		lastWaitingMessage = differentMessage(lastWaitingMessage);
+		waitingMessage = lastWaitingMessage;
 	});
 
 	const shownBody = $derived(shown?.body ?? '');
