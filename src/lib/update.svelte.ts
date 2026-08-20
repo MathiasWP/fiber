@@ -6,7 +6,14 @@ const INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** Which version the user has already said no to. */
 const DISMISSED_KEY = 'fiber:update-dismissed';
 
-export type UpdateStage = 'idle' | 'available' | 'downloading' | 'installing' | 'failed';
+export type UpdateStage =
+	| 'idle'
+	| 'available'
+	| 'downloading'
+	| 'installing'
+	/** Swapped in on disk, waiting for the next launch to take effect. */
+	| 'staged'
+	| 'failed';
 
 /**
  * Finds new releases and installs them.
@@ -68,8 +75,15 @@ class Updates {
 		}
 	}
 
-	/** Downloads, installs, and restarts into the new version. */
-	async install(): Promise<void> {
+	/**
+	 * Downloads and installs. Restarts into it unless told otherwise.
+	 *
+	 * `restart: false` is the whole "next time I open it" option: installing
+	 * replaces the bundle on disk, but the running process keeps the code it
+	 * already loaded, so the new version simply arrives when you next launch.
+	 * Nothing is deferred or queued — the work is done either way.
+	 */
+	async install({ restart = true }: { restart?: boolean } = {}): Promise<void> {
 		if (!this.#update || this.stage !== 'available') return;
 
 		this.stage = 'downloading';
@@ -92,6 +106,17 @@ class Updates {
 					this.stage = 'installing';
 				}
 			});
+
+			if (!restart) {
+				// Done, and staying out of the way until the app is next opened.
+				//
+				// Marked dismissed too: this process still reports the old version,
+				// so a later check would find the same update again and offer to
+				// install what is already sitting on disk.
+				localStorage.setItem(DISMISSED_KEY, this.version);
+				this.stage = 'staged';
+				return;
+			}
 
 			// The new version is on disk; this process is still the old one.
 			await relaunch();
