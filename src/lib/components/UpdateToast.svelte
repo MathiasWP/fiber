@@ -11,7 +11,7 @@
 
 {#if updates.stage !== 'idle'}
 	<div
-		class="fixed bottom-4 right-4 z-100 w-72 rounded-md border border-border bg-panel p-3 shadow-xl"
+		class="fixed bottom-4 right-4 z-100 w-80 rounded-md border border-border bg-panel p-3 shadow-xl"
 		role="status"
 	>
 		{#if updates.stage === 'available'}
@@ -19,7 +19,7 @@
 				<span class="i-lucide-arrow-up-circle mt-0.5 shrink-0 text-3.5 text-accent"></span>
 				<div class="min-w-0 flex-1">
 					<p class="text-xs font-medium text-text">Fiber {updates.version} is available</p>
-					<p class="mt-0.5 text-xs text-muted">Installing restarts the app.</p>
+					<p class="mt-0.5 text-xs text-muted">Updating now restarts the app.</p>
 				</div>
 				<button
 					class="i-lucide-x shrink-0 text-3 text-muted hover:text-text"
@@ -27,9 +27,25 @@
 					onclick={() => updates.dismiss()}
 				></button>
 			</div>
-			<div class="mt-2.5 flex justify-end gap-1.5">
+			<div class="mt-2.5 flex items-center justify-end gap-1.5">
 				<button class="btn-ghost text-xs" onclick={() => updates.dismiss()}>Not now</button>
+				<!-- Installs exactly the same way; it just doesn't restart, so the
+				     new version is simply what launches next time. -->
+				<button class="btn-ghost text-xs" onclick={() => updates.install({ restart: false })}>
+					On next launch
+				</button>
 				<button class="btn-primary text-xs" onclick={() => updates.install()}>Update</button>
+			</div>
+		{:else if updates.stage === 'staged'}
+			<div class="flex items-start gap-2">
+				<span class="i-lucide-check-circle-2 mt-0.5 shrink-0 text-3.5 text-ok"></span>
+				<div class="min-w-0 flex-1">
+					<p class="text-xs font-medium text-text">Fiber {updates.version} is ready</p>
+					<p class="mt-0.5 text-xs text-muted">It starts the next time you open Fiber.</p>
+				</div>
+			</div>
+			<div class="mt-2.5 flex justify-end">
+				<button class="btn-ghost text-xs" onclick={() => updates.reset()}>Close</button>
 			</div>
 		{:else if updates.stage === 'downloading'}
 			<div class="flex items-center gap-2">

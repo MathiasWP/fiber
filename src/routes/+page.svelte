@@ -126,6 +126,41 @@
 		return /json/i.test(contentType) ? 'json' : 'text';
 	});
 
+	/**
+	 * What the response pane says while a request is out.
+	 *
+	 * Ordered, not shuffled: the first is the plain one almost everyone sees,
+	 * because most requests are done before the second arrives. The rest only show
+	 * up when something is genuinely slow, which is when a little company helps.
+	 */
+	const WAITING_MESSAGES = [
+		'Waiting for the server.',
+		'Still waiting.',
+		'Somewhere, a database is thinking.',
+		'The request has been sent. The rest is up to them.',
+		'Holding the connection open.',
+		'This one is taking its time.',
+		'Any moment now.',
+		'You could have made tea by now.'
+	];
+	const MESSAGE_MS = 3000;
+
+	let waitingMessage = $state(WAITING_MESSAGES[0]);
+
+	$effect(() => {
+		if (!shown?.pending) return;
+
+		// Restart from the top for each request, so a slow one earlier doesn't leave
+		// the next starting mid-sequence.
+		let at = 0;
+		waitingMessage = WAITING_MESSAGES[0];
+		const timer = setInterval(() => {
+			at = (at + 1) % WAITING_MESSAGES.length;
+			waitingMessage = WAITING_MESSAGES[at];
+		}, MESSAGE_MS);
+		return () => clearInterval(timer);
+	});
+
 	const shownBody = $derived(shown?.body ?? '');
 
 	const responseText = $derived.by(() => {
@@ -401,11 +436,12 @@
 								<!-- The whole pane is empty while this shows, so the loader is
 								     sized for the space rather than squeezed onto the text
 								     baseline: stacked, and large enough to actually read as
-								     the helix it is. -->
-								<div class="flex-1 grid place-items-center text-muted text-xs">
-									<span class="flex flex-col items-center gap-3">
-										<DotLoader size={56} class="text-accent" />
-										Waiting…
+								     the helix it is. `text-text` rather than the accent, so it
+								     stays the foreground colour in either theme. -->
+								<div class="flex-1 grid place-items-center">
+									<span class="flex flex-col items-center gap-5">
+										<DotLoader size={56} class="text-text" />
+										<span class="text-sm text-muted">{waitingMessage}</span>
 									</span>
 								</div>
 							{:else if shown.error}

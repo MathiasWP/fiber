@@ -163,8 +163,13 @@ behaviour is unchanged.
 
 The app updates itself. It checks GitHub on launch, when the window regains
 focus, and every six hours; a toast in the bottom-right offers the new version,
-and *Update* downloads it with a progress bar, swaps it in and restarts into it.
-*Not now* hides that version until a later one appears.
+with three ways out:
+
+- **Update** — downloads with a progress bar, swaps the app in, restarts into it.
+- **On next launch** — installs the same way but doesn't restart, so the new
+  version is simply what opens next time.
+- **Not now** — gone for the rest of this run, offered again next launch. Not
+  now means not now, rather than never.
 
 [Tauri's updater](https://v2.tauri.app/plugin/updater/) does the work. Each
 release carries a `latest.json` listing every platform's bundle, and each bundle
@@ -238,6 +243,24 @@ disabled or worked around; the check simply never applies.
 Notarising the app is what would make a browser download quiet too, and that
 needs a paid Apple Developer account. The rest of this section is about the
 browser route.
+
+### The keychain asks again after every update
+
+Expected, and not fixable for free. A keychain item's ACL — what "Always Allow"
+writes — is bound to the *designated requirement* of the process that stored it.
+Ad-hoc signing has no certificate to name, so the requirement falls back to the
+code hash, and that changes with every build. macOS therefore sees each update
+as a different application and asks again.
+
+A self-signed certificate is a tempting fix and isn't one: it would be stable
+across builds, but macOS refuses to sign with it until it has been manually
+marked trusted in Keychain Access *on every machine that runs the app*. Trading
+one prompt for a worse one.
+
+A Developer ID certificate ($99/yr) gives a requirement based on the team
+identifier, which doesn't move between releases — so "Always Allow" would mean
+always. That, rather than the install prompt, is the strongest argument for
+paying for one.
 
 Nothing here needs a paid certificate, and the three platforms differ in what
 that costs the person downloading.

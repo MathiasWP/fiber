@@ -461,6 +461,9 @@ mod gui {
             .plugin(tauri_plugin_opener::init())
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init())
+            // Size and position are restored on launch. Without this an update
+            // restart drops the window back to its default geometry.
+            .plugin(tauri_plugin_window_state::Builder::default().build())
             .setup(|app| {
                 if cfg!(debug_assertions) {
                     app.handle().plugin(
@@ -483,6 +486,15 @@ mod gui {
                     loaders: loader::loaders_dir(&app_data_dir),
                 });
                 app.manage(HistoryStore::open(&app_data_dir)?);
+
+                // An update relaunches the app while the old process is still
+                // exiting, and macOS hands focus back to whatever was behind it
+                // — leaving the new window open but buried, so it looked like
+                // nothing had happened until you clicked the dock icon.
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
 
                 Ok(())
             })
