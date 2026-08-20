@@ -45,6 +45,8 @@ src-tauri/
   src/loader.rs                   jq-based endpoint discovery
   src/mcp.rs                      the MCP server
   src/lib.rs                      Tauri commands
+www/
+  index.html                      the landing page — one file, no build step
 ```
 
 ## Keys

@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Fiber — a modern &amp; secure local API client</title>
+		<meta
+			name="description"
+			content="Fiber is a modern &amp; secure local API client for macOS, Windows and Linux."
+		/>
+		<meta name="theme-color" content="#07080b" />
+		<link rel="icon" href="icon.png" />
+		<meta property="og:title" content="Fiber" />
+		<meta property="og:description" content="A modern &amp; secure local API client." />
+		<meta property="og:image" content="icon.png" />
+		<meta property="og:type" content="website" />
+
+		<style>
+			/* Colours are the app's own dark theme (src/app.css), one shade deeper so
+			   the fibre light has somewhere to fall off to. */
+			:root {
+				--bg: #07080b;
+				--panel: #15171d;
+				--border: #272b35;
+				--muted: #8b93a7;
+				--text: #dfe3ec;
+				--ok: #3ecf8e;
+				--mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+				color-scheme: dark;
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			html,
+			body {
+				height: 100%;
+				margin: 0;
+				overflow: hidden; /* one page, no scrolling */
+			}
+
+			body {
+				background: var(--bg);
+				color: var(--text);
+				font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
+					sans-serif;
+				-webkit-font-smoothing: antialiased;
+			}
+
+			/* The canvas is the page. Everything else sits on top of it. */
+			#fibers {
+				position: fixed;
+				inset: 0;
+				width: 100%;
+				height: 100%;
+				display: block;
+			}
+
+			main {
+				position: relative;
+				height: 100dvh;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: flex-end;
+				/* The upper two thirds belong to the fibres; the text lives under them,
+				   and the bundle's origin point is pinned to the top of this block. */
+				padding: 0 24px clamp(28px, 9vh, 84px);
+				gap: 18px;
+				text-align: center;
+			}
+
+			main > * {
+				max-width: 100%;
+			}
+
+			h1 {
+				margin: 0;
+				font-size: clamp(30px, 5.2vw, 46px);
+				font-weight: 500;
+				letter-spacing: -0.02em;
+				line-height: 1;
+			}
+
+			p {
+				margin: 0;
+				color: var(--muted);
+				font-size: clamp(13px, 1.6vw, 15px);
+				line-height: 1.5;
+			}
+
+			button.cmd {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				max-width: 100%;
+				margin-top: 6px;
+				padding: 11px 14px;
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				background: var(--panel);
+				color: var(--text);
+				font: inherit;
+				font-family: var(--mono);
+				font-size: clamp(10px, 1.45vw, 13px);
+				line-height: 1.4;
+				text-align: left;
+				cursor: pointer;
+				transition:
+					border-color 0.15s,
+					background-color 0.15s;
+			}
+
+			button.cmd:hover,
+			button.cmd:focus-visible {
+				border-color: #3a4152;
+				background: #1a1d25;
+			}
+
+			button.cmd:focus-visible {
+				outline: none;
+			}
+
+			.cmd .prompt {
+				flex: none;
+				color: var(--muted);
+				user-select: none;
+			}
+
+			.cmd code {
+				/* Without min-width a flex item refuses to shrink below its content,
+				   and the command pushes the page wider than a phone. */
+				min-width: 0;
+				overflow-wrap: anywhere;
+			}
+
+			/* Fixed size, and the two states stacked, so confirming doesn't shift the
+			   command sideways. */
+			.cmd .state {
+				position: relative;
+				flex: none;
+				width: 3.4em;
+				height: 1.15em;
+				user-select: none;
+			}
+
+			.cmd .state > * {
+				position: absolute;
+				inset: 0;
+				display: flex;
+				align-items: center;
+				justify-content: flex-end;
+				transition: opacity 0.16s;
+			}
+
+			.state .label {
+				color: var(--muted);
+			}
+
+			.state .check {
+				color: var(--ok);
+				opacity: 0;
+			}
+
+			.state .check svg {
+				width: 15px;
+				height: 15px;
+			}
+
+			/* pathLength="1" normalises the tick, so the dash values are just 0 and 1
+			   however the path is scaled. */
+			.state .check path {
+				stroke-dasharray: 1;
+				stroke-dashoffset: 1;
+				transition: stroke-dashoffset 0.26s ease 0.05s;
+			}
+
+			.state.done .label {
+				opacity: 0;
+			}
+
+			.state.done .check {
+				opacity: 1;
+			}
+
+			.state.done .check path {
+				stroke-dashoffset: 0;
+			}
+
+			.note {
+				font-size: clamp(11px, 1.35vw, 12.5px);
+			}
+
+			a {
+				color: var(--muted);
+				text-decoration-color: var(--border);
+				text-underline-offset: 3px;
+			}
+
+			a:hover {
+				color: var(--text);
+			}
+
+			.sr {
+				position: absolute;
+				width: 1px;
+				height: 1px;
+				padding: 0;
+				overflow: hidden;
+				clip-path: inset(50%);
+				white-space: nowrap;
+			}
+
+			@media (max-height: 460px) {
+				main {
+					gap: 12px;
+				}
+			}
+
+			@media (prefers-reduced-motion: reduce) {
+				.state .check path {
+					transition: none;
+				}
+			}
+		</style>
+	</head>
+
+	<body>
+		<canvas id="fibers" aria-hidden="true"></canvas>
+
+		<main>
+			<h1>Fiber</h1>
+			<p>A modern &amp; secure local API client.</p>
+
+			<button class="cmd" type="button" id="copy" aria-label="Copy the install command">
+				<span class="prompt" aria-hidden="true">$</span>
+				<code id="command"
+					>curl -fsSL https://raw.githubusercontent.com/MathiasWP/fiber/main/scripts/install-macos.sh
+					| bash</code
+				>
+				<span class="state" id="state" aria-hidden="true">
+					<span class="label">copy</span>
+					<span class="check">
+						<svg
+							viewBox="0 0 16 16"
+							fill="none"
+							stroke="currentColor"
+							stroke-width="2"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+						>
+							<path pathLength="1" d="M3.5 8.5 6.5 11.5 12.5 4.5" />
+						</svg>
+					</span>
+				</span>
+			</button>
+			<span class="sr" role="status" id="status"></span>
+
+			<p class="note">
+				macOS.
+				<a href="https://github.com/MathiasWP/fiber/releases">Windows and Linux builds</a>, and the
+				<a href="https://github.com/MathiasWP/fiber">source</a>, on GitHub.
+			</p>
+		</main>
+
+		<script>
+			(() => {
+				const canvas = document.getElementById('fibers');
+				const ctx = canvas.getContext('2d');
+				const wordmark = document.querySelector('h1');
+				const calm = matchMedia('(prefers-reduced-motion: reduce)');
+
+				const COUNT = 23; // strands
+				const SAMPLES = 56; // points sampled along each strand
+				const CHUNKS = 4; // depth-shaded segments per strand
+				const TAIL = 0.17; // pulse length, as a fraction of a strand
+
+				const GOLDEN = 2.399963; // radians — the even-scatter azimuth step
+				const SPLAY_MIN = 0.22; // narrowest strand's angle from vertical
+				const SPLAY_MAX = 1.16; // widest — kept under 90° so nothing droops
+				const TILT = 0.19; // camera pitch: we look slightly down on the bundle
+				const SPIN = 0.045; // radians a second — a drift, not a spin
+
+				let W = 0,
+					H = 0,
+					ox = 0, // the single point every strand grows from
+					oy = 0,
+					reach = 0, // how far the bundle spreads
+					depth = 0, // camera distance, in world units
+					splay = 1; // fan width, narrowed on portrait screens
+
+				let strands = [];
+				let order = []; // strand indices, far to near
+
+				const rand = (a, b) => a + Math.random() * (b - a);
+				const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+				/**
+				 * Strand geometry, in units of `reach` and relative to the origin, so a
+				 * resize is a rescale rather than a rebuild.
+				 *
+				 * Each strand is a point on a dome: an azimuth around the vertical axis
+				 * and a polar angle out from it. Every strand leaves the origin straight
+				 * up — that shared first control point is what keeps them bundled at the
+				 * base — then peels off to its own tip. Azimuths step by the golden
+				 * angle so they scatter evenly instead of landing in rows.
+				 */
+				function build() {
+					strands = [];
+					for (let i = 0; i < COUNT; i++) {
+						const u = (i + 0.5) / COUNT;
+						// sqrt biases the polar angle outwards, so the rim carries more
+						// strands than the crown — what a real fibre lamp does.
+						const polar = SPLAY_MIN + (SPLAY_MAX - SPLAY_MIN) * Math.sqrt(u);
+						const tier = i % 2 ? 0.8 : 1; // two nested shells, as in the icon
+
+						strands.push({
+							azimuth: i * GOLDEN + rand(-0.08, 0.08),
+							polar,
+							radius: tier * rand(0.9, 1),
+							// The tip's tangent leans further out than the tip itself, so
+							// strands flatten as they arrive instead of ending mid-curve.
+							tangent: Math.min(1.5, polar * 1.45),
+							// Cyan up the crown, violet out at the flattened rim — the
+							// icon's relationship, and it survives the bundle rotating.
+							// Squared, because most strands sit near the rim and a linear
+							// ramp turns the whole bundle violet.
+							hue: 194 + (polar / SPLAY_MAX) ** 2 * 68 + rand(-7, 7),
+							// Independent phases: the bundle breathes, it doesn't pulse as one.
+							phase: rand(0, Math.PI * 2),
+							phase2: rand(0, Math.PI * 2),
+							sway: rand(0.1, 0.24),
+							pts: new Float32Array(SAMPLES * 2), // projected, in px
+							scl: new Float32Array(SAMPLES), // perspective scale per point
+							zs: new Float32Array(SAMPLES), // depth per point
+							len: new Float32Array(SAMPLES), // cumulative length, in world units
+							tipZ: 0,
+							pulses: [],
+							next: rand(0, 3),
+							flare: 0 // tip brightness, spiked on arrival
+						});
+						order.push(i);
+					}
+				}
+
+				function resize() {
+					const dpr = Math.min(devicePixelRatio || 1, 2);
+					W = innerWidth;
+					H = innerHeight;
+					canvas.width = Math.round(W * dpr);
+					canvas.height = Math.round(H * dpr);
+					ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+					// The light source sits just above the wordmark, so the text reads as
+					// the thing the fibres grow out of.
+					const top = wordmark.getBoundingClientRect().top;
+					ox = W / 2;
+					oy = top - Math.min(34, H * 0.05);
+
+					// A wide bundle needs width to spread into. On a phone there isn't
+					// any, so it closes up into a tall plume instead of staying a squat
+					// spray with an empty screen above it.
+					splay = Math.min(1, W / (oy * 1.5));
+					reach = Math.max(
+						120,
+						Math.min(oy * 0.9, (W * 0.46) / Math.max(0.4, Math.sin(SPLAY_MAX * splay)))
+					);
+					// Close enough that near strands are visibly larger than far ones,
+					// far enough that the nearest don't smear off the edges.
+					depth = reach * 2.7;
+				}
+
+				/**
+				 * Samples one strand: bezier in 3D, then projected to the screen.
+				 *
+				 * Spinning the bundle is just an addition to the azimuth — a rotation
+				 * about the vertical axis is exactly that — and since a bezier is an
+				 * affine combination of its control points, rotating and pitching the
+				 * four points is the same as doing it to all 56 samples.
+				 */
+				function trace(s, t, spin, pitch) {
+					const r = reach * s.radius;
+
+					const drift = calm.matches ? 0 : s.sway;
+					const wobble = Math.sin(t * 0.55 + s.phase) * drift;
+					const wobble2 = Math.cos(t * 0.41 + s.phase2) * drift;
+
+					const polar = s.polar * splay + wobble * 0.07;
+					const azimuth = s.azimuth + spin + wobble2 * 0.06;
+					const tangent = s.tangent * splay;
+
+					const ca = Math.cos(azimuth),
+						sa = Math.sin(azimuth);
+
+					// Tip, and the direction it arrives from.
+					const tipX = Math.sin(polar) * ca * r,
+						tipY = Math.cos(polar) * r,
+						tipZ = Math.sin(polar) * sa * r;
+					const armX = Math.sin(tangent) * ca * 0.42 * r,
+						armY = Math.cos(tangent) * 0.42 * r,
+						armZ = Math.sin(tangent) * sa * 0.42 * r;
+
+					// P0 at the origin, P1 straight up (the bundle), P2 backed off the
+					// tip along its tangent, P3 the tip. Pitched into camera space as we
+					// go; P0 is the pivot, so it stays put.
+					const cp = Math.cos(pitch),
+						sp = Math.sin(pitch);
+					const pitchY = (y, z) => y * cp - z * sp;
+					const pitchZ = (y, z) => y * sp + z * cp;
+
+					const x1 = wobble * 0.02 * r,
+						y1r = 0.42 * r,
+						z1r = 0;
+					const x2 = tipX - armX,
+						y2r = tipY - armY,
+						z2r = tipZ - armZ;
+
+					const y1 = pitchY(y1r, z1r),
+						z1 = pitchZ(y1r, z1r);
+					const y2 = pitchY(y2r, z2r),
+						z2 = pitchZ(y2r, z2r);
+					const y3 = pitchY(tipY, tipZ),
+						z3 = pitchZ(tipY, tipZ);
+
+					s.tipZ = z3;
+
+					let px = 0,
+						py = 0,
+						pz = 0,
+						total = 0;
+
+					for (let i = 0; i < SAMPLES; i++) {
+						const u = i / (SAMPLES - 1);
+						const v = 1 - u;
+						const a = v * v * v,
+							b = 3 * v * v * u,
+							c = 3 * v * u * u,
+							d = u * u * u;
+
+						const x = b * x1 + c * x2 + d * tipX;
+						const y = b * y1 + c * y2 + d * y3;
+						const z = b * z1 + c * z2 + d * z3;
+
+						// Length is measured in world space, not on the screen, so a
+						// strand pointing at the camera carries its pulse at the same
+						// speed as one lying across it — it just looks slower, which is
+						// the whole point.
+						if (i > 0) total += Math.hypot(x - px, y - py, z - pz);
+						px = x;
+						py = y;
+						pz = z;
+
+						const scale = depth / (depth - Math.min(z, depth * 0.7));
+						s.pts[i * 2] = ox + x * scale;
+						s.pts[i * 2 + 1] = oy - y * scale;
+						s.scl[i] = scale;
+						s.zs[i] = z;
+						s.len[i] = total;
+					}
+				}
+
+				/** How lit something at depth `z` is. Distance dims, as it should. */
+				function lit(z) {
+					return 0.5 + 0.5 * clamp(z / reach / 2 + 0.5, 0, 1);
+				}
+
+				/** Point at distance `d` along an already-traced strand: x, y, scale, z. */
+				function at(s, d, out) {
+					const len = s.len;
+					const total = len[SAMPLES - 1];
+					const target = clamp(d, 0, total);
+
+					let i = 1;
+					while (i < SAMPLES - 1 && len[i] < target) i++;
+
+					const span = len[i] - len[i - 1] || 1;
+					const k = (target - len[i - 1]) / span;
+					const j = i - 1;
+					out[0] = s.pts[j * 2] + (s.pts[i * 2] - s.pts[j * 2]) * k;
+					out[1] = s.pts[j * 2 + 1] + (s.pts[i * 2 + 1] - s.pts[j * 2 + 1]) * k;
+					out[2] = s.scl[j] + (s.scl[i] - s.scl[j]) * k;
+					out[3] = s.zs[j] + (s.zs[i] - s.zs[j]) * k;
+				}
+
+				function launch(s, delay = 0) {
+					s.pulses.push({ p: -delay, speed: rand(0.42, 0.68) });
+				}
+
+				/** Every strand at once, staggered — the payoff moment. */
+				function burst() {
+					strands.forEach((s, i) => launch(s, i * 0.012 + rand(0, 0.05)));
+				}
+
+				const head = [0, 0, 1, 0];
+				const tail = [0, 0, 1, 0];
+				const scratch = [0, 0, 1, 0]; // strokeBetween's own, so it can't clobber the above
+
+				function draw(t, dt) {
+					ctx.clearRect(0, 0, W, H);
+					ctx.lineCap = 'round';
+					ctx.lineJoin = 'round';
+
+					const spin = calm.matches ? 0 : t * SPIN;
+					const pitch = TILT + (calm.matches ? 0 : Math.sin(t * 0.13) * 0.04);
+
+					for (const s of strands) trace(s, t, spin, pitch);
+
+					// Far strands first, so the near ones lay over them.
+					order.sort((a, b) => strands[a].tipZ - strands[b].tipZ);
+
+					// The strands at rest: lit, but only just, so the light is what moves.
+					// Shaded in chunks rather than as one line, because a single strand
+					// runs from the middle of the bundle out to its rim and its far half
+					// should not be as bright as its near half.
+					const step = (SAMPLES - 1) / CHUNKS;
+					for (const idx of order) {
+						const s = strands[idx];
+						for (let c = 0; c < CHUNKS; c++) {
+							const from = Math.round(c * step);
+							const to = Math.round((c + 1) * step);
+							const mid = (from + to) >> 1;
+							const scale = s.scl[mid];
+							const light = lit(s.zs[mid]);
+
+							ctx.beginPath();
+							ctx.moveTo(s.pts[from * 2], s.pts[from * 2 + 1]);
+							for (let i = from + 1; i <= to; i++) ctx.lineTo(s.pts[i * 2], s.pts[i * 2 + 1]);
+
+							ctx.lineWidth = 3 * scale;
+							ctx.strokeStyle = `hsla(${s.hue}, 90%, 62%, ${0.07 * light})`;
+							ctx.stroke();
+
+							ctx.lineWidth = 1 * scale;
+							ctx.strokeStyle = `hsla(${s.hue}, 92%, 68%, ${0.34 * light})`;
+							ctx.stroke();
+						}
+					}
+
+					ctx.globalCompositeOperation = 'lighter';
+
+					for (const idx of order) {
+						const s = strands[idx];
+						const total = s.len[SAMPLES - 1];
+
+						// Advance, and hand the tip its light when a pulse arrives.
+						for (let i = s.pulses.length - 1; i >= 0; i--) {
+							const pulse = s.pulses[i];
+							pulse.p += pulse.speed * dt;
+							if (pulse.p >= 1) {
+								s.flare = 1;
+								s.pulses.splice(i, 1);
+							}
+						}
+
+						s.flare *= Math.exp(-dt * 2.6);
+
+						if (t >= s.next) {
+							launch(s);
+							s.next = t + (calm.matches ? rand(6, 12) : rand(2.1, 5.4));
+						}
+
+						for (const pulse of s.pulses) {
+							if (pulse.p <= 0) continue;
+
+							const dHead = pulse.p * total;
+							const dTail = Math.max(0, dHead - TAIL * total);
+							at(s, dHead, head);
+							at(s, dTail, tail);
+
+							const scale = head[2];
+							const light = lit(head[3]);
+
+							// Two strokes make the bloom: a wide soft one, a tight bright
+							// one. Cheaper and cleaner than shadowBlur.
+							const grad = ctx.createLinearGradient(tail[0], tail[1], head[0], head[1]);
+							grad.addColorStop(0, `hsla(${s.hue}, 95%, 62%, 0)`);
+							grad.addColorStop(1, `hsla(${s.hue}, 95%, 72%, ${0.85 * light})`);
+
+							ctx.strokeStyle = grad;
+
+							ctx.lineWidth = 5 * scale;
+							ctx.globalAlpha = 0.16;
+							strokeBetween(s, dTail, dHead);
+
+							ctx.lineWidth = 1.4 * scale;
+							ctx.globalAlpha = 1;
+							strokeBetween(s, dTail, dHead);
+
+							glow(head[0], head[1], 7 * scale, s.hue, 0.5 * light);
+						}
+
+						// Tips: always lit a little, brilliant just after an arrival.
+						const last = SAMPLES - 1;
+						const tx = s.pts[last * 2];
+						const ty = s.pts[last * 2 + 1];
+						const scale = s.scl[last];
+						const light = lit(s.zs[last]);
+
+						glow(tx, ty, (3 + s.flare * 22) * scale, s.hue, (0.35 + s.flare * 0.65) * light);
+
+						ctx.globalAlpha = 1;
+						ctx.fillStyle = `hsla(${s.hue}, 100%, ${72 + s.flare * 24}%, ${
+							(0.5 + s.flare * 0.5) * light
+						})`;
+						ctx.beginPath();
+						ctx.arc(tx, ty, (1.5 + s.flare * 1.2) * scale, 0, Math.PI * 2);
+						ctx.fill();
+					}
+
+					// The origin, brighter while something is on its way out of it.
+					let leaving = 0;
+					for (const s of strands)
+						for (const pulse of s.pulses)
+							if (pulse.p > 0 && pulse.p < 0.3) leaving = Math.max(leaving, 1 - pulse.p / 0.3);
+
+					glow(ox, oy, 26 + leaving * 26, 205, 0.28 + leaving * 0.3);
+					ctx.globalAlpha = 1;
+					ctx.fillStyle = `hsla(200, 100%, 92%, ${0.75 + leaving * 0.25})`;
+					ctx.beginPath();
+					ctx.arc(ox, oy, 1.9, 0, Math.PI * 2);
+					ctx.fill();
+
+					ctx.globalCompositeOperation = 'source-over';
+					ctx.globalAlpha = 1;
+				}
+
+				/** Strokes the slice of a strand between two lengths. */
+				function strokeBetween(s, from, to) {
+					ctx.beginPath();
+					at(s, from, scratch);
+					ctx.moveTo(scratch[0], scratch[1]);
+					for (let i = 0; i < SAMPLES; i++) {
+						const d = s.len[i];
+						if (d <= from || d >= to) continue;
+						ctx.lineTo(s.pts[i * 2], s.pts[i * 2 + 1]);
+					}
+					at(s, to, scratch);
+					ctx.lineTo(scratch[0], scratch[1]);
+					ctx.stroke();
+				}
+
+				function glow(x, y, r, hue, alpha) {
+					const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+					g.addColorStop(0, `hsla(${hue}, 100%, 74%, ${alpha})`);
+					g.addColorStop(0.4, `hsla(${hue}, 100%, 66%, ${alpha * 0.32})`);
+					g.addColorStop(1, `hsla(${hue}, 100%, 60%, 0)`);
+					ctx.globalAlpha = 1;
+					ctx.fillStyle = g;
+					ctx.beginPath();
+					ctx.arc(x, y, r, 0, Math.PI * 2);
+					ctx.fill();
+				}
+
+				let previous = 0;
+				let nextBurst = 7;
+
+				function frame(now) {
+					const t = now / 1000;
+					// Clamped: a backgrounded tab returns with a huge gap, and every
+					// pulse would jump to its tip at once.
+					const dt = Math.min(0.05, t - previous || 0.016);
+					previous = t;
+
+					if (!calm.matches && t >= nextBurst) {
+						burst();
+						nextBurst = t + rand(9, 16);
+					}
+
+					draw(t, dt);
+					requestAnimationFrame(frame);
+				}
+
+				addEventListener('resize', resize);
+
+				// Copying is worth a flourish: the whole bundle fires at once.
+				const button = document.getElementById('copy');
+				const state = document.getElementById('state');
+				const label = state.querySelector('.label');
+				const status = document.getElementById('status');
+				let restore;
+
+				button.addEventListener('click', async () => {
+					const text = document.getElementById('command').textContent.replace(/\s+/g, ' ').trim();
+					let copied = true;
+					try {
+						await navigator.clipboard.writeText(text);
+					} catch {
+						copied = false;
+					}
+
+					if (copied) {
+						state.classList.add('done');
+						status.textContent = 'Install command copied';
+					} else {
+						// No clipboard — a permissions prompt, or an insecure origin.
+						label.textContent = 'select';
+						status.textContent = 'Copying was blocked — select the command to copy it';
+					}
+
+					burst();
+					clearTimeout(restore);
+					restore = setTimeout(() => {
+						state.classList.remove('done');
+						label.textContent = 'copy';
+						status.textContent = '';
+					}, 1800);
+				});
+
+				build();
+				resize();
+				// Fonts land after first paint and move the text block; the origin has
+				// to follow it.
+				document.fonts?.ready.then(resize);
+				requestAnimationFrame(frame);
+			})();
+		</script>
+	</body>
+</html>
