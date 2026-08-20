@@ -1,8 +1,12 @@
 {
 	"name": "fiber",
 	"private": true,
-	"version": "0.0.1",
+	"version": "0.1.0",
 	"type": "module",
+	"packageManager": "pnpm@10.6.5",
+	"engines": {
+		"node": "^24 || >=26"
+	},
 	"scripts": {
 		"dev": "vite dev",
 		"build": "vite build",
@@ -12,9 +16,13 @@
 		"test": "cargo test --manifest-path src-tauri/Cargo.toml",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"changeset": "changeset",
+		"version": "changeset version && node scripts/sync-version.mjs"
 	},
 	"devDependencies": {
+		"@changesets/changelog-github": "^1.0.0",
+		"@changesets/cli": "^3.0.1",
 		"@iconify-json/lucide": "^1.2.124",
 		"@sveltejs/adapter-static": "^3.0.10",
 		"@sveltejs/kit": "^2.63.0",

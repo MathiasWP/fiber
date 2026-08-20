@@ -1,0 +1,48 @@
+# Step one of two: keep a release PR open.
+#
+# Every push to main, changesets rolls the pending changeset files into a
+# "Version Packages" PR — bumping the version, writing CHANGELOG.md, and
+# deleting the changesets it consumed. It opens the PR if there isn't one and
+# updates it if there is, so there is never anything to run by hand.
+#
+# Nothing is published from here: the `version` script bumps and stops. Merging
+# that PR is what actually ships — see release.yml.
+name: Changesets
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: changesets
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          # One source of truth for the Node version, shared with local dev.
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Create release PR
+        uses: changesets/action@v2
+        with:
+          # Not plain `changeset version` — the script chases the new version
+          # into tauri.conf.json, Cargo.toml and Cargo.lock too, so the PR
+          # carries the whole bump rather than half of it.
+          version-script: pnpm run version
+          # No publish-script: nothing goes to npm, and the GitHub release is
+          # built and published by release.yml once this PR is merged.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
