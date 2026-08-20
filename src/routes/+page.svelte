@@ -57,7 +57,6 @@
 	// An entry opened from the History tab wins; otherwise a request shows its
 	// own most recent response and never another request's.
 	const shown = $derived(history.viewing ?? history.selectedFor(requestKey));
-	const mine = $derived(history.forRequest(shown?.requestId ?? requestKey));
 
 	$effect(() => {
 		// Loaders with a TTL refresh after the cached endpoints are on screen,
@@ -269,8 +268,19 @@
 						{#if inCollection && selection}
 							<!-- The cascade, shown where you type. Read-only: the base URL
 							     belongs to the collection, so it's edited in its settings. -->
+							<!--
+								Sized by its own text, not by a fixed cap. It used to be
+								`shrink-0 max-w-64`, which is the wrong way round: the width was
+								pinned regardless of the URL, so anything past 16rem was
+								truncated even with room to spare beside it.
+
+								`w-max` takes the natural width of the base URL; dropping
+								`shrink-0` lets it give that up again when the row is genuinely
+								too narrow, at which point `truncate` does its job. The path
+								input keeps `min-w-0`, so it can always yield first.
+							-->
 							<span
-								class="shrink-0 max-w-64 truncate flex items-center bg-raised/60 border border-border border-r-0 rounded-l px-2 font-mono text-xs text-muted select-none"
+								class="w-max min-w-0 truncate flex items-center bg-raised/60 border border-border border-r-0 rounded-l px-2 font-mono text-xs text-muted select-none"
 								title="{selection.section.name} · base URL is set in section settings"
 							>
 								{selection.section.baseUrl || 'no base URL'}
@@ -381,13 +391,20 @@
 					<Pane defaultSize={50} minSize={20}>
 						<section class="flex flex-col min-h-0 min-w-0 h-full">
 							{#if !shown}
+								<!-- `selectedFor` falls back to the newest entry, so reaching
+								     here at all means this request has no history yet. The old
+								     "Pick a response." alternative was unreachable. -->
 								<div class="flex-1 grid place-items-center text-muted text-xs px-4 text-center">
-									{mine.length ? 'Pick a response.' : 'Send a request to see the response.'}
+									Send a request to see the response.
 								</div>
 							{:else if shown.pending}
+								<!-- The whole pane is empty while this shows, so the loader is
+								     sized for the space rather than squeezed onto the text
+								     baseline: stacked, and large enough to actually read as
+								     the helix it is. -->
 								<div class="flex-1 grid place-items-center text-muted text-xs">
-									<span class="flex items-center gap-2">
-										<DotLoader size={16} />
+									<span class="flex flex-col items-center gap-3">
+										<DotLoader size={56} class="text-accent" />
 										Waiting…
 									</span>
 								</div>
@@ -435,38 +452,6 @@
 											<span>{formatBytes(response.sizeBytes)}</span>
 										</div>
 									</Tabs.List>
-
-									<!-- This request's earlier responses. Never another request's. -->
-									{#if mine.length > 1}
-										<div
-											class="flex items-center gap-1 px-2 h-7 border-b border-border bg-panel/50 shrink-0 overflow-x-auto"
-										>
-											{#each mine as entry (entry.id)}
-												<button
-													class="shrink-0 px-1.5 py-0.5 rounded font-mono text-2.5 transition-colors
-														{entry.id === shown.id ? 'bg-raised text-text' : 'text-muted hover:bg-raised/60'}"
-													title={new Date(entry.at).toLocaleString()}
-													onclick={() => {
-														// Stop viewing first, or the History override outranks
-														// the pick and the click appears to do nothing.
-														history.stopViewing();
-														history.select(requestKey, entry.id);
-													}}
-												>
-													{#if entry.pending}
-														<DotLoader size={12} />
-													{:else if entry.error}
-														<span class="i-lucide-circle-alert text-bad text-3"></span>
-													{:else if entry.response}
-														<span class={statusColor(entry.response.status)}>
-															{entry.response.status}
-														</span>
-													{/if}
-													<span class="ml-1 text-muted">{clockTime(entry.at)}</span>
-												</button>
-											{/each}
-										</div>
-									{/if}
 
 									{#if response.truncated}
 										<p
