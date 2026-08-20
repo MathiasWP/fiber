@@ -1,5 +1,11 @@
 # fiber
 
+## 0.4.2
+
+### Patch Changes
+
+- [#13](https://github.com/MathiasWP/fiber/pull/13) [`fa6ffda`](https://github.com/MathiasWP/fiber/commit/fa6ffda384a5d0f7ebde51d4ea438bd7660b8de0) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Sidebar and response-pane polish: a much larger loader while a request is in flight, matched optical heights for the new-request and new-collection icons, a base URL chip that sizes to its own text, request names shown and searchable in the History list, and the redundant response-pane history strip removed.
+
 ## 0.4.1
 
 ### Patch Changes
