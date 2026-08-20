@@ -9,9 +9,12 @@
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import {
 		cancelRequest,
+		forgetToken,
 		formatBytes,
+		hasSecret,
 		resolveUrl,
 		sendRequest,
+		setSecret,
 		statusColor,
 		tryFormatJson,
 		type SavedRequest,
@@ -114,6 +117,65 @@
 			headers.push({ name: '', value: '' });
 		}
 	});
+
+	/**
+	 * Removes a header row. The last one is always the blank one waiting to be
+	 * typed into, so clearing it is the only sensible reading of deleting it —
+	 * and removing it outright would just have the effect above put it straight
+	 * back.
+	 */
+	function removeHeader(index: number): void {
+		if (index === draft.headers.length - 1) {
+			draft.headers[index].name = '';
+			draft.headers[index].value = '';
+			return;
+		}
+		draft.headers.splice(index, 1);
+	}
+
+	/**
+	 * The collection's auth, shown in the headers table where it actually lands.
+	 *
+	 * The value is never shown, and cannot be: there is no command to read a
+	 * secret back out of the keychain, by design — only Rust sees one, on its way
+	 * into a request. So the field is write-only. Typing into it replaces the
+	 * collection's token; leaving it alone leaves the stored one be.
+	 */
+	const sectionAuth = $derived(selection?.section.auth ?? { kind: 'none' as const });
+	const authHeaderName = $derived.by(() => {
+		if (sectionAuth.kind === 'none') return null;
+		if (sectionAuth.kind === 'bearer') return 'Authorization';
+		return sectionAuth.header || 'Authorization';
+	});
+	/** Only a fixed token is a value you can type. The others are fetched. */
+	const authEditable = $derived(sectionAuth.kind === 'bearer');
+	const authSecretRef = $derived('secretRef' in sectionAuth ? sectionAuth.secretRef : null);
+
+	let authStored = $state(false);
+	let authDraft = $state('');
+
+	$effect(() => {
+		const reference = authSecretRef;
+		authDraft = '';
+		if (!reference) {
+			authStored = false;
+			return;
+		}
+		hasSecret(reference).then((exists) => (authStored = exists));
+	});
+
+	async function saveAuthToken(): Promise<void> {
+		const reference = authSecretRef;
+		const value = authDraft.trim();
+		if (!reference || !value) return;
+
+		await setSecret(reference, value);
+		// Out of memory the moment it is in the keychain.
+		authDraft = '';
+		authStored = true;
+		// Any cached token for this section is now the wrong one.
+		if (selection) await forgetToken(selection.section.id);
+	}
 
 	const filledHeaders = $derived(draft.headers.filter((header) => header.name.trim().length > 0));
 
@@ -394,8 +456,48 @@
 
 								<Tabs.Content value="headers" class="flex-1 min-h-0 overflow-y-auto p-2">
 									<div class="flex flex-col gap-1">
+										{#if authHeaderName}
+											<!-- The collection's auth, shown where it actually lands.
+											     Not one of `draft.headers`: it belongs to the section,
+											     applies to every request in it, and is added by Rust
+											     on the way out. -->
+											<div class="flex gap-1 items-center">
+												<input
+													value={authHeaderName}
+													readonly
+													tabindex="-1"
+													class="input-base flex-1 font-mono text-xs opacity-60 cursor-default"
+												/>
+												{#if authEditable}
+													<input
+														bind:value={authDraft}
+														type="password"
+														spellcheck="false"
+														placeholder={authStored ? '•••••••• stored' : 'Paste a token'}
+														onblur={saveAuthToken}
+														onkeydown={(event) => event.key === 'Enter' && saveAuthToken()}
+														class="input-base flex-[2] font-mono text-xs"
+													/>
+												{:else}
+													<input
+														value="obtained by {selection?.section.auth.kind} auth"
+														readonly
+														tabindex="-1"
+														class="input-base flex-[2] font-mono text-xs opacity-60 cursor-default"
+													/>
+												{/if}
+												<button
+													class="shrink-0 w-6 h-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
+													title="Set in the collection's auth settings"
+													onclick={() => (settingsFor = selection?.section ?? null)}
+												>
+													<span class="i-lucide-settings-2 text-3"></span>
+												</button>
+											</div>
+										{/if}
+
 										{#each draft.headers as header, index (index)}
-											<div class="flex gap-1">
+											<div class="flex gap-1 items-center">
 												<input
 													bind:value={header.name}
 													spellcheck="false"
@@ -408,11 +510,21 @@
 													placeholder="Value"
 													class="input-base flex-[2] font-mono text-xs"
 												/>
+												<button
+													class="shrink-0 w-6 h-6 grid place-items-center rounded text-muted hover:(bg-bad/10 text-bad) transition-colors"
+													title={index === draft.headers.length - 1 ? 'Clear' : 'Remove header'}
+													onclick={() => removeHeader(index)}
+												>
+													<span class="i-lucide-x text-3"></span>
+												</button>
 											</div>
 										{/each}
 									</div>
 									<p class="mt-2 text-2.5 text-muted">
 										Content-Type defaults to application/json when a body is present.
+										{#if authHeaderName}
+											{authHeaderName} comes from the collection and applies to every request in it.
+										{/if}
 									</p>
 								</Tabs.Content>
 							</Tabs.Root>
