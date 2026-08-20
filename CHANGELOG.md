@@ -1,5 +1,11 @@
 # fiber
 
+## 0.4.1
+
+### Patch Changes
+
+- [#11](https://github.com/MathiasWP/fiber/pull/11) [`cc3f0eb`](https://github.com/MathiasWP/fiber/commit/cc3f0ebb7107aa031e26b84960c83482f8a492b6) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Add a macOS install script that sidesteps the Gatekeeper prompt entirely, by fetching the release with curl — which, unlike a browser, attaches no quarantine attribute for macOS to ask about.
+
 ## 0.4.0
 
 ### Minor Changes
