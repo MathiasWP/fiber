@@ -3,6 +3,7 @@
 	import {
 		LOOSE_SECTION_ID,
 		methodColor,
+		normalizeBaseUrl,
 		statusColor,
 		type SavedRequest,
 		type Section
@@ -195,7 +196,7 @@
 	}
 
 	function copyUrl(section: Section, request: SavedRequest) {
-		const base = section.baseUrl.trim().replace(/\/+$/, '');
+		const base = normalizeBaseUrl(section.baseUrl);
 		const path = request.path.trim();
 		const absolute = /^https?:\/\//.test(path);
 		navigator.clipboard.writeText(absolute ? path : `${base}/${path.replace(/^\/+/, '')}`);
@@ -450,29 +451,26 @@
 			</button>
 		{:else}
 			<!--
-				Both icons sit in a 24x24 box, but lucide draws them to different
-				heights inside it: file-plus spans y2-22, folder-plus only y3-20. At
-				equal box sizes the file looks the taller of the two, which is what
-				made this row read as uneven.
-
-				So the boxes are deliberately unequal — 15px and 17.6px, in the ratio
-				20:17 — which lands both drawn glyphs on the same 12.5px height. The
-				buttons themselves are identical squares, so only the artwork is
-				being corrected.
+				square-plus and folder-plus rather than file-plus and folder-plus: the
+				geometric pair reads better at 24px, and it happens to solve the
+				height problem the old pair had. file-plus drew 20 units tall against
+				folder-plus's 17, which needed the two boxes deliberately mismatched
+				to look level. square-plus draws 18 against the same 17 — close enough
+				that a single size does, and the arithmetic can go.
 			-->
 			<button
 				class="ml-auto h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
 				title="New request — not in any collection"
 				onclick={addLooseRequest}
 			>
-				<span class="i-lucide-file-plus text-[15px]"></span>
+				<span class="i-lucide-square-plus text-4"></span>
 			</button>
 			<button
 				class="h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
 				title="New collection"
 				onclick={() => (creating = true)}
 			>
-				<span class="i-lucide-folder-plus text-[17.6px]"></span>
+				<span class="i-lucide-folder-plus text-4"></span>
 			</button>
 		{/if}
 	</header>
@@ -507,6 +505,7 @@
 					spellcheck="false"
 					placeholder="https://api.example.com"
 					class="input-base text-xs font-mono"
+					onblur={() => (newBaseUrl = normalizeBaseUrl(newBaseUrl))}
 					onkeydown={(e) => e.key === 'Enter' && addSection()}
 				/>
 				<div class="flex gap-1">
@@ -518,171 +517,194 @@
 			</div>
 		{/if}
 
-		<div class="flex-1 overflow-y-auto min-h-0">
-			{#if collections.looseSection && looseRequests.length}
-				<div class="border-b border-border/50 pb-1">
-					{#each looseRequests as request, index (request.id)}
-						{@render requestRow(collections.looseSection, request, 'pl-4', looseRequests, index)}
-					{/each}
-				</div>
-			{/if}
+		<!--
+			The list itself is a context menu target, so the empty space below the
+			last collection is somewhere to start from rather than dead pixels.
 
-			{#each visible as { section, requests } (section.id)}
-				{@const open = searching || !section.collapsed}
-				<div class="border-b border-border/50">
-					<div
-						use:sectionHeader={{ sectionId: section.id }}
-						class="draggable-row transition-shadow {sectionLineFor(section.id)}"
-					>
-					<ContextMenu.Root>
-						<ContextMenu.Trigger
-							class="flex items-center gap-1 px-4 py-1.5 w-full text-left hover:bg-raised/60 transition-colors cursor-default"
-							onclick={() => toggle(section)}
-						>
-							<span
-								class="i-lucide-chevron-right text-3 text-muted transition-transform shrink-0 {open
-									? 'rotate-90'
-									: ''}"
-							></span>
-
-							{#if renamingId === section.id}
-								<!-- svelte-ignore a11y_autofocus -->
-								<input
-									bind:value={section.name}
-									autofocus
-									class="input-base text-xs py-0.5 flex-1 min-w-0"
-									onclick={(e) => e.stopPropagation()}
-									onblur={() => commitRename(section)}
-									onkeydown={(e) => e.key === 'Enter' && commitRename(section)}
-								/>
-							{:else}
-								<span class="truncate text-xs font-medium flex-1">{section.name}</span>
-							{/if}
-
-							<!-- Static: nothing appears or disappears on hover, so nothing shifts. -->
-							<span class="text-2.5 text-muted shrink-0 tabular-nums">
-								{section.requests.length + collections.rowsFor(section).length}
-							</span>
-						</ContextMenu.Trigger>
-
-						<ContextMenu.Portal>
-							<ContextMenu.Content class="menu-content">
-								<ContextMenu.Item
-									class="menu-item"
-									onSelect={() => collections.createRequest(section)}
-								>
-									<span class="i-lucide-plus text-3"></span>
-									New request
-								</ContextMenu.Item>
-								<ContextMenu.Item class="menu-item" onSelect={() => (renamingId = section.id)}>
-									<span class="i-lucide-pencil text-3"></span>
-									Rename
-								</ContextMenu.Item>
-								{#if section.loader}
-									<ContextMenu.Item class="menu-item" onSelect={() => refresh(section)}>
-										<span
-											class="i-lucide-refresh-cw text-3 {collections.loading[section.id]
-												? 'animate-spin'
-												: ''}"
-										></span>
-										Refresh endpoints
-									</ContextMenu.Item>
-								{/if}
-								<ContextMenu.Item class="menu-item" onSelect={() => onOpenSettings(section)}>
-									<span class="i-lucide-settings text-3"></span>
-									Section settings…
-								</ContextMenu.Item>
-								<ContextMenu.Separator class="menu-separator" />
-								<ContextMenu.Item
-									class="menu-item-bad"
-									onSelect={() => (pendingDelete = section)}
-								>
-									<span class="i-lucide-trash-2 text-3"></span>
-									Delete section
-								</ContextMenu.Item>
-							</ContextMenu.Content>
-						</ContextMenu.Portal>
-					</ContextMenu.Root>
-					</div>
-
-					{#if open}
-						{#each requests as request, index (request.id)}
-							{@render requestRow(section, request, 'pl-8', requests, index)}
+			Nesting is safe: Bits UI's trigger bails when the event is already
+			defaultPrevented, and a row's own menu prevents it on the way up — so
+			right-clicking a request opens that request's menu and not this one.
+		-->
+		<ContextMenu.Root>
+			<ContextMenu.Trigger class="flex-1 overflow-y-auto min-h-0">
+				{#if collections.looseSection && looseRequests.length}
+					<div class="border-b border-border/50 pb-1">
+						{#each looseRequests as request, index (request.id)}
+							{@render requestRow(collections.looseSection, request, 'pl-4', looseRequests, index)}
 						{/each}
+					</div>
+				{/if}
 
-						<!-- Loader output. Regenerated on every refresh; the user's
-						     bodies live in the section's overlay and survive it. -->
-						{#each loadedRows(section) as row (row.request.id)}
-							<ContextMenu.Root>
-								<ContextMenu.Trigger
-									class="flex items-center gap-2 pl-8 pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
-										{collections.selectedRequestId === row.request.id ? 'bg-raised' : ''}"
-									onclick={() => selectLoaded(section, row)}
-								>
-									<span
-										class="font-mono text-2.5 font-bold shrink-0 w-9 {methodColor(row.request.method)}"
-									>
-										{row.request.method}
-									</span>
-									<span
-										class="truncate text-xs flex-1 {row.missing ? 'text-muted line-through' : ''}"
-										title={row.missing
-											? `${row.request.path} — no longer reported by the loader`
-											: row.request.path}
-									>
-										{row.request.name}
-									</span>
-									{#if row.missing}
-										<span
-											class="i-lucide-unlink text-3 text-warn shrink-0"
-											title="No longer reported by the loader"
-										></span>
-									{/if}
-								</ContextMenu.Trigger>
+				{#each visible as { section, requests } (section.id)}
+					{@const open = searching || !section.collapsed}
+					<div class="border-b border-border/50">
+						<div
+							use:sectionHeader={{ sectionId: section.id }}
+							class="draggable-row transition-shadow {sectionLineFor(section.id)}"
+						>
+						<ContextMenu.Root>
+							<ContextMenu.Trigger
+								class="flex items-center gap-1 px-4 py-1.5 w-full text-left hover:bg-raised/60 transition-colors cursor-default"
+								onclick={() => toggle(section)}
+							>
+								<span
+									class="i-lucide-chevron-right text-3 text-muted transition-transform shrink-0 {open
+										? 'rotate-90'
+										: ''}"
+								></span>
 
-								<ContextMenu.Portal>
-									<ContextMenu.Content class="menu-content">
+								{#if renamingId === section.id}
+									<!-- svelte-ignore a11y_autofocus -->
+									<input
+										bind:value={section.name}
+										autofocus
+										class="input-base text-xs py-0.5 flex-1 min-w-0"
+										onclick={(e) => e.stopPropagation()}
+										onblur={() => commitRename(section)}
+										onkeydown={(e) => e.key === 'Enter' && commitRename(section)}
+									/>
+								{:else}
+									<span class="truncate text-xs font-medium flex-1">{section.name}</span>
+								{/if}
+
+								<!-- Static: nothing appears or disappears on hover, so nothing shifts. -->
+								<span class="text-2.5 text-muted shrink-0 tabular-nums">
+									{section.requests.length + collections.rowsFor(section).length}
+								</span>
+							</ContextMenu.Trigger>
+
+							<ContextMenu.Portal>
+								<ContextMenu.Content class="menu-content">
+									<ContextMenu.Item
+										class="menu-item"
+										onSelect={() => collections.createRequest(section)}
+									>
+										<span class="i-lucide-plus text-3"></span>
+										New request
+									</ContextMenu.Item>
+									<ContextMenu.Item class="menu-item" onSelect={() => (renamingId = section.id)}>
+										<span class="i-lucide-pencil text-3"></span>
+										Rename
+									</ContextMenu.Item>
+									{#if section.loader}
 										<ContextMenu.Item class="menu-item" onSelect={() => refresh(section)}>
-											<span class="i-lucide-refresh-cw text-3"></span>
+											<span
+												class="i-lucide-refresh-cw text-3 {collections.loading[section.id]
+													? 'animate-spin'
+													: ''}"
+											></span>
 											Refresh endpoints
 										</ContextMenu.Item>
-										<ContextMenu.Item class="menu-item" onSelect={() => copyUrl(section, row.request)}>
-											<span class="i-lucide-link text-3"></span>
-											Copy URL
-										</ContextMenu.Item>
-										{#if row.missing}
-											<ContextMenu.Separator class="menu-separator" />
-											<ContextMenu.Item
-												class="menu-item-bad"
-												onSelect={() => dropOverlay(section, row.request.id)}
-											>
-												<span class="i-lucide-trash-2 text-3"></span>
-												Forget this endpoint
-											</ContextMenu.Item>
-										{/if}
-									</ContextMenu.Content>
-								</ContextMenu.Portal>
-							</ContextMenu.Root>
-						{/each}
+									{/if}
+									<ContextMenu.Item class="menu-item" onSelect={() => onOpenSettings(section)}>
+										<span class="i-lucide-settings text-3"></span>
+										Section settings…
+									</ContextMenu.Item>
+									<ContextMenu.Separator class="menu-separator" />
+									<ContextMenu.Item
+										class="menu-item-bad"
+										onSelect={() => (pendingDelete = section)}
+									>
+										<span class="i-lucide-trash-2 text-3"></span>
+										Delete section
+									</ContextMenu.Item>
+								</ContextMenu.Content>
+							</ContextMenu.Portal>
+						</ContextMenu.Root>
+						</div>
 
-						{#if requests.length === 0 && loadedRows(section).length === 0}
-							<p class="pl-8 pr-4 py-1 text-2.5 text-muted">
-								{section.loader ? 'No endpoints loaded yet.' : 'No requests yet.'}
-							</p>
+						{#if open}
+							{#each requests as request, index (request.id)}
+								{@render requestRow(section, request, 'pl-8', requests, index)}
+							{/each}
+
+							<!-- Loader output. Regenerated on every refresh; the user's
+							     bodies live in the section's overlay and survive it. -->
+							{#each loadedRows(section) as row (row.request.id)}
+								<ContextMenu.Root>
+									<ContextMenu.Trigger
+										class="flex items-center gap-2 pl-8 pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
+											{collections.selectedRequestId === row.request.id ? 'bg-raised' : ''}"
+										onclick={() => selectLoaded(section, row)}
+									>
+										<span
+											class="font-mono text-2.5 font-bold shrink-0 w-9 {methodColor(row.request.method)}"
+										>
+											{row.request.method}
+										</span>
+										<span
+											class="truncate text-xs flex-1 {row.missing ? 'text-muted line-through' : ''}"
+											title={row.missing
+												? `${row.request.path} — no longer reported by the loader`
+												: row.request.path}
+										>
+											{row.request.name}
+										</span>
+										{#if row.missing}
+											<span
+												class="i-lucide-unlink text-3 text-warn shrink-0"
+												title="No longer reported by the loader"
+											></span>
+										{/if}
+									</ContextMenu.Trigger>
+
+									<ContextMenu.Portal>
+										<ContextMenu.Content class="menu-content">
+											<ContextMenu.Item class="menu-item" onSelect={() => refresh(section)}>
+												<span class="i-lucide-refresh-cw text-3"></span>
+												Refresh endpoints
+											</ContextMenu.Item>
+											<ContextMenu.Item class="menu-item" onSelect={() => copyUrl(section, row.request)}>
+												<span class="i-lucide-link text-3"></span>
+												Copy URL
+											</ContextMenu.Item>
+											{#if row.missing}
+												<ContextMenu.Separator class="menu-separator" />
+												<ContextMenu.Item
+													class="menu-item-bad"
+													onSelect={() => dropOverlay(section, row.request.id)}
+												>
+													<span class="i-lucide-trash-2 text-3"></span>
+													Forget this endpoint
+												</ContextMenu.Item>
+											{/if}
+										</ContextMenu.Content>
+									</ContextMenu.Portal>
+								</ContextMenu.Root>
+							{/each}
+
+							{#if requests.length === 0 && loadedRows(section).length === 0}
+								<p class="pl-8 pr-4 py-1 text-2.5 text-muted">
+									{section.loader ? 'No endpoints loaded yet.' : 'No requests yet.'}
+								</p>
+							{/if}
 						{/if}
-					{/if}
-				</div>
-			{:else}
-				<p class="px-4 py-2 text-xs text-muted leading-relaxed">
-					{#if searching}
-						Nothing matches “{query}”.
-					{:else}
-						No sections yet. A section holds a base URL — requests inside it just need a path.
-						Right-click anything for options.
-					{/if}
-				</p>
-			{/each}
-		</div>
+					</div>
+				{:else}
+					<p class="px-4 py-2 text-xs text-muted leading-relaxed">
+						{#if searching}
+							Nothing matches “{query}”.
+						{:else}
+							No sections yet. A section holds a base URL — requests inside it just need a path.
+							Right-click anything for options.
+						{/if}
+					</p>
+				{/each}
+			</ContextMenu.Trigger>
+
+			<ContextMenu.Portal>
+				<ContextMenu.Content class="menu-content">
+					<ContextMenu.Item class="menu-item" onSelect={() => (creating = true)}>
+						<span class="i-lucide-folder-plus text-3"></span>
+						New collection
+					</ContextMenu.Item>
+					<ContextMenu.Item class="menu-item" onSelect={addLooseRequest}>
+						<span class="i-lucide-file-plus text-3"></span>
+						New request
+					</ContextMenu.Item>
+				</ContextMenu.Content>
+			</ContextMenu.Portal>
+		</ContextMenu.Root>
 
 		{#if collections.error}
 			<p class="px-4 py-2 text-2.5 text-bad border-t border-border shrink-0">
@@ -713,24 +735,40 @@
 					>
 						{@const name = requestName(entry)}
 						<div class="flex items-center gap-2">
-							<span class="font-mono text-2.5 font-bold w-9 shrink-0 {methodColor(entry.method)}">
-								{entry.method}
-							</span>
-							<!-- Fixed-width status slot: spinner, error icon and status code
-							     all occupy the same space, so rows never reflow. -->
-							<span class="w-8 shrink-0 font-mono text-2.5">
-								{#if entry.pending}
-									<DotLoader size={12} class="text-muted" />
-								{:else if entry.error}
-									<span class="i-lucide-circle-alert text-bad text-3"></span>
-								{:else if entry.response}
-									<span class={statusColor(entry.response.status)}>{entry.response.status}</span>
-								{/if}
-							</span>
+							<!--
+								Name first, then method, status and time together on the right.
+								Those three are the fixed-width part of the row, so keeping them
+								adjacent lets the name have all the space that's left.
+
+								Method and status share one tight group rather than each having
+								its own column: the method used to sit in a `w-9` box wide
+								enough for DELETE, which left GET floating well clear of its
+								status code. The status slot keeps a fixed width of its own —
+								spinner, error icon and code all occupy the same space, so a row
+								doesn't jump about as a request settles.
+							-->
 							{#if name}
 								<span class="min-w-0 flex-1 truncate text-xs text-text" title={name}>{name}</span>
+							{:else}
+								<!-- Unnamed entries still push the right-hand group over, so
+								     every row lines up down the list. -->
+								<span class="flex-1"></span>
 							{/if}
-							<span class="ml-auto pl-2 text-2.5 text-muted shrink-0">{clockTime(entry.at)}</span>
+							<span class="flex items-center gap-1 shrink-0">
+								<span class="font-mono text-2.5 font-bold {methodColor(entry.method)}">
+									{entry.method}
+								</span>
+								<span class="w-8 shrink-0 font-mono text-2.5">
+									{#if entry.pending}
+										<DotLoader size={12} class="text-text" />
+									{:else if entry.error}
+										<span class="i-lucide-circle-alert text-bad text-3"></span>
+									{:else if entry.response}
+										<span class={statusColor(entry.response.status)}>{entry.response.status}</span>
+									{/if}
+								</span>
+							</span>
+							<span class="text-2.5 text-muted shrink-0">{clockTime(entry.at)}</span>
 						</div>
 						<div class="truncate text-2.5 text-muted mt-0.5" title={entry.url}>{entry.url}</div>
 					</ContextMenu.Trigger>

@@ -246,6 +246,50 @@ export interface Section {
  */
 export const LOOSE_SECTION_ID = 'loose';
 
+/** One `name=value` pair from a URL's query string. */
+export interface QueryParam {
+	name: string;
+	value: string;
+}
+
+/**
+ * Splits a path into everything before the first `?` and the query after it.
+ *
+ * Query parameters are not stored anywhere: they are part of the path, and the
+ * params table is a second view onto the same string the URL bar shows. That
+ * keeps the two in step for free, needs no new field in the section files, and
+ * means a URL pasted in with its query already attached simply appears in the
+ * table.
+ */
+export function splitQuery(path: string): { base: string; query: string } {
+	const at = path.indexOf('?');
+	if (at < 0) return { base: path, query: '' };
+	return { base: path.slice(0, at), query: path.slice(at + 1) };
+}
+
+export function parseQuery(path: string): QueryParam[] {
+	const { query } = splitQuery(path);
+	if (!query) return [];
+	// URLSearchParams keeps duplicates and order, both of which are meaningful.
+	return [...new URLSearchParams(query)].map(([name, value]) => ({ name, value }));
+}
+
+/**
+ * Puts `params` back onto `path`, replacing whatever query it had.
+ *
+ * Pairs with a blank name are dropped — the table always carries one empty row
+ * to type into, and that row is not a parameter until it is named.
+ */
+export function withQuery(path: string, params: QueryParam[]): string {
+	const { base } = splitQuery(path);
+	const search = new URLSearchParams();
+	for (const { name, value } of params) {
+		if (name.trim()) search.append(name, value);
+	}
+	const query = search.toString();
+	return query ? `${base}?${query}` : base;
+}
+
 /** The stable identity that ties saved bodies and history to a loaded endpoint. */
 export function endpointKey(method: string, path: string): string {
 	return `${method.trim().toUpperCase()} ${path.trim()}`;
@@ -399,6 +443,24 @@ export interface Update {
 /** `null` when this is already the latest release. Throws if GitHub is unreachable. */
 export function checkForUpdate(): Promise<Update | null> {
 	return invoke<Update | null>('check_for_update');
+}
+
+/**
+ * The form a base URL is stored in: trimmed, and without a trailing slash.
+ *
+ * Nothing depends on it. `join_url` on the Rust side trims both sides before
+ * joining, so `https://api.example.com` and `https://api.example.com/` have
+ * always produced the same request. It exists so that what is on screen after
+ * you finish typing is unambiguous — one canonical form to compare against,
+ * rather than two that look different and behave identically.
+ */
+export function normalizeBaseUrl(value: string): string {
+	const trimmed = value.trim();
+	// A bare scheme is someone mid-type, and its slashes are structural: naively
+	// stripping them turns "https://" into "https:".
+	const scheme = /^([a-z][a-z0-9+.\-]*:\/\/)(.*)$/i.exec(trimmed);
+	if (scheme) return scheme[1] + scheme[2].replace(/\/+$/, '');
+	return trimmed.replace(/\/+$/, '');
 }
 
 export function statusColor(status: number): string {

@@ -142,7 +142,7 @@
 		</span>
 		<button class="btn-ghost text-xs" disabled={running} onclick={runNow}>
 			{#if running}
-				<DotLoader size={14} />
+				<DotLoader size={14} class="text-text" />
 			{/if}
 			Run now
 		</button>
@@ -172,7 +172,7 @@
 	<div class="flex items-center gap-2">
 		<button class="btn-ghost text-xs" disabled={probing} onclick={probe}>
 			{#if probing}
-				<DotLoader size={14} />
+				<DotLoader size={14} class="text-text" />
 			{/if}
 			Fetch a sample
 		</button>
