@@ -1,10 +1,10 @@
 [package]
 name = "fiber"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-license = ""
-repository = ""
+description = "A local-first API client"
+authors = ["Mathias Picker"]
+license = "MIT"
+repository = "https://github.com/MathiasWP/fiber"
 edition = "2021"
 rust-version = "1.90"
 

@@ -1,0 +1,163 @@
+# Step two of two: build and publish.
+#
+# Fires when a version bump lands on main — i.e. when the Version Packages PR
+# that changesets.yml maintains is merged. It drafts a release, builds the app on
+# each platform into it, and only then makes it public, so a half-built release
+# is never downloadable.
+#
+# The trigger is the version moving, not the commit message, so squash and merge
+# commits behave the same. Any other push that touches package.json leaves the
+# version alone and stops at the guard below.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ['package.json']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      release: ${{ steps.check.outputs.release }}
+      release_id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # HEAD~1 is what the version is compared against.
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+
+      - name: Did the version move, and is it still unreleased?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(jq -r .version package.json)"
+          previous="$(git show HEAD~1:package.json 2>/dev/null | jq -r .version || echo none)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if [ "$version" = "$previous" ] && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then
+            echo "Version unchanged at $version — nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif gh release view "v$version" > /dev/null 2>&1; then
+            # Belt and braces: makes a re-run, or a manual dispatch, a no-op
+            # rather than a duplicate.
+            echo "v$version already has a release — nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing $previous → $version."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Draft the release
+        id: draft
+        if: steps.check.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          node scripts/release-notes.mjs "$VERSION" > .release-notes.md
+          # Draft, so the tag is only cut once every platform has built.
+          gh release create "v$VERSION" \
+            --draft \
+            --target "$GITHUB_SHA" \
+            --title "Fiber v$VERSION" \
+            --notes-file .release-notes.md
+          echo "id=$(gh release view "v$VERSION" --json databaseId -q .databaseId)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: draft
+    if: needs.draft.outputs.release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One .dmg that runs on both Apple silicon and Intel.
+          - platform: macos-latest
+            args: --target universal-apple-darwin
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+          # Deliberately not ubuntu-latest: the .deb and .AppImage are only as
+          # portable as the glibc they were linked against, so build on the
+          # oldest runner we still support.
+          - platform: ubuntu-22.04
+            args: ''
+            rust-targets: ''
+          - platform: windows-latest
+            args: ''
+            rust-targets: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        # webkit2gtk and appindicator are Tauri's; patchelf is what bundles the
+        # AppImage; libdbus is for the keyring crate, which talks to the secret
+        # service over D-Bus.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libdbus-1-dev \
+            patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # Unset, these are all no-ops and the bundle ships unsigned — which is
+          # fine, but see the README for what users have to do on first launch.
+          # Add the repository secrets and signing turns itself on.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          args: ${{ matrix.args }}
+
+  publish:
+    needs: [draft, build]
+    if: needs.draft.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Make the release public
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.draft.outputs.version }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "v$VERSION" --draft=false --latest
