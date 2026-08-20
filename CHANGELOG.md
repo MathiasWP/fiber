@@ -1,5 +1,15 @@
 # fiber
 
+## 0.4.0
+
+### Minor Changes
+
+- [#9](https://github.com/MathiasWP/fiber/pull/9) [`d60c4e5`](https://github.com/MathiasWP/fiber/commit/d60c4e55b6acb9675d147ab9c88f14a3230a1877) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Update in place. The toast now downloads the new version with a progress bar, verifies its signature, installs it and restarts — instead of sending you to a browser to find a .dmg.
+
+### Patch Changes
+
+- [#9](https://github.com/MathiasWP/fiber/pull/9) [`d60c4e5`](https://github.com/MathiasWP/fiber/commit/d60c4e55b6acb9675d147ab9c88f14a3230a1877) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Show the running version in the sidebar footer, between the theme toggle and the ⌘K hint.
+
 ## 0.3.0
 
 ### Minor Changes
