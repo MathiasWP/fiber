@@ -56,6 +56,21 @@
 		}
 	];
 
+	/**
+	 * What each tab says when it has something in it.
+	 *
+	 * These used to be a bare "•", which marked the tab as configured without
+	 * saying so — a dot you have to already know the meaning of tells you nothing
+	 * the first time you see it. Naming the thing costs a few characters and
+	 * answers the question outright.
+	 */
+	const KIND_LABEL: Record<AuthKind, string> = {
+		none: '',
+		bearer: 'bearer',
+		login: 'login',
+		browser: 'browser'
+	};
+
 	const kind = $derived(section?.auth.kind ?? 'none');
 	const hint = $derived(KINDS.find((entry) => entry.value === kind)?.hint ?? '');
 
@@ -209,13 +224,13 @@
 							value="auth"
 							class="px-2 py-1.5 -mb-px border-b-2 border-transparent text-xs text-muted data-[state=active]:border-accent data-[state=active]:text-text hover:text-text transition-colors"
 						>
-							Auth{kind === 'none' ? '' : ' •'}
+							Auth{kind === 'none' ? '' : ` · ${KIND_LABEL[kind]}`}
 						</Tabs.Trigger>
 						<Tabs.Trigger
 							value="loader"
 							class="px-2 py-1.5 -mb-px border-b-2 border-transparent text-xs text-muted data-[state=active]:border-accent data-[state=active]:text-text hover:text-text transition-colors"
 						>
-							Loader{section.loader ? ' •' : ''}
+							Loader{section.loader ? (section.loader.enabled ? ' · on' : ' · off') : ''}
 						</Tabs.Trigger>
 					</Tabs.List>
 

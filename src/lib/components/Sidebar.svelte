@@ -46,6 +46,14 @@
 	let creating = $state(false);
 	let newName = $state('');
 	let newBaseUrl = $state('');
+	let newNameInput = $state<HTMLInputElement>();
+
+	// Bits UI focuses the dialog content itself on open, so `autofocus` on the
+	// field loses that race. Asking for focus once the element exists wins it.
+	$effect(() => {
+		if (!creating || !newNameInput) return;
+		newNameInput.focus();
+	});
 	let renamingId = $state<string | null>(null);
 	let pendingDelete = $state<Section | null>(null);
 
@@ -169,15 +177,22 @@
 		collections.touch(section);
 	}
 
+	/** Closing without creating anything, from Cancel, Escape or the overlay. */
+	function cancelSection() {
+		creating = false;
+		newName = '';
+		newBaseUrl = '';
+	}
+
 	async function addSection() {
+		// Both fields empty reads as "changed my mind" rather than "make me an
+		// untitled collection with nowhere to send anything".
 		if (!newName.trim() && !newBaseUrl.trim()) {
-			creating = false;
+			cancelSection();
 			return;
 		}
 		const section = await collections.createSection(newName, newBaseUrl);
-		newName = '';
-		newBaseUrl = '';
-		creating = false;
+		cancelSection();
 		await collections.createRequest(section, NEW_REQUEST_NAME);
 	}
 
@@ -389,6 +404,62 @@
 {/snippet}
 
 <!-- Deleting a section throws away a file, so it asks first. Requests don't. -->
+<!--
+	A dialog rather than a strip pushed into the sidebar. Creating a collection is
+	a deliberate act with two fields and a decision, which is what a dialog is
+	for; inline it competed with the list it was about to add to, and reflowed
+	everything below it on the way in and out.
+-->
+<Dialog.Root
+	open={creating}
+	onOpenChange={(next) => {
+		if (!next) cancelSection();
+	}}
+>
+	<Dialog.Portal>
+		<Dialog.Overlay class="fixed inset-0 bg-black/50" />
+		<Dialog.Content
+			class="fixed left-1/2 top-1/2 w-[min(420px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-panel p-4 shadow-2xl"
+		>
+			<Dialog.Title class="text-sm font-semibold">New collection</Dialog.Title>
+			<Dialog.Description class="mt-1 text-xs text-muted">
+				A collection owns a base URL, so the requests inside it need only a path.
+			</Dialog.Description>
+
+			<div class="mt-3 flex flex-col gap-2">
+				<label class="flex flex-col gap-1">
+					<span class="text-xs text-muted">Name</span>
+					<!-- Bits UI moves focus to the content on open, so the field has to
+					     ask for it; `autofocus` alone loses the race. -->
+					<input
+						bind:this={newNameInput}
+						bind:value={newName}
+						placeholder="Payments API"
+						class="input-base text-xs"
+						onkeydown={(event) => event.key === 'Enter' && addSection()}
+					/>
+				</label>
+				<label class="flex flex-col gap-1">
+					<span class="text-xs text-muted">Base URL</span>
+					<input
+						bind:value={newBaseUrl}
+						spellcheck="false"
+						placeholder="https://api.example.com"
+						class="input-base text-xs font-mono"
+						onblur={() => (newBaseUrl = normalizeBaseUrl(newBaseUrl))}
+						onkeydown={(event) => event.key === 'Enter' && addSection()}
+					/>
+				</label>
+			</div>
+
+			<div class="mt-4 flex justify-end gap-1">
+				<button class="btn-ghost text-xs" onclick={cancelSection}>Cancel</button>
+				<button class="btn-primary text-xs" onclick={addSection}>Create</button>
+			</div>
+		</Dialog.Content>
+	</Dialog.Portal>
+</Dialog.Root>
+
 <Dialog.Root
 	open={pendingDelete !== null}
 	onOpenChange={(next) => {
@@ -508,33 +579,6 @@
 				/>
 			</div>
 		</div>
-
-		{#if creating}
-			<div class="px-2 pb-2 flex flex-col gap-1 shrink-0">
-				<!-- svelte-ignore a11y_autofocus -->
-				<input
-					bind:value={newName}
-					autofocus
-					placeholder="Section name"
-					class="input-base text-xs"
-					onkeydown={(e) => e.key === 'Enter' && addSection()}
-				/>
-				<input
-					bind:value={newBaseUrl}
-					spellcheck="false"
-					placeholder="https://api.example.com"
-					class="input-base text-xs font-mono"
-					onblur={() => (newBaseUrl = normalizeBaseUrl(newBaseUrl))}
-					onkeydown={(e) => e.key === 'Enter' && addSection()}
-				/>
-				<div class="flex gap-1">
-					<button class="btn-primary text-xs flex-1 justify-center" onclick={addSection}>
-						Create
-					</button>
-					<button class="btn-ghost text-xs" onclick={() => (creating = false)}>Cancel</button>
-				</div>
-			</div>
-		{/if}
 
 		<!--
 			The list itself is a context menu target, so the empty space below the
