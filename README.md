@@ -196,9 +196,24 @@ for Windows, and `.deb`, `.rpm` and `.AppImage` for Linux.
 
 ### Signing
 
-The bundles are unsigned, so first launch needs a nudge: on macOS, right-click
-the app → Open, or `xattr -dr com.apple.quarantine /Applications/Fiber.app`; on
-Windows, More info → Run anyway.
+The bundles are unsigned, and the two platforms differ in how much that costs
+the person downloading them.
+
+**macOS** is the harsh one. An unsigned, un-notarised app reports *"Fiber is
+damaged and can't be opened"* — which reads like a corrupt download rather than
+a security prompt, so most people will simply delete it. Since Sequoia there is
+no Control-click → Open escape hatch either; it's System Settings → Privacy &
+Security → *Open Anyway*, then an admin password. The reliable fix is to strip
+the quarantine flag by hand:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Fiber.app
+```
+
+**Windows** is survivable: SmartScreen shows *"Windows protected your PC"*, and
+*More info → Run anyway* gets past it. Reputation accrues with downloads.
+
+**Linux** needs no signing at all.
 
 To ship signed and notarised macOS builds instead, two things are needed
 together: the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
