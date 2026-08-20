@@ -12,7 +12,10 @@
 		<link rel="icon" href="icon.png" />
 		<meta property="og:title" content="Fiber" />
 		<meta property="og:description" content="A modern &amp; secure local API client." />
-		<meta property="og:image" content="icon.png" />
+		<!-- Absolute: crawlers resolve a relative og:image unreliably. Change this
+		     alongside any custom domain. -->
+		<meta property="og:image" content="https://mathiaswp.github.io/fiber/icon.png" />
+		<meta property="og:url" content="https://mathiaswp.github.io/fiber/" />
 		<meta property="og:type" content="website" />
 
 		<style>
