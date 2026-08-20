@@ -1,5 +1,11 @@
 # fiber
 
+## 0.7.1
+
+### Patch Changes
+
+- [#28](https://github.com/MathiasWP/fiber/pull/28) [`26e52be`](https://github.com/MathiasWP/fiber/commit/26e52be8622690167182142c2e20e6af8ea32e88) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Creating a collection happens in a dialog with the name field focused, rather than a strip pushed into the sidebar. The section settings tabs now name what they hold — "Auth · browser" — instead of marking it with a bare dot.
+
 ## 0.7.0
 
 ### Minor Changes
