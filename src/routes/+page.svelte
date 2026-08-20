@@ -403,7 +403,6 @@
 	}}
 />
 
-<SectionSettings section={settingsFor} onClose={() => (settingsFor = null)} />
 
 <div class="h-screen bg-bg text-text">
 	<PaneGroup direction="horizontal" autoSaveId="fiber:sidebar">
@@ -419,7 +418,10 @@
 		/>
 
 		<Pane defaultSize={80}>
-			<main class="grid grid-rows-[auto_1fr] min-h-0 min-w-0 h-full">
+			<!-- `relative` is what the settings drawer anchors to: it opens from this
+			     pane's left edge, which is the sidebar's right edge. -->
+			<main class="relative grid grid-rows-[auto_1fr] min-h-0 min-w-0 h-full">
+				<SectionSettings section={settingsFor} onClose={() => (settingsFor = null)} />
 				<!-- URL bar -->
 				<div class="flex items-center gap-2 px-3 h-11 border-b border-border bg-panel shrink-0">
 					<MethodSelect bind:value={draft.method} />

@@ -2,7 +2,7 @@
 	import { javascript } from '@codemirror/lang-javascript';
 	import { json, jsonParseLinter } from '@codemirror/lang-json';
 	import { linter, lintGutter } from '@codemirror/lint';
-	import { Compartment, EditorState } from '@codemirror/state';
+	import { Compartment, EditorState, Prec } from '@codemirror/state';
 	import { oneDark } from '@codemirror/theme-one-dark';
 	import { EditorView, placeholder as placeholderExt } from '@codemirror/view';
 	import { basicSetup } from 'codemirror';
@@ -76,11 +76,84 @@
 					EditorState.readOnly.of(untrack(() => readonly)),
 					EditorView.lineWrapping,
 					placeholderExt(untrack(() => placeholder)),
-					EditorView.theme({
-						'&': { height: '100%' },
-						'.cm-scroller': { fontFamily: 'var(--font-mono)' },
-						'&.cm-focused': { outline: 'none' }
-					}),
+					// Prec.high because oneDark styles `.cm-panels` too, and which of two
+					// themes wins otherwise depends on extension order — a detail that
+					// would quietly break the day someone reorders this array.
+					Prec.high(
+						EditorView.theme({
+							'&': { height: '100%' },
+							'.cm-scroller': { fontFamily: 'var(--font-mono)' },
+							'&.cm-focused': { outline: 'none' },
+
+							// ⌘F opens CodeMirror's own search panel, and it ships with
+							// none of this: a bare text input, three default buttons and
+							// full-size system checkboxes, in whatever the platform thinks
+							// those look like. Dressed here to match everything around it.
+							'.cm-panels': {
+								backgroundColor: 'rgb(var(--c-panel))',
+								color: 'rgb(var(--c-text))'
+							},
+							'.cm-panels.cm-panels-bottom': { borderTop: '1px solid rgb(var(--c-border))' },
+							'.cm-panels.cm-panels-top': { borderBottom: '1px solid rgb(var(--c-border))' },
+							'.cm-panel.cm-search': {
+								display: 'flex',
+								flexWrap: 'wrap',
+								alignItems: 'center',
+								gap: '6px',
+								padding: '6px 8px',
+								fontFamily: 'inherit',
+								fontSize: '11px'
+							},
+							'.cm-panel.cm-search label': {
+								display: 'inline-flex',
+								alignItems: 'center',
+								gap: '4px',
+								fontSize: '11px',
+								color: 'rgb(var(--c-muted))'
+							},
+							// The default is a 16px system checkbox, which towers over
+							// 11px labels.
+							'.cm-panel.cm-search input[type=checkbox]': {
+								width: '11px',
+								height: '11px',
+								accentColor: 'rgb(var(--c-accent))'
+							},
+							'.cm-textfield': {
+								backgroundColor: 'rgb(var(--c-raised))',
+								border: '1px solid rgb(var(--c-border))',
+								borderRadius: '4px',
+								padding: '3px 6px',
+								fontSize: '11px',
+								fontFamily: 'var(--font-mono)',
+								color: 'rgb(var(--c-text))'
+							},
+							'.cm-textfield:focus': {
+								outline: 'none',
+								borderColor: 'rgb(var(--c-accent))'
+							},
+							'.cm-button': {
+								backgroundImage: 'none',
+								backgroundColor: 'rgb(var(--c-raised))',
+								border: '1px solid rgb(var(--c-border))',
+								borderRadius: '4px',
+								padding: '3px 8px',
+								fontSize: '11px',
+								color: 'rgb(var(--c-text))'
+							},
+							'.cm-button:hover': { backgroundColor: 'rgb(var(--c-border))' },
+							'.cm-button:active': { backgroundImage: 'none' },
+							'.cm-panel.cm-search [name=close]': {
+								position: 'static',
+								marginLeft: 'auto',
+								padding: '0 4px',
+								fontSize: '14px',
+								lineHeight: '1',
+								color: 'rgb(var(--c-muted))',
+								cursor: 'default'
+							},
+							'.cm-panel.cm-search [name=close]:hover': { color: 'rgb(var(--c-text))' }
+						})
+					),
 					fontConf.of(fontTheme(untrack(() => editorFont.size(scope)))),
 					EditorView.updateListener.of((update) => {
 						if (!update.docChanged) return;

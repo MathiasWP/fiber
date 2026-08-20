@@ -10,8 +10,11 @@ export type EditorScope = 'request' | 'response';
 
 /** Matches the size the editors were fixed at before this was adjustable. */
 export const DEFAULT_FONT_SIZE = 13;
-/** Below this it stops being readable; above it, a response is all scrollbar. */
-const MIN = 9;
+/**
+ * Small, but still text. Below about this the glyphs stop resolving at all on a
+ * non-retina display, and a response you cannot read is not a smaller response.
+ */
+const MIN = 7;
 const MAX = 28;
 const STEP = 1;
 

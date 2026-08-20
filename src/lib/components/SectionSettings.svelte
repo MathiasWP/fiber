@@ -134,6 +134,7 @@
 		stored = true;
 		secretSaved = true;
 		await forgetToken(section.id);
+		await collections.refreshCredential(section);
 	}
 
 	async function removeSecret() {
@@ -142,6 +143,7 @@
 		stored = false;
 		secretSaved = false;
 		await forgetToken(section.id);
+		await collections.refreshCredential(section);
 	}
 
 	async function signIn() {
@@ -177,6 +179,9 @@
 			await browserCapture(section.id);
 			stored = true;
 			secretSaved = true;
+			// The no-credential-to-credential transition, which is precisely what
+			// the sidebar's shield is reporting.
+			await collections.refreshCredential(section);
 		} catch (failure) {
 			captureError = String(failure);
 		}
@@ -184,6 +189,7 @@
 
 	function close() {
 		if (section) {
+			collections.refreshCredential(section);
 			collections.flush(section);
 			browserClose(section.id);
 		}
@@ -199,12 +205,20 @@
 		if (!next) close();
 	}}
 >
-	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 bg-black/50" />
-		<Dialog.Content
-			class="fixed left-1/2 top-1/2 w-[min(560px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-panel shadow-2xl"
-		>
-			<div class="p-4 pb-0">
+	<!--
+		No Portal, deliberately. Portalling would put this on `body`, where the only
+		frame of reference is the window; rendered here it sits inside the pane
+		beside the sidebar, so `inset-y-0 left-0` means the sidebar's own edge and
+		stays right when that edge is dragged.
+
+		The overlay covers the pane rather than the app, so the sidebar stays lit
+		and usable — you are configuring a collection you can still see.
+	-->
+	<Dialog.Overlay class="drawer-scrim absolute inset-0 z-40 bg-black/40" />
+	<Dialog.Content
+		class="drawer absolute inset-y-0 left-0 z-50 flex w-[min(460px,80%)] flex-col border-r border-border bg-panel shadow-2xl"
+	>
+		<div class="p-4 pb-0 shrink-0">
 				<Dialog.Title class="text-sm font-semibold">Section settings</Dialog.Title>
 				<Dialog.Description class="mt-1 text-xs text-muted">
 					Requests in this section only need a path — the base URL is prepended to each one.
@@ -212,7 +226,7 @@
 			</div>
 
 			{#if section}
-				<Tabs.Root bind:value={tab}>
+				<Tabs.Root bind:value={tab} class="flex min-h-0 flex-1 flex-col">
 					<Tabs.List class="flex items-center gap-1 px-4 mt-3 border-b border-border">
 						<Tabs.Trigger
 							value="general"
@@ -234,7 +248,15 @@
 						</Tabs.Trigger>
 					</Tabs.List>
 
-					<Tabs.Content value="general" class="p-4 flex flex-col gap-3">
+					<!--
+						The drawer is as tall as the window, so there is room for the
+						tallest tab without anything being cut off — which is what made a
+						fixed-height scroller necessary when this was a centred dialog.
+						`overflow-y-auto` is left as a floor for a genuinely short window,
+						not as the normal way to read a tab.
+					-->
+					<div class="flex-1 min-h-0 overflow-y-auto">
+						<Tabs.Content value="general" class="p-4 flex flex-col gap-3">
 						<label class="flex flex-col gap-1">
 							<span class="text-xs text-muted">Name</span>
 							<input bind:value={section.name} class="input-base text-xs" />
@@ -506,15 +528,15 @@
 								</p>
 							</div>
 						{/if}
-					</Tabs.Content>
+						</Tabs.Content>
+					</div>
 				</Tabs.Root>
 
 				<div class="flex justify-end gap-2 p-4 pt-0">
 					<button class="btn-primary text-xs" onclick={close}>Done</button>
 				</div>
 			{/if}
-		</Dialog.Content>
-	</Dialog.Portal>
+	</Dialog.Content>
 </Dialog.Root>
 
 {#if section}
@@ -525,3 +547,53 @@
 		onClose={() => (pickerOpen = false)}
 	/>
 {/if}
+
+<style>
+	/*
+	 * Bits UI renders the content, so these have to be :global — a scoped rule
+	 * would never reach it. It keeps the element mounted through the closing
+	 * animation and swaps data-state, which is what both of these hang off.
+	 */
+	:global(.drawer[data-state='open']) {
+		animation: drawer-in 180ms cubic-bezier(0.32, 0.72, 0, 1);
+	}
+	:global(.drawer[data-state='closed']) {
+		animation: drawer-out 140ms cubic-bezier(0.32, 0.72, 0, 1);
+	}
+	:global(.drawer-scrim[data-state='open']) {
+		animation: scrim-in 180ms ease-out;
+	}
+	:global(.drawer-scrim[data-state='closed']) {
+		animation: scrim-out 140ms ease-in;
+	}
+
+	@keyframes drawer-in {
+		from {
+			transform: translateX(-100%);
+		}
+	}
+	@keyframes drawer-out {
+		to {
+			transform: translateX(-100%);
+		}
+	}
+	@keyframes scrim-in {
+		from {
+			opacity: 0;
+		}
+	}
+	@keyframes scrim-out {
+		to {
+			opacity: 0;
+		}
+	}
+
+	/* Sliding panels are the classic case for this: motion that conveys nothing
+	   the layout does not already say. */
+	@media (prefers-reduced-motion: reduce) {
+		:global(.drawer),
+		:global(.drawer-scrim) {
+			animation: none;
+		}
+	}
+</style>
