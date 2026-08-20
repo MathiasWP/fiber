@@ -1,5 +1,11 @@
 # fiber
 
+## 0.6.1
+
+### Patch Changes
+
+- [#22](https://github.com/MathiasWP/fiber/pull/22) [`bde6add`](https://github.com/MathiasWP/fiber/commit/bde6add6f71ba214f9474393427b040b0b1cd35d) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Keychain work no longer runs on the UI thread, which is what froze the window mid-send. Query params can be cleared the same way headers can, and neither shows a delete button beside a single empty row.
+
 ## 0.6.0
 
 ### Minor Changes
