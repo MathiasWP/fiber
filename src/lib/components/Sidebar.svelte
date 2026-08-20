@@ -7,7 +7,12 @@
 		type SavedRequest,
 		type Section
 	} from '$lib/api';
-	import { collections, fuzzyScore, type LoadedRow } from '$lib/collections.svelte';
+	import {
+		collections,
+		fuzzyScore,
+		NEW_REQUEST_NAME,
+		type LoadedRow
+	} from '$lib/collections.svelte';
 	import {
 		requestRow as dragRequest,
 		sectionHeader,
@@ -151,7 +156,7 @@
 		newName = '';
 		newBaseUrl = '';
 		creating = false;
-		await collections.createRequest(section, 'New request');
+		await collections.createRequest(section, NEW_REQUEST_NAME);
 	}
 
 	function commitRename(section: Section) {
@@ -162,7 +167,9 @@
 
 	function commitRequestRename(section: Section, request: SavedRequest) {
 		renamingId = null;
-		if (!request.name.trim()) request.name = 'Untitled';
+		// Through `rename` rather than assigning: a name typed here is the user's,
+		// and stops the name following the path from now on.
+		collections.rename(request, request.name);
 		collections.flush(section);
 	}
 

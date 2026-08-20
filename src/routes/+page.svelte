@@ -89,6 +89,16 @@
 		});
 	});
 
+	// An unnamed request is named after whatever URL you type into it, until you
+	// name it yourself. Runs before `touch` below, so the rename is part of the
+	// same debounced write rather than provoking a second one.
+	$effect(() => {
+		const request = draft;
+		// Read so this re-runs on every keystroke in the URL bar.
+		void request.path;
+		collections.followPath(request);
+	});
+
 	// Reading the whole section deeply is what subscribes this effect to every
 	// field the user can edit; `touch` no-ops when nothing actually changed.
 	$effect(() => {

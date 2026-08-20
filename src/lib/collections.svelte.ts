@@ -15,6 +15,12 @@ import {
 
 const SAVE_DEBOUNCE_MS = 400;
 
+/**
+ * The name a request is born with. Also the marker for "nobody has named this
+ * yet", which is what lets the name follow the path until someone does.
+ */
+export const NEW_REQUEST_NAME = 'New request';
+
 export interface Selection {
 	section: Section;
 	request: SavedRequest;
@@ -45,6 +51,16 @@ class Collections {
 
 	#timers = new Map<string, ReturnType<typeof setTimeout>>();
 	#lastSaved = new Map<string, string>();
+
+	/**
+	 * Requests whose name is still following their path, by id.
+	 *
+	 * Not written to disk, and it doesn't need to be: a following name always
+	 * equals its own path once typing stops, so #adopt rebuilds the set from the
+	 * section files on load. That keeps the TOML format — which the MCP server
+	 * and anyone reading a collection by hand also see — unchanged.
+	 */
+	#following = new Set<string>();
 
 	/** Last loader run per section id, mirrored from disk. */
 	loaderCaches = $state<Record<string, LoaderCache>>({});
@@ -149,7 +165,7 @@ class Collections {
 	 */
 	async createLooseRequest(): Promise<SavedRequest> {
 		// No base URL to hang a path off, so it starts empty and takes a full URL.
-		return this.createRequest(this.ensureLooseSection(), 'New request', '');
+		return this.createRequest(this.ensureLooseSection(), NEW_REQUEST_NAME, '');
 	}
 
 	/** The reserved section, created if this is the first thing to need it. */
@@ -281,6 +297,7 @@ class Collections {
 			this.sections = await listSections();
 			for (const section of this.sections) {
 				this.#lastSaved.set(section.id, JSON.stringify(section));
+				this.#adopt(section);
 			}
 			this.error = null;
 			await this.loadCaches();
@@ -289,6 +306,46 @@ class Collections {
 		} finally {
 			this.loaded = true;
 		}
+	}
+
+	/**
+	 * Works out, from a freshly loaded section, which names were following a
+	 * path. A name is taken to be following if it is still the placeholder, or
+	 * if it is exactly the path — which is the state this leaves them in.
+	 *
+	 * The one thing it gets wrong is a request deliberately renamed to its own
+	 * path, which it will carry on following. That is the same name either way,
+	 * so nobody can tell.
+	 */
+	#adopt(section: Section): void {
+		for (const request of section.requests) {
+			if (request.name === NEW_REQUEST_NAME || request.name === request.path) {
+				this.#following.add(request.id);
+			}
+		}
+	}
+
+	/**
+	 * Keeps an unnamed request's name on its path. Called as the URL is typed.
+	 *
+	 * Stops for good the moment someone renames the request — see `rename`. An
+	 * empty path falls back to the placeholder rather than leaving a nameless row
+	 * in the sidebar.
+	 */
+	followPath(request: SavedRequest): void {
+		if (!this.#following.has(request.id)) return;
+		const path = request.path.trim();
+		// A bare "/" is the path a new request is born with, and an empty one is
+		// what a loose request starts from. Neither is something anybody typed,
+		// so both keep the placeholder.
+		const name = path && path !== '/' ? path : NEW_REQUEST_NAME;
+		if (request.name !== name) request.name = name;
+	}
+
+	/** A name typed by hand. From here on it is the user's, and stays put. */
+	rename(request: SavedRequest, name: string): void {
+		this.#following.delete(request.id);
+		request.name = name.trim() || 'Untitled';
 	}
 
 	/** Schedules a write if `section` differs from what's on disk. */
@@ -368,7 +425,7 @@ class Collections {
 
 	async createRequest(
 		section: Section,
-		name = 'New request',
+		name = NEW_REQUEST_NAME,
 		path = '/'
 	): Promise<SavedRequest> {
 		const request: SavedRequest = {
@@ -379,6 +436,10 @@ class Collections {
 			body: '',
 			headers: []
 		};
+		// Only a request that arrived with the placeholder follows its path; one
+		// created with a name already chosen — from the command palette, say —
+		// keeps it.
+		if (name === NEW_REQUEST_NAME) this.#following.add(request.id);
 		section.requests.push(request);
 		section.collapsed = false;
 		this.selectedRequestId = request.id;
