@@ -3,6 +3,7 @@ import {
 	endpointKey,
 	LOOSE_SECTION_ID,
 	listSections,
+	hasSecret,
 	loaderCache,
 	normalizeBaseUrl,
 	runLoader,
@@ -67,6 +68,33 @@ class Collections {
 	loaderCaches = $state<Record<string, LoaderCache>>({});
 	/** Sections whose loader is currently running. */
 	loading = $state<Record<string, boolean>>({});
+
+	/**
+	 * Whether a section that wants a credential actually has one, by id.
+	 *
+	 * Only ever says stored or not stored. Whether the credential still *works*
+	 * is not knowable without sending something — an expired cookie is present
+	 * and correct right up until the server disagrees — so the sidebar claims
+	 * the thing that can be checked and leaves the rest to the response.
+	 *
+	 * Cheap to ask now: `has_secret` reads the keychain item's attributes rather
+	 * than its data, so it needs no authorization and raises no prompt.
+	 */
+	credential = $state<Record<string, boolean>>({});
+
+	/** Re-checks one section, after its auth or its secret has changed. */
+	async refreshCredential(section: Section): Promise<void> {
+		const reference = 'secretRef' in section.auth ? section.auth.secretRef : null;
+		if (!reference) {
+			delete this.credential[section.id];
+			return;
+		}
+		this.credential[section.id] = await hasSecret(reference);
+	}
+
+	async refreshCredentials(): Promise<void> {
+		await Promise.all(this.sections.map((section) => this.refreshCredential(section)));
+	}
 
 	get selected(): Selection | null {
 		return this.findRequest(this.selectedRequestId);
@@ -302,6 +330,7 @@ class Collections {
 			}
 			this.error = null;
 			await this.loadCaches();
+			await this.refreshCredentials();
 		} catch (error) {
 			this.error = String(error);
 		} finally {

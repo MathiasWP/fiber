@@ -123,6 +123,13 @@ Values matching a known provider's documented storage format are labelled and
 sorted to the top: Auth0, Supabase, Firebase, MSAL, Cognito, Okta, Clerk,
 Keycloak, Auth.js/NextAuth, Better Auth and others (`src/lib/providers.ts`).
 
+A collection with auth configured carries a small shield in the sidebar: filled
+when a credential is stored, amber when none is. It reports only that — whether
+one still *works* cannot be known without sending something, since an expired
+cookie is present and correct right up until the server disagrees. What it does
+catch is auth set up and then never picked, which is easy to do and otherwise
+shows up as a puzzling 401.
+
 Credentials live in the OS keychain; the section file holds only a reference, so
 it stays safe to share or commit. There is no command to read a secret back out
 — the UI can write one and ask whether one exists, nothing more.

@@ -630,6 +630,26 @@
 									<span class="truncate text-xs font-medium flex-1">{section.name}</span>
 								{/if}
 
+								<!--
+									Only when the collection wants a credential, and only ever
+									about whether one is stored. Whether it still works is not
+									knowable from here — an expired cookie is present and correct
+									until the server says otherwise — so this flags the case that
+									can be checked and is genuinely easy to hit: auth set up, and
+									then nothing ever picked.
+								-->
+								{#if section.auth.kind !== 'none'}
+									{@const held = collections.credential[section.id] === true}
+									<span
+										class="shrink-0 text-3 {held
+											? 'i-lucide-shield-check text-muted'
+											: 'i-lucide-shield-alert text-warn'}"
+										title={held
+											? `Auth: ${section.auth.kind} — a credential is stored`
+											: `Auth: ${section.auth.kind} — no credential stored yet`}
+									></span>
+								{/if}
+
 								<!-- Static: nothing appears or disappears on hover, so nothing shifts. -->
 								<span class="text-2.5 text-muted shrink-0 tabular-nums">
 									{section.requests.length + collections.rowsFor(section).length}

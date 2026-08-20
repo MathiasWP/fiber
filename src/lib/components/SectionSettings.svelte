@@ -134,6 +134,7 @@
 		stored = true;
 		secretSaved = true;
 		await forgetToken(section.id);
+		await collections.refreshCredential(section);
 	}
 
 	async function removeSecret() {
@@ -142,6 +143,7 @@
 		stored = false;
 		secretSaved = false;
 		await forgetToken(section.id);
+		await collections.refreshCredential(section);
 	}
 
 	async function signIn() {
@@ -177,6 +179,9 @@
 			await browserCapture(section.id);
 			stored = true;
 			secretSaved = true;
+			// The no-credential-to-credential transition, which is precisely what
+			// the sidebar's shield is reporting.
+			await collections.refreshCredential(section);
 		} catch (failure) {
 			captureError = String(failure);
 		}
@@ -184,6 +189,7 @@
 
 	function close() {
 		if (section) {
+			collections.refreshCredential(section);
 			collections.flush(section);
 			browserClose(section.id);
 		}
@@ -234,7 +240,18 @@
 						</Tabs.Trigger>
 					</Tabs.List>
 
-					<Tabs.Content value="general" class="p-4 flex flex-col gap-3">
+					<!--
+						One fixed-height scroller around all three tabs.
+
+						Auth is several times the height of General, and the dialog is
+						centred, so switching tabs grew or shrank it around its own middle
+						and moved every control on screen. A settings dialog that jumps
+						while you are reading it is worse than one with some space at the
+						bottom of its shortest tab, so the frame is now constant and the
+						contents scroll. `62vh` keeps it off the edges of a laptop screen.
+					-->
+					<div class="h-[min(460px,62vh)] overflow-y-auto">
+						<Tabs.Content value="general" class="p-4 flex flex-col gap-3">
 						<label class="flex flex-col gap-1">
 							<span class="text-xs text-muted">Name</span>
 							<input bind:value={section.name} class="input-base text-xs" />
@@ -506,7 +523,8 @@
 								</p>
 							</div>
 						{/if}
-					</Tabs.Content>
+						</Tabs.Content>
+					</div>
 				</Tabs.Root>
 
 				<div class="flex justify-end gap-2 p-4 pt-0">
