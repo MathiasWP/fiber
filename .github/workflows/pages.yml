@@ -1,0 +1,44 @@
+# Publishes the landing page.
+#
+# `www/` is a single hand-written HTML file with no build step, so there is
+# nothing to compile — the directory is uploaded as-is. Only a change under
+# `www/` triggers this; the app's own build is untouched by it.
+#
+# Needs Pages set to "GitHub Actions" as its source (Settings → Pages), rather
+# than the older deploy-from-a-branch mode.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ['www/**', '.github/workflows/pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and never cancel one half-done: an interrupted deploy
+# leaves the live site on the previous version, but there is no reason to risk it.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: www
+
+      - id: deploy
+        uses: actions/deploy-pages@v5
