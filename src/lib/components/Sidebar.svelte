@@ -754,6 +754,10 @@
 								     every row lines up down the list. -->
 								<span class="flex-1"></span>
 							{/if}
+							<!-- Method, status and time are one group on a single `gap-1`, so
+							     the space before the timestamp matches the one between the
+							     method and its status rather than the wider gap that separates
+							     them from the name. -->
 							<span class="flex items-center gap-1 shrink-0">
 								<span class="font-mono text-2.5 font-bold {methodColor(entry.method)}">
 									{entry.method}
@@ -767,8 +771,8 @@
 										<span class={statusColor(entry.response.status)}>{entry.response.status}</span>
 									{/if}
 								</span>
+								<span class="text-2.5 text-muted">{clockTime(entry.at)}</span>
 							</span>
-							<span class="text-2.5 text-muted shrink-0">{clockTime(entry.at)}</span>
 						</div>
 						<div class="truncate text-2.5 text-muted mt-0.5" title={entry.url}>{entry.url}</div>
 					</ContextMenu.Trigger>

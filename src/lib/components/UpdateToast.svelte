@@ -49,7 +49,7 @@
 			</div>
 		{:else if updates.stage === 'downloading'}
 			<div class="flex items-center gap-2">
-				<DotLoader size={16} class="text-text" />
+				<DotLoader size={13} class="text-text" />
 				<p class="flex-1 text-xs text-text">Downloading {updates.version}…</p>
 				{#if percent !== null}
 					<span class="font-mono text-2.5 text-muted tabular-nums">{percent}%</span>
@@ -69,7 +69,7 @@
 			</div>
 		{:else if updates.stage === 'installing'}
 			<div class="flex items-center gap-2">
-				<DotLoader size={16} class="text-text" />
+				<DotLoader size={13} class="text-text" />
 				<p class="text-xs text-text">Installing {updates.version} — restarting…</p>
 			</div>
 		{:else if updates.stage === 'failed'}

@@ -244,6 +244,19 @@ Notarising the app is what would make a browser download quiet too, and that
 needs a paid Apple Developer account. The rest of this section is about the
 browser route.
 
+### How often it asks
+
+Once per app run, for a collection with credentials — not once per request.
+
+The keychain is read the first time a section's credential is needed and kept in
+memory from then on, invalidated by a 401 or by the credential being replaced. A
+browser session re-captured after a 401 stays in memory only: writing it back
+needs authorization exactly as reading does, and a session that expires this
+often will be stale again long before the next launch, so the prompt bought
+nothing. Setting one up on purpose, through *Pick credential*, still writes.
+
+Zero prompts needs a stable code signature, for the reason below.
+
 ### The keychain asks again after every update
 
 Expected, and not fixable for free. A keychain item's ACL — what "Always Allow"

@@ -1,6 +1,7 @@
 <script lang="ts">
 	// UnoCSS utilities are generated into app.css by @unocss/postcss.
 	import '../app.css';
+	import CrashBanner from '$lib/components/CrashBanner.svelte';
 	import UpdateToast from '$lib/components/UpdateToast.svelte';
 	import { updates } from '$lib/update.svelte';
 
@@ -48,3 +49,5 @@
 {@render children()}
 
 <UpdateToast />
+<!-- Last, and outside everything: it has to survive whatever broke. -->
+<CrashBanner />

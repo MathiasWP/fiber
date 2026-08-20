@@ -14,7 +14,6 @@ use std::pin::Pin;
 
 use crate::auth::{self, AuthConfig, AuthState};
 use crate::http::{self, HttpError, HttpState, RequestSpec, ResponseData};
-use crate::secrets;
 use crate::store::Section;
 
 /// Lifts a fresh browser-captured credential, for the one auth kind a replayed
@@ -68,14 +67,19 @@ where
     if let (AuthConfig::Browser { .. }, Some(recapture)) = (&section.auth, recapture) {
         match recapture.recapture(section).await {
             Ok(value) => {
-                if let Some(reference) = section.auth.secret_ref() {
-                    if let Err(err) = secrets::set(reference, &value) {
-                        log::warn!("could not store re-captured credential: {err}");
-                    }
-                }
-                // Seed the cache from the value in hand. Without this the retry
-                // below would read straight back out of the keychain the thing
-                // we just wrote into it — a second prompt for no new information.
+                // Kept in memory, deliberately not written back to the keychain.
+                //
+                // Writing needs authorization just as reading does, so persisting
+                // here cost a password prompt on every single re-capture — the
+                // second of the two this path used to raise. What it bought was
+                // the credential surviving a restart, and a browser session that
+                // needs re-capturing this often will have expired again long
+                // before the next launch. The keychain copy was going stale
+                // whatever we did; the only difference was the prompt.
+                //
+                // Setting one up explicitly, through Pick credential, still
+                // writes — that is a credential chosen on purpose, and worth
+                // keeping.
                 auth_state.store(&section.id, value, 0);
             }
             // The window is now visible for the user to sign in; the original
