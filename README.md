@@ -127,7 +127,12 @@ Credentials live in the OS keychain; the section file holds only a reference, so
 it stays safe to share or commit. There is no command to read a secret back out
 — the UI can write one and ask whether one exists, nothing more.
 
-An `Authorization` header typed on a request overrides the section's auth.
+A header typed on a request overrides the section's auth — the escape hatch for
+"just this once, use a different token". `Cookie` is the exception, and has to
+be: cookies are a `;`-joined list rather than a single value, so one typed on a
+request joins the section's rather than replacing it. Replacing would drop the
+session, and since a secret cannot be read back out of the keychain there would
+be no way to type it in alongside.
 
 ## MCP
 

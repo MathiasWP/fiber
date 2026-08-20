@@ -116,14 +116,30 @@ where
         .map_err(|err| HttpError::Auth(err.to_string()))?;
 
     if let Some(header) = header {
-        // A header typed on the request wins — that's the escape hatch for
-        // "just this once, use a different token".
-        let already_set = spec
+        let typed = spec
             .headers
-            .iter()
-            .any(|existing| existing.name.eq_ignore_ascii_case(&header.name));
-        if !already_set {
-            spec.headers.push(header);
+            .iter_mut()
+            .find(|existing| existing.name.eq_ignore_ascii_case(&header.name));
+
+        match typed {
+            // Cookie is a list, not a value. RFC 6265 joins pairs with "; ", so
+            // a cookie typed on the request and one the section captured can
+            // both go out — replacing here would silently drop the session, and
+            // since a secret cannot be read back out of the keychain there
+            // would be no way to type it in alongside.
+            Some(existing) if header.name.eq_ignore_ascii_case("cookie") => {
+                let already = existing.value.trim().trim_end_matches(';').trim();
+                existing.value = if already.is_empty() {
+                    header.value
+                } else {
+                    format!("{already}; {}", header.value.trim())
+                };
+            }
+            // Everything else is single-valued: a header typed on the request
+            // wins, which is the escape hatch for "just this once, use a
+            // different token".
+            Some(_) => {}
+            None => spec.headers.push(header),
         }
     }
 
@@ -330,6 +346,47 @@ mod tests {
             .collect();
         assert_eq!(auth_headers.len(), 1);
         assert_eq!(auth_headers[0].value, "Bearer mine");
+    }
+
+    /// Cookies are a list: one typed on the request and one the section holds
+    /// must both go out, or adding any cookie would cost you the session.
+    #[tokio::test]
+    async fn a_typed_cookie_joins_the_captured_one() {
+        let (base, _) = stale_token_api(false).await;
+        let http_state = HttpState::default();
+        let auth_state = AuthState::default();
+
+        let mut section = section_with_login(&base);
+        section.auth = AuthConfig::Browser {
+            login_url: format!("{base}/login"),
+            capture: crate::auth::CaptureKind::Cookie,
+            capture_key: "sid".into(),
+            capture_path: String::new(),
+            header: "Cookie".into(),
+            prefix: String::new(),
+            ttl_seconds: 0,
+            secret_ref: "sec-1:auth".into(),
+        };
+
+        let mut spec = spec_for(&base);
+        spec.headers.push(Header {
+            name: "cookie".into(),
+            value: "theme=dark".into(),
+        });
+
+        let prepared = apply_auth(&http_state, &auth_state, &section, spec, &|_| {
+            Some("sid=abc".to_string())
+        })
+        .await
+        .unwrap();
+
+        let cookies: Vec<_> = prepared
+            .headers
+            .iter()
+            .filter(|h| h.name.eq_ignore_ascii_case("cookie"))
+            .collect();
+        assert_eq!(cookies.len(), 1, "one header, not two");
+        assert_eq!(cookies[0].value, "theme=dark; sid=abc");
     }
 
     /// No section means no auth machinery at all.
