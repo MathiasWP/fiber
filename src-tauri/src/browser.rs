@@ -624,11 +624,15 @@ pub async fn silent_recapture(
     app: &AppHandle,
     section: &Section,
 ) -> Result<String, BrowserError> {
-    // If a window is already open the user is probably mid-login; don't disturb it.
+    // If a window is already open the user is probably mid-login; don't disturb
+    // it. That was the intent before, but passing `already_open` as `visible`
+    // did the opposite: `open` shows *and focuses* an existing window, so a
+    // silent attempt yanked focus out of whatever you were doing. Silent means
+    // silent — nothing is surfaced until the polling below gives up.
     let already_open = app
         .get_webview_window(&window_label(&section.id))
         .is_some();
-    let window = open(app, section, already_open)?;
+    let window = open(app, section, false)?;
 
     // `read_session` rather than `snapshot`, which would open and close a window
     // of its own on top of the one being polled here.
