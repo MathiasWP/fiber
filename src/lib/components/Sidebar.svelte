@@ -22,6 +22,7 @@
 	import { history, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
 	import DotLoader from '$lib/components/DotLoader.svelte';
+	import { getVersion } from '@tauri-apps/api/app';
 
 	interface Props {
 		onOpenSettings: (section: Section) => void;
@@ -31,6 +32,14 @@
 	let { onOpenSettings, onPickHistory }: Props = $props();
 
 	let tab = $state<'collections' | 'history'>('collections');
+
+	// Read from the bundle rather than package.json, so what the footer shows is
+	// the version that is actually running — which is the number to quote when
+	// something misbehaves.
+	let version = $state('');
+	$effect(() => {
+		getVersion().then((value) => (version = value));
+	});
 	let query = $state('');
 	let historyQuery = $state('');
 	let creating = $state(false);
@@ -750,7 +759,12 @@
 				</ContextMenu.Content>
 			</ContextMenu.Portal>
 		</ContextMenu.Root>
-		<span class="ml-auto text-2.5 text-muted">
+		<!-- `mx-auto` rather than a fixed width: equal auto margins park it in the
+		     middle of whatever room the two ends leave. -->
+		<span class="mx-auto font-mono text-2.5 text-muted tabular-nums" title="Fiber {version}">
+			v{version}
+		</span>
+		<span class="text-2.5 text-muted">
 			<kbd class="font-mono">⌘K</kbd> search
 		</span>
 	</footer>

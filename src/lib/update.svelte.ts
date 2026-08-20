@@ -1,20 +1,36 @@
-import { checkForUpdate, type Update } from './api';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { check, type Update } from '@tauri-apps/plugin-updater';
 
 /** Long enough that a machine left running still notices within a day. */
 const INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** Which version the user has already said no to. */
 const DISMISSED_KEY = 'fiber:update-dismissed';
 
+export type UpdateStage = 'idle' | 'available' | 'downloading' | 'installing' | 'failed';
+
 /**
- * Notices new releases; doesn't install them. Fiber is only ad-hoc signed, and
- * a self-replacing app bundle is what Gatekeeper re-examines on next launch —
- * so the toast links to the release page and the download stays deliberate.
+ * Finds new releases and installs them.
  *
- * Every failure here is silent. A background check that can't reach GitHub is
- * not news, and there is nothing the user could do about it anyway.
+ * Tauri's updater does the work: it fetches `latest.json` from the GitHub
+ * release, checks the bundle against the public key baked into this build,
+ * swaps the app in place and then restarts into it. The signature check is the
+ * point — nothing unsigned by the release workflow's private key will install,
+ * so a hijacked endpoint cannot ship anyone a binary.
+ *
+ * Failures are quiet up to the moment the user asks for the update, and loud
+ * after: a background check that can't reach GitHub is not news, but a download
+ * that dies halfway is.
  */
 class Updates {
-	available = $state<Update | null>(null);
+	stage = $state<UpdateStage>('idle');
+	version = $state('');
+	/** 0–1 while downloading, or null when the server sent no length. */
+	progress = $state<number | null>(null);
+	error = $state<string | null>(null);
+
+	#update: Update | null = null;
+	#downloaded = 0;
+	#total = 0;
 
 	/** Starts a check now and every few hours. Returns the teardown. */
 	watch(): () => void {
@@ -33,25 +49,70 @@ class Updates {
 	}
 
 	async check(): Promise<void> {
+		// Never interrupt a download in flight to go looking for another one.
+		if (this.stage !== 'idle') return;
+
 		try {
-			const update = await checkForUpdate();
-			if (!update) {
-				this.available = null;
-				return;
-			}
+			const update = await check();
+			if (!update) return;
 			// Don't re-announce a version they've already waved away. A newer one
 			// than that still gets through.
 			if (localStorage.getItem(DISMISSED_KEY) === update.version) return;
-			this.available = update;
+
+			this.#update = update;
+			this.version = update.version;
+			this.stage = 'available';
 		} catch {
-			// Offline, rate-limited, GitHub down — all the same non-event.
+			// Offline, rate-limited, no release published yet — all the same
+			// non-event, and nothing the user could act on.
+		}
+	}
+
+	/** Downloads, installs, and restarts into the new version. */
+	async install(): Promise<void> {
+		if (!this.#update || this.stage !== 'available') return;
+
+		this.stage = 'downloading';
+		this.progress = null;
+		this.error = null;
+		this.#downloaded = 0;
+		this.#total = 0;
+
+		try {
+			await this.#update.downloadAndInstall((event) => {
+				if (event.event === 'Started') {
+					this.#total = event.data.contentLength ?? 0;
+				} else if (event.event === 'Progress') {
+					this.#downloaded += event.data.chunkLength;
+					// A missing content-length means an indeterminate bar rather than
+					// a wrong one.
+					this.progress = this.#total > 0 ? this.#downloaded / this.#total : null;
+				} else if (event.event === 'Finished') {
+					this.progress = 1;
+					this.stage = 'installing';
+				}
+			});
+
+			// The new version is on disk; this process is still the old one.
+			await relaunch();
+		} catch (error) {
+			this.stage = 'failed';
+			this.error = String(error);
 		}
 	}
 
 	/** Hides this version until there's a newer one. */
 	dismiss(): void {
-		if (this.available) localStorage.setItem(DISMISSED_KEY, this.available.version);
-		this.available = null;
+		if (this.version) localStorage.setItem(DISMISSED_KEY, this.version);
+		this.reset();
+	}
+
+	/** Back to watching, after a dismissal or a failure. */
+	reset(): void {
+		this.stage = 'idle';
+		this.progress = null;
+		this.error = null;
+		this.#update = null;
 	}
 }
 

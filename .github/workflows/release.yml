@@ -165,15 +165,64 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # Signs the update bundles with the key whose public half is in
+          # tauri.conf.json. Without it the build still succeeds but ships no
+          # updater artifacts, and every installed copy quietly stops finding
+          # updates — so treat a missing signature as a failed release.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # The key was generated without one. An empty literal rather than a
+          # secret because GitHub will not store an empty secret value.
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
           releaseId: ${{ needs.draft.outputs.release_id }}
           args: ${{ matrix.args }}
+
+      # tauri-action uploads latest.json per platform, each overwriting the last,
+      # so the final one wins and the others' entries are lost. Fail loudly here
+      # rather than let a release look fine and update nobody.
+      - name: Check the updater artifacts were signed
+        shell: bash
+        run: |
+          sigs=$(find src-tauri/target -name '*.sig' | wc -l | tr -d ' ')
+          if [ "$sigs" -eq 0 ]; then
+            echo "No .sig files — TAURI_SIGNING_PRIVATE_KEY is missing or wrong."
+            echo "Installed copies would never see this release."
+            exit 1
+          fi
+          echo "$sigs signed updater artifact(s)."
 
   publish:
     needs: [draft, build]
     if: needs.draft.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
+      # Each build job merges its own entry into latest.json by reading the
+      # release's copy, adding to it and putting it back. Running three of them
+      # in parallel means two can read the same copy and one overwrite the
+      # other. Checked here, while the release is still a draft, so a manifest
+      # that would strand a platform on its current version never goes public.
+      - name: Check latest.json covers every platform
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.draft.outputs.version }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release download "v$VERSION" --pattern latest.json --output latest.json
+          echo "--- latest.json ---"; cat latest.json; echo
+
+          missing=""
+          for platform in darwin-aarch64 darwin-x86_64 linux-x86_64 windows-x86_64; do
+            jq -e --arg p "$platform" '.platforms[$p].signature | length > 0' latest.json > /dev/null \
+              || missing="$missing $platform"
+          done
+
+          if [ -n "$missing" ]; then
+            echo "latest.json is missing a signed entry for:$missing"
+            echo "Re-run this workflow; the release stays a draft until it is complete."
+            exit 1
+          fi
+          echo "All four platform entries present and signed."
+
       - name: Make the release public
         env:
           GH_TOKEN: ${{ github.token }}
