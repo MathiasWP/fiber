@@ -91,19 +91,25 @@ mod gui {
         outcome
     }
 
+    // These three are `async` for one reason: a synchronous Tauri command runs on
+    // the main thread, and every one of them talks to the keychain. A keychain
+    // call can block — on an ad-hoc signed build it can raise an authorization
+    // dialog, and it will wait behind one that is already up — and a blocking
+    // call on the thread that pumps the event loop is a frozen window. Nothing
+    // here needs to await; `async` is what moves the work off that thread.
     #[tauri::command]
-    fn set_secret(reference: String, value: String) -> Result<(), SecretError> {
+    async fn set_secret(reference: String, value: String) -> Result<(), SecretError> {
         secrets::set(&reference, &value)
     }
 
     /// The UI can ask whether a secret exists; it can never read one back.
     #[tauri::command]
-    fn has_secret(reference: String) -> bool {
+    async fn has_secret(reference: String) -> bool {
         secrets::has(&reference)
     }
 
     #[tauri::command]
-    fn delete_secret(reference: String) -> Result<(), SecretError> {
+    async fn delete_secret(reference: String) -> Result<(), SecretError> {
         secrets::delete(&reference)
     }
 

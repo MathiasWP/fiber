@@ -143,6 +143,30 @@
 		draft.headers.splice(index, 1);
 	}
 
+	/** As `removeHeader`, then write the survivors back onto the URL. */
+	function removeParam(index: number): void {
+		if (index === queryParams.length - 1) {
+			queryParams[index].name = '';
+			queryParams[index].value = '';
+		} else {
+			queryParams.splice(index, 1);
+		}
+		commitParams();
+	}
+
+	/**
+	 * Whether a row is worth offering to delete.
+	 *
+	 * A single empty row is the one the table always keeps for typing into, and
+	 * there is nothing there to remove — an X beside it only invites a click that
+	 * does nothing.
+	 */
+	function removable(rows: { name: string; value: string }[], index: number): boolean {
+		if (rows.length > 1) return true;
+		const only = rows[index];
+		return Boolean(only && (only.name.trim() || only.value.trim()));
+	}
+
 	/**
 	 * The collection's auth, shown in the headers table where it actually lands.
 	 *
@@ -532,6 +556,19 @@
 													placeholder="Value"
 													class="input-base flex-[2] font-mono text-xs"
 												/>
+												<!-- Reserved whether or not it is drawn, so the inputs
+												     don't change width on the last row. -->
+												<span class="w-6 shrink-0">
+													{#if removable(queryParams, index)}
+														<button
+															class="w-6 h-6 grid place-items-center rounded text-muted hover:(bg-bad/10 text-bad) transition-colors"
+															title={index === queryParams.length - 1 ? 'Clear' : 'Remove parameter'}
+															onclick={() => removeParam(index)}
+														>
+															<span class="i-lucide-x text-3"></span>
+														</button>
+													{/if}
+												</span>
 											</div>
 										{/each}
 									</div>
@@ -596,13 +633,17 @@
 													placeholder="Value"
 													class="input-base flex-[2] font-mono text-xs"
 												/>
-												<button
-													class="shrink-0 w-6 h-6 grid place-items-center rounded text-muted hover:(bg-bad/10 text-bad) transition-colors"
-													title={index === draft.headers.length - 1 ? 'Clear' : 'Remove header'}
-													onclick={() => removeHeader(index)}
-												>
-													<span class="i-lucide-x text-3"></span>
-												</button>
+												<span class="w-6 shrink-0">
+													{#if removable(draft.headers, index)}
+														<button
+															class="w-6 h-6 grid place-items-center rounded text-muted hover:(bg-bad/10 text-bad) transition-colors"
+															title={index === draft.headers.length - 1 ? 'Clear' : 'Remove header'}
+															onclick={() => removeHeader(index)}
+														>
+															<span class="i-lucide-x text-3"></span>
+														</button>
+													{/if}
+												</span>
 											</div>
 										{/each}
 									</div>
