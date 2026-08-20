@@ -89,6 +89,18 @@
 			.map((match) => match.row);
 	}
 
+	/**
+	 * Leaving History puts every request back on the response it was showing.
+	 *
+	 * The entry you opened in History is an override that lives only while you
+	 * are looking at it; without dropping it here, coming back to Collections
+	 * kept showing that entry rather than the request's own current response.
+	 */
+	function showCollections() {
+		tab = 'collections';
+		history.stopViewing();
+	}
+
 	function selectRequest(id: string) {
 		history.stopViewing();
 		collections.selectedRequestId = id;
@@ -392,7 +404,7 @@
 			class="px-2 py-1 rounded text-xs transition-colors {tab === 'collections'
 				? 'bg-raised text-text'
 				: 'text-muted hover:text-text'}"
-			onclick={() => (tab = 'collections')}
+			onclick={() => showCollections()}
 		>
 			Collections
 		</button>

@@ -195,8 +195,11 @@
 	 * unrelated scratch request.
 	 */
 	function openHistory(entry: HistoryEntry) {
+		// Only `viewingId`. Emphatically not `select` — that is the request's own
+		// active response, which the Collections tab reads, and looking at
+		// something in History must not overwrite it. Doing both is what made a
+		// request come back showing whichever entry you last inspected.
 		history.viewingId = entry.id;
-		history.select(entry.requestId, entry.id);
 
 		if (collections.findRequest(entry.requestId)) {
 			collections.selectedRequestId = entry.requestId;
@@ -443,7 +446,12 @@
 													class="shrink-0 px-1.5 py-0.5 rounded font-mono text-2.5 transition-colors
 														{entry.id === shown.id ? 'bg-raised text-text' : 'text-muted hover:bg-raised/60'}"
 													title={new Date(entry.at).toLocaleString()}
-													onclick={() => history.select(requestKey, entry.id)}
+													onclick={() => {
+														// Stop viewing first, or the History override outranks
+														// the pick and the click appears to do nothing.
+														history.stopViewing();
+														history.select(requestKey, entry.id);
+													}}
 												>
 													{#if entry.pending}
 														<DotLoader size={12} />
