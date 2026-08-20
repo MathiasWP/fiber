@@ -2,6 +2,7 @@
 	import { ContextMenu, Tabs } from 'bits-ui';
 	import { Pane, PaneGroup, PaneResizer } from 'paneforge';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import DotLoader from '$lib/components/DotLoader.svelte';
 	import Editor from '$lib/components/Editor.svelte';
 	import MethodSelect from '$lib/components/MethodSelect.svelte';
 	import SectionSettings from '$lib/components/SectionSettings.svelte';
@@ -29,7 +30,7 @@
 		id: SCRATCH_ID,
 		name: 'Scratch',
 		method: 'GET',
-		path: 'https://httpbin.org/anything',
+		path: '',
 		body: '{\n  "hello": "world"\n}',
 		headers: []
 	});
@@ -373,7 +374,7 @@
 							{:else if shown.pending}
 								<div class="flex-1 grid place-items-center text-muted text-xs">
 									<span class="flex items-center gap-2">
-										<span class="i-lucide-loader-circle animate-spin"></span>
+										<DotLoader size={16} />
 										Waiting…
 									</span>
 								</div>
@@ -435,7 +436,7 @@
 													onclick={() => history.select(requestKey, entry.id)}
 												>
 													{#if entry.pending}
-														<span class="i-lucide-loader-circle animate-spin text-3"></span>
+														<DotLoader size={12} />
 													{:else if entry.error}
 														<span class="i-lucide-circle-alert text-bad text-3"></span>
 													{:else if entry.response}

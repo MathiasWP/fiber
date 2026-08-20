@@ -11,6 +11,7 @@
 	} from '$lib/api';
 	import { collections } from '$lib/collections.svelte';
 	import Editor from './Editor.svelte';
+	import DotLoader from '$lib/components/DotLoader.svelte';
 
 	interface Props {
 		section: Section;
@@ -141,7 +142,7 @@
 		</span>
 		<button class="btn-ghost text-xs" disabled={running} onclick={runNow}>
 			{#if running}
-				<span class="i-lucide-loader-circle animate-spin"></span>
+				<DotLoader size={14} />
 			{/if}
 			Run now
 		</button>
@@ -171,7 +172,7 @@
 	<div class="flex items-center gap-2">
 		<button class="btn-ghost text-xs" disabled={probing} onclick={probe}>
 			{#if probing}
-				<span class="i-lucide-loader-circle animate-spin"></span>
+				<DotLoader size={14} />
 			{/if}
 			Fetch a sample
 		</button>

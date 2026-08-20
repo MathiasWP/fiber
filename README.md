@@ -218,14 +218,20 @@ that costs the person downloading.
 *"Fiber is damaged and can't be opened"* — which reads like a corrupt download
 rather than a security prompt, so most people just delete it. So the bundle is
 **ad-hoc signed** instead: `bundle.macOS.signingIdentity` is `"-"`, which
-`codesign` accepts without any Apple account. That is not notarisation and
-Gatekeeper still stops the first launch, but it stops with the ordinary
-*"unidentified developer"* dialog, which has an *Open Anyway* button — a
-different thing from "damaged".
+`codesign` accepts without any Apple account.
 
-Getting past it, once per install: System Settings → Privacy & Security →
-*Open Anyway* (Sequoia removed the old Control-click → Open shortcut), or
-skip the dialog entirely by stripping the quarantine flag:
+That isn't notarisation, so Gatekeeper still stops the first launch — but it
+stops with *"Apple could not verify "Fiber" is free of malware"*, which is the
+recoverable dialog rather than the dead end.
+
+Installing, in the order that matters:
+
+1. **Drag `Fiber.app` out of the disk image into `/Applications` first.** Opening
+   it from the mounted `.dmg` cannot work: the quarantine flag has to be cleared,
+   and a disk image is a read-only volume.
+2. Then either double-click, hit *Done* on the dialog, and go to System Settings
+   → Privacy & Security → *Open Anyway* — the button only appears **after** a
+   refused open, which is the part everyone misses — or skip the dialog:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Fiber.app

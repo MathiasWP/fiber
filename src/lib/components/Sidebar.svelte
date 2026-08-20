@@ -16,6 +16,7 @@
 	} from '$lib/dnd.svelte';
 	import { history, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
+	import DotLoader from '$lib/components/DotLoader.svelte';
 
 	interface Props {
 		onOpenSettings: (section: Section) => void;
@@ -664,7 +665,7 @@
 							     all occupy the same space, so rows never reflow. -->
 							<span class="w-8 shrink-0 font-mono text-2.5">
 								{#if entry.pending}
-									<span class="i-lucide-loader-circle animate-spin text-muted text-3"></span>
+									<DotLoader size={12} class="text-muted" />
 								{:else if entry.error}
 									<span class="i-lucide-circle-alert text-bad text-3"></span>
 								{:else if entry.response}
