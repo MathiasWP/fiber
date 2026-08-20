@@ -107,17 +107,30 @@ class Collections {
 		return rows;
 	}
 
-	/**
-	 * Promotes a loaded endpoint into a real overlay entry so edits have
-	 * somewhere to live. Called on selection, not on load — otherwise opening a
-	 * section would write an entry for every endpoint it reports.
-	 */
+	/** Selects a loaded endpoint from the sidebar. */
 	selectLoaded(section: Section, row: LoadedRow): void {
-		if (!section.overlay.some((entry) => entry.id === row.request.id)) {
-			section.overlay.push({ ...row.request });
+		this.select({ section, request: row.request });
+	}
+
+	/**
+	 * Selects any request, wherever it was found — sidebar, ⌘K, anywhere.
+	 *
+	 * A loaded endpoint the user has never opened has no overlay entry yet, so
+	 * it's promoted into one first, so its id resolves and edits have somewhere
+	 * to live. Promotion is on selection, not on load — otherwise opening a
+	 * section would write an entry for every endpoint it reports. A loader only
+	 * fills a collection; once filled, its endpoints open like any other.
+	 */
+	select(selection: Selection): void {
+		const { section, request } = selection;
+		const known =
+			section.requests.some((entry) => entry.id === request.id) ||
+			section.overlay.some((entry) => entry.id === request.id);
+		if (!known) {
+			section.overlay.push({ ...request });
 			this.flush(section);
 		}
-		this.selectedRequestId = row.request.id;
+		this.selectedRequestId = request.id;
 	}
 
 	/** Requests belonging to no collection, if any have been made. */
@@ -326,7 +339,10 @@ class Collections {
 			collapsed: false,
 			order: this.collectionSections.length,
 			auth: { kind: 'none' },
-			mcp: { enabled: false, allowWrites: false },
+			// A new collection is shared with agents read-only by default: visible
+			// and callable with GET/HEAD/OPTIONS, but writes stay behind their own
+			// switch. Hide it entirely by turning the top switch off in settings.
+			mcp: { enabled: true, allowWrites: false },
 			requests: [],
 			overlay: []
 		};
@@ -391,11 +407,16 @@ class Collections {
 
 export const collections = new Collections();
 
-/** Every request across every section, for search. */
+/**
+ * Every request across every section, for search — typed, imported and loaded
+ * alike. A loader is just a way to fill a collection, so its endpoints belong in
+ * the same search as any other; `rowsFor` merges in the user's overlay data.
+ */
 export function allRequests(sections: Section[]): Selection[] {
-	return sections.flatMap((section) =>
-		section.requests.map((request) => ({ section, request }))
-	);
+	return sections.flatMap((section) => [
+		...section.requests.map((request) => ({ section, request })),
+		...collections.rowsFor(section).map((row) => ({ section, request: row.request }))
+	]);
 }
 
 /**

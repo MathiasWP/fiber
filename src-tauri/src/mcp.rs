@@ -248,9 +248,15 @@ impl FiberMcp {
             McpError::invalid_params("That section has no loader.".to_string(), None)
         })?;
 
+        // Default a blank method to GET, exactly as the app's loader_probe and
+        // loader::run do — the two must never disagree about the same loader.
+        let method = match config.method.trim() {
+            "" => "GET".to_string(),
+            method => method.to_string(),
+        };
         let response = (self.fetcher(section))(loader::LoaderRequest {
             url: config.url.clone(),
-            method: config.method.clone(),
+            method,
         })
         .await
         .map_err(|err| McpError::internal_error(err, None))?;
@@ -535,7 +541,14 @@ impl ServerHandler for FiberMcp {
 }
 
 /// Where the app keeps its data, resolved without Tauri so this works headlessly.
+///
+/// `FIBER_DATA_DIR` overrides the location outright. That's what lets the MCP
+/// server run under a container manager like ToolHive: point it at a mounted
+/// collections directory instead of the desktop app's own. Unset in normal use.
 pub fn app_data_dir() -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("FIBER_DATA_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("dev.fiber.app")

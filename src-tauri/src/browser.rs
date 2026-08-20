@@ -19,6 +19,8 @@
 //! rest of the auth path stays headless so the MCP server can use a stored
 //! credential (it just can't capture a new one, having no UI).
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -27,6 +29,7 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder}
 use tokio::sync::oneshot;
 
 use crate::auth::{AuthConfig, CaptureKind};
+use crate::send::Recapturer;
 use crate::store::Section;
 
 /// How long a single `localStorage` read may take before we give up.
@@ -228,7 +231,15 @@ const INDEXED_DB_JS: &str = r#"
   const MAX_VALUE_CHARS = 20000;
 
   const parked = window[SLOT];
-  if (parked && parked.done) return JSON.stringify(parked.items);
+  if (parked && parked.done) {
+    // Clear on collection so the *next* read starts fresh. The same webview is
+    // read again and again — the silent re-capture poll and the picker's
+    // Refresh both reuse this window — and a session's IndexedDB changes
+    // between those reads. A sticky result would pin the first reading forever,
+    // hiding a credential that only appeared later (the whole point of polling).
+    delete window[SLOT];
+    return JSON.stringify(parked.items);
+  }
   if (parked && parked.running) return "";
   window[SLOT] = { running: true, done: false, items: [] };
 
@@ -320,7 +331,12 @@ const MSAL_DECRYPT_JS: &str = r#"
 (() => {
   const SLOT = "__fetchMsalSnapshot";
   const parked = window[SLOT];
-  if (parked && parked.done) return JSON.stringify(parked.items);
+  if (parked && parked.done) {
+    // See INDEXED_DB_JS: clear so a re-read (silent re-capture, Refresh) sees a
+    // freshly decrypted cache rather than the first reading pinned in place.
+    delete window[SLOT];
+    return JSON.stringify(parked.items);
+  }
   if (parked && parked.running) return "";
   window[SLOT] = { running: true, done: false, items: [] };
 
@@ -632,6 +648,33 @@ pub async fn silent_recapture(
     let _ = window.show();
     let _ = window.set_focus();
     Err(BrowserError::NothingCaptured)
+}
+
+/// The GUI's [`Recapturer`]: on a 401 for a browser-captured section, lift a
+/// fresh credential out of a hidden webview. This is the one piece of the send
+/// path that needs a window, so it lives here rather than in the Tauri-free
+/// `send` module.
+pub struct BrowserRecapture {
+    app: AppHandle,
+}
+
+impl BrowserRecapture {
+    pub fn new(app: AppHandle) -> Self {
+        Self { app }
+    }
+}
+
+impl Recapturer for BrowserRecapture {
+    fn recapture<'a>(
+        &'a self,
+        section: &'a Section,
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+        Box::pin(async move {
+            silent_recapture(&self.app, section)
+                .await
+                .map_err(|err| err.to_string())
+        })
+    }
 }
 
 #[cfg(test)]

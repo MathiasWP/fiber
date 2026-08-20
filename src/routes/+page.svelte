@@ -226,7 +226,7 @@
 	bind:open={paletteOpen}
 	onSelect={(match) => {
 		history.stopViewing();
-		collections.selectedRequestId = match.request.id;
+		collections.select(match);
 	}}
 />
 

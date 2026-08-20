@@ -133,15 +133,27 @@ The same binary is the MCP server:
 { "fiber": { "command": "/path/to/fiber", "args": ["mcp"] } }
 ```
 
-It reads the same collections on disk and needs no running app. **Nothing is
-exposed until you share it** — per collection, under *Section settings →
-General*, with a second switch for anything beyond GET/HEAD/OPTIONS. A collection
-you haven't shared is invisible, not merely read-only. Credentials are applied to
-outgoing requests and redacted from everything returned.
+It reads the same collections on disk and needs no running app. A new collection
+is **shared read-only by default** — visible and callable with GET/HEAD/OPTIONS —
+with a second switch for anything beyond that, both under *Section settings →
+General*. Turn sharing off to hide a collection entirely: an unshared one is
+invisible, not merely read-only. Credentials are applied to outgoing requests and
+redacted from everything returned.
 
 Two of the tools exist for jq specifically: `loader_manifest` fetches your raw
 manifest and `try_loader_filter` tests a candidate filter against it — so you can
 ask an agent to write a loader filter for you rather than learning jq first.
+
+### Headless / containers
+
+The server also runs without the desktop app: `cargo build --no-default-features`
+drops Tauri and the webview and builds just `fiber mcp`. That build reads
+collections from `FIBER_DATA_DIR` and secrets from `FIBER_SECRETS`
+(`{"<sectionId>:auth": "<value>"}`) or `FIBER_SECRETS_FILE`, rather than the app
+data dir and the OS keychain — which is what lets it run in a container under a
+manager like ToolHive. See [`deploy/toolhive.md`](deploy/toolhive.md) and the
+[`Dockerfile`](Dockerfile). These env vars are unset in the desktop app, so its
+behaviour is unchanged.
 
 ## Status
 

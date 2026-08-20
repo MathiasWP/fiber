@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
-	import { methodColor } from '$lib/api';
+	import { methodColor, type Section } from '$lib/api';
 	import { allRequests, collections, fuzzyScore, type Selection } from '$lib/collections.svelte';
 
 	interface Props {
@@ -32,9 +32,41 @@
 			.map((match) => match.entry);
 	});
 
+	interface Group {
+		section: Section;
+		items: Selection[];
+		/** Flat index of this group's first item, so arrow keys can index into it. */
+		offset: number;
+	}
+
+	// Group the ranked matches by collection. Order is preserved: a group first
+	// appears where its best-scoring match does, and its items keep that ranking.
+	const groups = $derived.by<Group[]>(() => {
+		const byId = new Map<string, Group>();
+		const order: Group[] = [];
+		for (const match of matches) {
+			let group = byId.get(match.section.id);
+			if (!group) {
+				group = { section: match.section, items: [], offset: 0 };
+				byId.set(match.section.id, group);
+				order.push(group);
+			}
+			group.items.push(match);
+		}
+		let offset = 0;
+		for (const group of order) {
+			group.offset = offset;
+			offset += group.items.length;
+		}
+		return order;
+	});
+
+	/** Every match in render order, so arrow keys move through them as one list. */
+	const flat = $derived(groups.flatMap((group) => group.items));
+
 	// Keep the highlight in range as the result set shrinks under typing.
 	$effect(() => {
-		if (active >= matches.length) active = Math.max(0, matches.length - 1);
+		if (active >= flat.length) active = Math.max(0, flat.length - 1);
 	});
 
 	$effect(() => {
@@ -53,13 +85,13 @@
 	function onKeydown(event: KeyboardEvent) {
 		if (event.key === 'ArrowDown') {
 			event.preventDefault();
-			active = Math.min(active + 1, matches.length - 1);
+			active = Math.min(active + 1, flat.length - 1);
 		} else if (event.key === 'ArrowUp') {
 			event.preventDefault();
 			active = Math.max(active - 1, 0);
 		} else if (event.key === 'Enter') {
 			event.preventDefault();
-			choose(matches[active]);
+			choose(flat[active]);
 		}
 	}
 </script>
@@ -86,20 +118,27 @@
 			/>
 
 			<div class="max-h-[50vh] overflow-y-auto">
-				{#each matches as match, index (match.request.id)}
-					<button
-						class="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors
-							{index === active ? 'bg-raised' : 'hover:bg-raised/50'}"
-						onclick={() => choose(match)}
-						onmouseenter={() => (active = index)}
+				{#each groups as group (group.section.id)}
+					<div
+						class="sticky top-0 z-10 bg-panel border-b border-border/50 px-4 py-1 text-2.5 font-medium text-muted"
 					>
-						<span class="font-mono text-2.5 font-bold w-10 shrink-0 {methodColor(match.request.method)}">
-							{match.request.method}
-						</span>
-						<span class="truncate text-xs">{match.request.name}</span>
-						<span class="truncate font-mono text-2.5 text-muted">{match.request.path}</span>
-						<span class="ml-auto text-2.5 text-muted shrink-0">{match.section.name}</span>
-					</button>
+						{group.section.name}
+					</div>
+					{#each group.items as match, index (match.section.id + ' ' + match.request.id)}
+						{@const flatIndex = group.offset + index}
+						<button
+							class="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors
+								{flatIndex === active ? 'bg-raised' : 'hover:bg-raised/50'}"
+							onclick={() => choose(match)}
+							onmouseenter={() => (active = flatIndex)}
+						>
+							<span class="font-mono text-2.5 font-bold w-10 shrink-0 {methodColor(match.request.method)}">
+								{match.request.method}
+							</span>
+							<span class="truncate text-xs">{match.request.name}</span>
+							<span class="truncate font-mono text-2.5 text-muted">{match.request.path}</span>
+						</button>
+					{/each}
 				{:else}
 					<p class="px-4 py-3 text-xs text-muted">
 						{collections.sections.length

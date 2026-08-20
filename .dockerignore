@@ -1,0 +1,11 @@
+# The image only needs the Rust crate. Keep build artifacts and the frontend
+# out of the build context — the headless server uses none of it.
+**/target
+node_modules
+.svelte-kit
+build
+.git
+.context
+static
+src
+*.md

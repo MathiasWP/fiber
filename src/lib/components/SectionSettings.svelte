@@ -256,9 +256,10 @@
 							</label>
 
 							<p class="text-2.5 text-muted leading-relaxed">
-								Off by default. An agent calling this collection is authenticated as you, so
-								nothing is exposed until you say so — a collection that isn't shared is invisible,
-								not merely read-only. Credentials are never returned to the agent.
+								Shared read-only by default: an agent can see and call this collection, but only
+								with GET, HEAD and OPTIONS until you allow more. It's authenticated as you, and
+								credentials are never returned. Turn the top switch off to hide it entirely — an
+								unshared collection is invisible, not merely read-only.
 							</p>
 						</div>
 					</Tabs.Content>

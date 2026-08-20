@@ -14,16 +14,26 @@ rust-version = "1.90"
 name = "fiber_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# The desktop app. On by default; the headless MCP-only binary that ships in a
+# container (ToolHive et al.) is built with `--no-default-features`, which drops
+# Tauri and the webview entirely.
+default = ["gui"]
+gui = ["dep:tauri", "dep:tauri-plugin-log", "dep:tauri-build"]
+
 [build-dependencies]
-tauri-build = { version = "2.6.3", features = [] }
+tauri-build = { version = "2.6.3", features = [], optional = true }
 
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.11.3", features = [] }
-tauri-plugin-log = "2"
-tokio = { version = "1.53.1", features = ["time", "sync", "macros"] }
+tauri = { version = "2.11.3", features = [], optional = true }
+tauri-plugin-log = { version = "2", optional = true }
+# rt-multi-thread + io-std let the headless `fiber mcp` binary stand up its own
+# runtime and speak MCP over stdio; the GUI build got these transitively from
+# Tauri, so listing them here only matters for `--no-default-features`.
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync", "macros", "io-std", "io-util"] }
 base64 = "0.23.1"
 futures-util = "0.3.34"
 thiserror = "2.0.20"
