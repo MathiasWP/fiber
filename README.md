@@ -196,19 +196,28 @@ for Windows, and `.deb`, `.rpm` and `.AppImage` for Linux.
 
 ### Signing
 
-The bundles are unsigned, and the two platforms differ in how much that costs
-the person downloading them.
+Nothing here needs a paid certificate, and the three platforms differ in what
+that costs the person downloading.
 
-**macOS** is the harsh one. An unsigned, un-notarised app reports *"Fiber is
-damaged and can't be opened"* — which reads like a corrupt download rather than
-a security prompt, so most people will simply delete it. Since Sequoia there is
-no Control-click → Open escape hatch either; it's System Settings → Privacy &
-Security → *Open Anyway*, then an admin password. The reliable fix is to strip
-the quarantine flag by hand:
+**macOS** would be the harsh one. A bundle with no signature at all reports
+*"Fiber is damaged and can't be opened"* — which reads like a corrupt download
+rather than a security prompt, so most people just delete it. So the bundle is
+**ad-hoc signed** instead: `bundle.macOS.signingIdentity` is `"-"`, which
+`codesign` accepts without any Apple account. That is not notarisation and
+Gatekeeper still stops the first launch, but it stops with the ordinary
+*"unidentified developer"* dialog, which has an *Open Anyway* button — a
+different thing from "damaged".
+
+Getting past it, once per install: System Settings → Privacy & Security →
+*Open Anyway* (Sequoia removed the old Control-click → Open shortcut), or
+skip the dialog entirely by stripping the quarantine flag:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Fiber.app
 ```
+
+A locally built app — `pnpm app:build` — has no quarantine flag to begin with,
+because that is applied by the browser on download. It just runs.
 
 **Windows** is survivable: SmartScreen shows *"Windows protected your PC"*, and
 *More info → Run anyway* gets past it. Reputation accrues with downloads.
