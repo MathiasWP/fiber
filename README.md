@@ -54,6 +54,7 @@ src-tauri/
 | `⌘↵` | send |
 | `⌘K` | search endpoints |
 | `⌘A` | select the whole response, when focused in it |
+| `⌘+` `⌘-` `⌘0` | text size in the body and response editors, and back to default |
 | right-click | context menu — rename, duplicate, delete, refresh, copy |
 | drag | reorder requests and collections, or move a request between them |
 

@@ -25,6 +25,7 @@
 	} from '$lib/api';
 	import { LOOSE_SECTION_ID } from '$lib/api';
 	import { collections, type Selection } from '$lib/collections.svelte';
+	import { editorFont } from '$lib/editor.svelte';
 	import { history, SCRATCH_ID, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
 
@@ -69,6 +70,7 @@
 		// never before — a slow discovery endpoint mustn't delay startup.
 		collections.load().then(() => collections.refreshStale());
 		history.load();
+		editorFont.init();
 		return theme.init();
 	});
 
@@ -402,6 +404,11 @@
 		scratch.body = entry.requestBody;
 	}
 
+	// ⌘+ arrives as '=' unshifted and '+' shifted, and on some layouts as
+	// 'Add' from the numeric keypad. Same story for ⌘-.
+	const ZOOM_IN = new Set(['=', '+', 'Add']);
+	const ZOOM_OUT = new Set(['-', '_', 'Subtract']);
+
 	function onKeydown(event: KeyboardEvent) {
 		const meta = event.metaKey || event.ctrlKey;
 		if (meta && event.key === 'Enter') {
@@ -410,6 +417,17 @@
 		} else if (meta && event.key.toLowerCase() === 'k') {
 			event.preventDefault();
 			paletteOpen = true;
+		} else if (meta && ZOOM_IN.has(event.key)) {
+			// preventDefault matters here beyond the usual: without it the webview
+			// takes ⌘+ as its own page zoom and scales the entire interface.
+			event.preventDefault();
+			editorFont.bigger();
+		} else if (meta && ZOOM_OUT.has(event.key)) {
+			event.preventDefault();
+			editorFont.smaller();
+		} else if (meta && event.key === '0') {
+			event.preventDefault();
+			editorFont.reset();
 		}
 	}
 

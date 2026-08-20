@@ -7,6 +7,7 @@
 	import { EditorView, placeholder as placeholderExt } from '@codemirror/view';
 	import { basicSetup } from 'codemirror';
 	import { untrack } from 'svelte';
+	import { editorFont } from '$lib/editor.svelte';
 	import { theme } from '$lib/theme.svelte';
 
 	interface Props {
@@ -30,6 +31,7 @@
 	const editable = new Compartment();
 	const languageConf = new Compartment();
 	const themeConf = new Compartment();
+	const fontConf = new Compartment();
 
 	const parseJson = jsonParseLinter();
 
@@ -44,6 +46,11 @@
 			linter((target) => (target.state.doc.length === 0 ? [] : parseJson(target))),
 			lintGutter()
 		];
+	}
+
+	/** Its own compartment so the size can change without rebuilding the view. */
+	function fontTheme(size: number) {
+		return EditorView.theme({ '&': { fontSize: `${size}px` } });
 	}
 
 	$effect(() => {
@@ -67,10 +74,11 @@
 					EditorView.lineWrapping,
 					placeholderExt(untrack(() => placeholder)),
 					EditorView.theme({
-						'&': { height: '100%', fontSize: '13px' },
+						'&': { height: '100%' },
 						'.cm-scroller': { fontFamily: 'var(--font-mono)' },
 						'&.cm-focused': { outline: 'none' }
 					}),
+					fontConf.of(fontTheme(untrack(() => editorFont.size))),
 					EditorView.updateListener.of((update) => {
 						if (!update.docChanged) return;
 						value = update.state.doc.toString();
@@ -106,6 +114,10 @@
 		view?.dispatch({
 			effects: themeConf.reconfigure(theme.resolved === 'dark' ? oneDark : [])
 		});
+	});
+
+	$effect(() => {
+		view?.dispatch({ effects: fontConf.reconfigure(fontTheme(editorFont.size)) });
 	});
 
 	$effect(() => {
