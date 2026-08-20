@@ -39,6 +39,11 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
+          # This job never touches the dependencies — it reads two files and
+          # calls gh. setup-node@v5 otherwise infers pnpm from `packageManager`
+          # and tries to run it to locate a cache dir, which fails here because
+          # nothing installed pnpm.
+          package-manager-cache: false
 
       - name: Did the version move, and is it still unreleased?
         id: check
@@ -51,6 +56,13 @@ jobs:
 
           if [ "$version" = "$previous" ] && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then
             echo "Version unchanged at $version — nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif ! grep -qxF "## $version" CHANGELOG.md 2>/dev/null; then
+            # A moved version is not enough on its own: editing package.json by
+            # hand moves it too. Changesets always writes the changelog entry in
+            # the same commit as the bump, so requiring the entry is what
+            # distinguishes a real release from any other edit.
+            echo "No CHANGELOG.md entry for $version — not a changesets release."
             echo "release=false" >> "$GITHUB_OUTPUT"
           elif gh release view "v$version" > /dev/null 2>&1; then
             # Belt and braces: makes a re-run, or a manual dispatch, a no-op
