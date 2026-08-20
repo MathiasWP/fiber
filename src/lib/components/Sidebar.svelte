@@ -3,6 +3,7 @@
 	import {
 		LOOSE_SECTION_ID,
 		methodColor,
+		normalizeBaseUrl,
 		statusColor,
 		type SavedRequest,
 		type Section
@@ -195,7 +196,7 @@
 	}
 
 	function copyUrl(section: Section, request: SavedRequest) {
-		const base = section.baseUrl.trim().replace(/\/+$/, '');
+		const base = normalizeBaseUrl(section.baseUrl);
 		const path = request.path.trim();
 		const absolute = /^https?:\/\//.test(path);
 		navigator.clipboard.writeText(absolute ? path : `${base}/${path.replace(/^\/+/, '')}`);
@@ -507,6 +508,7 @@
 					spellcheck="false"
 					placeholder="https://api.example.com"
 					class="input-base text-xs font-mono"
+					onblur={() => (newBaseUrl = normalizeBaseUrl(newBaseUrl))}
 					onkeydown={(e) => e.key === 'Enter' && addSection()}
 				/>
 				<div class="flex gap-1">

@@ -401,6 +401,24 @@ export function checkForUpdate(): Promise<Update | null> {
 	return invoke<Update | null>('check_for_update');
 }
 
+/**
+ * The form a base URL is stored in: trimmed, and without a trailing slash.
+ *
+ * Nothing depends on it. `join_url` on the Rust side trims both sides before
+ * joining, so `https://api.example.com` and `https://api.example.com/` have
+ * always produced the same request. It exists so that what is on screen after
+ * you finish typing is unambiguous — one canonical form to compare against,
+ * rather than two that look different and behave identically.
+ */
+export function normalizeBaseUrl(value: string): string {
+	const trimmed = value.trim();
+	// A bare scheme is someone mid-type, and its slashes are structural: naively
+	// stripping them turns "https://" into "https:".
+	const scheme = /^([a-z][a-z0-9+.\-]*:\/\/)(.*)$/i.exec(trimmed);
+	if (scheme) return scheme[1] + scheme[2].replace(/\/+$/, '');
+	return trimmed.replace(/\/+$/, '');
+}
+
 export function statusColor(status: number): string {
 	if (status >= 500) return 'text-bad';
 	if (status >= 400) return 'text-warn';
