@@ -146,18 +146,25 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # The bundles ship unsigned. To sign and notarise the macOS build, add the
+      # APPLE_* repository secrets and the env block below:
+      #
+      #   env:
+      #     APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      #     APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      #     APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      #     APPLE_ID: ${{ secrets.APPLE_ID }}
+      #     APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #
+      # It has to stay commented out rather than sit here waiting for the
+      # secrets: a missing secret expands to the empty string, which *defines*
+      # the variable, and Tauri signs when APPLE_CERTIFICATE is present rather
+      # than when it is non-empty. So an empty value doesn't skip signing — it
+      # runs `security import` on an empty certificate and fails the build.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          # Unset, these are all no-ops and the bundle ships unsigned — which is
-          # fine, but see the README for what users have to do on first launch.
-          # Add the repository secrets and signing turns itself on.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           releaseId: ${{ needs.draft.outputs.release_id }}
           args: ${{ matrix.args }}

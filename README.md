@@ -196,13 +196,45 @@ for Windows, and `.deb`, `.rpm` and `.AppImage` for Linux.
 
 ### Signing
 
-The bundles are unsigned, so first launch needs a nudge: on macOS, right-click
-the app → Open, or `xattr -dr com.apple.quarantine /Applications/Fiber.app`; on
-Windows, More info → Run anyway. To ship signed and notarised macOS builds
-instead, add the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+Nothing here needs a paid certificate, and the three platforms differ in what
+that costs the person downloading.
+
+**macOS** would be the harsh one. A bundle with no signature at all reports
+*"Fiber is damaged and can't be opened"* — which reads like a corrupt download
+rather than a security prompt, so most people just delete it. So the bundle is
+**ad-hoc signed** instead: `bundle.macOS.signingIdentity` is `"-"`, which
+`codesign` accepts without any Apple account. That is not notarisation and
+Gatekeeper still stops the first launch, but it stops with the ordinary
+*"unidentified developer"* dialog, which has an *Open Anyway* button — a
+different thing from "damaged".
+
+Getting past it, once per install: System Settings → Privacy & Security →
+*Open Anyway* (Sequoia removed the old Control-click → Open shortcut), or
+skip the dialog entirely by stripping the quarantine flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Fiber.app
+```
+
+A locally built app — `pnpm app:build` — has no quarantine flag to begin with,
+because that is applied by the browser on download. It just runs.
+
+**Windows** is survivable: SmartScreen shows *"Windows protected your PC"*, and
+*More info → Run anyway* gets past it. Reputation accrues with downloads.
+
+**Linux** needs no signing at all.
+
+To ship signed and notarised macOS builds instead, two things are needed
+together: the `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
 `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID`
-repository secrets — the workflow already passes them through, and picks them up
-the moment they exist.
+repository secrets, *and* the `env:` block that is commented out above the
+`tauri-action` step in [`release.yml`](.github/workflows/release.yml).
+
+The block can't just sit there waiting for the secrets. A secret that doesn't
+exist expands to the empty string, which still *defines* the variable, and Tauri
+signs whenever `APPLE_CERTIFICATE` is present rather than when it is non-empty —
+so an empty value runs `security import` on an empty certificate and fails the
+macOS build outright.
 
 ## Status
 
