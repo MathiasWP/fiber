@@ -222,6 +222,23 @@ for Windows, and `.deb`, `.rpm` and `.AppImage` for Linux.
 
 ### Signing
 
+On macOS, install with this and there is no prompt at all:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MathiasWP/fiber/main/scripts/install-macos.sh | bash
+```
+
+The dialog everyone hits is not really about the signature. It is about
+`com.apple.quarantine`, an extended attribute attached by the *downloading
+application* — browsers set it, `curl` does not, and macOS only consults
+Gatekeeper about a file that carries it. So an app that arrives via
+[`install-macos.sh`](scripts/install-macos.sh) is never questioned. Nothing is
+disabled or worked around; the check simply never applies.
+
+Notarising the app is what would make a browser download quiet too, and that
+needs a paid Apple Developer account. The rest of this section is about the
+browser route.
+
 Nothing here needs a paid certificate, and the three platforms differ in what
 that costs the person downloading.
 
