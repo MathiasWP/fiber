@@ -73,6 +73,10 @@ where
                         log::warn!("could not store re-captured credential: {err}");
                     }
                 }
+                // Seed the cache from the value in hand. Without this the retry
+                // below would read straight back out of the keychain the thing
+                // we just wrote into it — a second prompt for no new information.
+                auth_state.store(&section.id, value, 0);
             }
             // The window is now visible for the user to sign in; the original
             // 401 is the honest answer for this request.
@@ -100,8 +104,10 @@ async fn apply_auth<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
-    let secret = section.auth.secret_ref().and_then(lookup);
-    let header = auth::header_for(auth_state, http_state, section, secret)
+    // The lookup goes in as a closure: `header_for` only calls it when its cache
+    // has nothing, which is what keeps a keychain prompt to once per app run
+    // rather than once per request.
+    let header = auth::header_for(auth_state, http_state, section, lookup)
         .await
         .map_err(|err| HttpError::Auth(err.to_string()))?;
 

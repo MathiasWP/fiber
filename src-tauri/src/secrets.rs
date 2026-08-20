@@ -75,6 +75,38 @@ pub fn get(reference: &str) -> Option<String> {
     entry(reference).ok()?.get_password().ok()
 }
 
+/// Whether a secret exists — deliberately without reading it.
+///
+/// `get(..).is_some()` would answer the same question and cost a great deal
+/// more: fetching a keychain item's *data* needs authorization, and on a build
+/// signed ad-hoc — where the ACL cannot survive an update — that authorization
+/// is a password prompt. Fetching its *attributes* needs none. The UI only ever
+/// asks whether something is there, so that is all this looks at.
+#[cfg(target_os = "macos")]
+pub fn has(reference: &str) -> bool {
+    use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
+
+    // Injected secrets never touch the keychain, so answer for them first.
+    if injected().contains_key(reference) {
+        return true;
+    }
+
+    ItemSearchOptions::new()
+        .class(ItemClass::generic_password())
+        .service(SERVICE)
+        .account(reference)
+        // Attributes only. Adding `load_data` here would put the prompt straight
+        // back, which is the entire point of this function.
+        .load_attributes(true)
+        .limit(Limit::Max(1))
+        .search()
+        .map(|found| !found.is_empty())
+        // A missing item searches as an error rather than an empty result.
+        .unwrap_or(false)
+}
+
+/// Elsewhere there is no such distinction to exploit, and no prompt to avoid.
+#[cfg(not(target_os = "macos"))]
 pub fn has(reference: &str) -> bool {
     get(reference).is_some()
 }

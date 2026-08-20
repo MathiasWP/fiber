@@ -145,7 +145,7 @@ impl AuthState {
             .map(|token| token.value.clone())
     }
 
-    fn store(&self, section_id: &str, value: String, ttl_seconds: u64) {
+    pub(crate) fn store(&self, section_id: &str, value: String, ttl_seconds: u64) {
         let expires_at = (ttl_seconds > 0).then(|| Instant::now() + Duration::from_secs(ttl_seconds));
         self.tokens.lock().unwrap().insert(
             section_id.to_string(),
@@ -156,18 +156,36 @@ impl AuthState {
 
 /// The header to add to an outgoing request, if the section calls for one.
 ///
-/// `secret` is whatever the keychain holds for `section.auth.secret_ref()`.
-pub async fn header_for(
+/// `lookup` resolves `section.auth.secret_ref()` against the keychain, and is
+/// taken as a closure rather than a value so it is only called on a cache miss.
+/// That distinction is the whole point on macOS: an ad-hoc signed build cannot
+/// hold a keychain ACL across releases, so every read is a password prompt, and
+/// reading eagerly meant one prompt per request rather than one per app run.
+pub async fn header_for<F>(
     state: &AuthState,
     http: &HttpState,
     section: &Section,
-    secret: Option<String>,
-) -> Result<Option<Header>, AuthError> {
+    lookup: &F,
+) -> Result<Option<Header>, AuthError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let fetch = || section.auth.secret_ref().and_then(|reference| lookup(reference));
+
     match &section.auth {
         AuthConfig::None => Ok(None),
 
+        // Cached like a login token, though nothing expires it but a 401 or the
+        // user replacing it — both of which already call `invalidate`.
         AuthConfig::Bearer { .. } => {
-            let token = secret.ok_or(AuthError::MissingSecret)?;
+            let token = match state.cached(&section.id) {
+                Some(token) => token,
+                None => {
+                    let token = fetch().ok_or(AuthError::MissingSecret)?;
+                    state.store(&section.id, token.clone(), 0);
+                    token
+                }
+            };
             Ok(Some(Header {
                 name: "Authorization".into(),
                 value: format!("Bearer {}", token.trim()),
@@ -186,7 +204,7 @@ pub async fn header_for(
             let token = match state.cached(&section.id) {
                 Some(token) => token,
                 None => {
-                    let body = secret.ok_or(AuthError::MissingSecret)?;
+                    let body = fetch().ok_or(AuthError::MissingSecret)?;
                     let token =
                         log_in(http, section, method, url, &body, token_path).await?;
                     state.store(&section.id, token.clone(), *ttl_seconds);
@@ -201,7 +219,14 @@ pub async fn header_for(
         // Re-capturing it needs a webview, which lives outside this module —
         // see `browser.rs`. Here we only compose what's already stored.
         AuthConfig::Browser { header, prefix, .. } => {
-            let captured = secret.ok_or(AuthError::NotSignedIn)?;
+            let captured = match state.cached(&section.id) {
+                Some(value) => value,
+                None => {
+                    let value = fetch().ok_or(AuthError::NotSignedIn)?;
+                    state.store(&section.id, value.clone(), 0);
+                    value
+                }
+            };
             Ok(Some(compose(header, prefix, &captured)))
         }
     }
@@ -298,6 +323,8 @@ pub(crate) fn value_at(value: &Value, path: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::store::Section;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn section(auth: AuthConfig, base_url: &str) -> Section {
@@ -343,6 +370,22 @@ mod tests {
         assert_eq!(value_at(&doc, ""), None);
     }
 
+    /// A stand-in for the keychain that records how often it was consulted —
+    /// which is the thing these tests are really about on macOS, where each
+    /// consultation is a password prompt.
+    fn counted(value: Option<&str>) -> (impl Fn(&str) -> Option<String>, Arc<AtomicUsize>) {
+        let owned = value.map(str::to_string);
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counter = reads.clone();
+        (
+            move |_reference: &str| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                owned.clone()
+            },
+            reads,
+        )
+    }
+
     #[tokio::test]
     async fn bearer_uses_the_stored_secret() {
         let state = AuthState::default();
@@ -354,15 +397,77 @@ mod tests {
             "https://example.com",
         );
 
-        let header = header_for(&state, &http, &section, Some("  tok123  ".into()))
+        let (lookup, reads) = counted(Some("  tok123  "));
+
+        let header = header_for(&state, &http, &section, &lookup)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(header.name, "Authorization");
         assert_eq!(header.value, "Bearer tok123");
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
 
-        let missing = header_for(&state, &http, &section, None).await;
+        // The point of the exercise: a second send composes the same header
+        // without going back to the keychain, so macOS has nothing to prompt
+        // about.
+        let again = header_for(&state, &http, &section, &lookup)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.value, "Bearer tok123");
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "the cache should have served it");
+
+        // And once the token is invalidated, it is read again.
+        state.invalidate(&section.id);
+        header_for(&state, &http, &section, &lookup).await.unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn bearer_without_a_stored_secret_is_an_error() {
+        let state = AuthState::default();
+        let http = HttpState::default();
+        let section = section(
+            AuthConfig::Bearer {
+                secret_ref: "sec-1:token".into(),
+            },
+            "https://example.com",
+        );
+
+        let missing = header_for(&state, &http, &section, &counted(None).0).await;
         assert!(matches!(missing, Err(AuthError::MissingSecret)));
+    }
+
+    /// The credential a browser session left behind is cached the same way, and
+    /// for the same reason: it used to be re-read on every single send.
+    #[tokio::test]
+    async fn browser_credentials_are_read_once() {
+        let state = AuthState::default();
+        let http = HttpState::default();
+        let section = section(
+            AuthConfig::Browser {
+                login_url: "https://example.com/login".into(),
+                capture: CaptureKind::Cookie,
+                capture_key: "sid".into(),
+                capture_path: String::new(),
+                header: "Cookie".into(),
+                prefix: String::new(),
+                ttl_seconds: 0,
+                secret_ref: "sec-1:auth".into(),
+            },
+            "https://example.com",
+        );
+        let (lookup, reads) = counted(Some("sid=abc"));
+
+        for _ in 0..3 {
+            let header = header_for(&state, &http, &section, &lookup)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(header.name, "Cookie");
+            assert_eq!(header.value, "sid=abc");
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "three sends, one keychain read");
     }
 
     /// Serves `/login`, handing out a new token each time it's called, so tests
@@ -403,22 +508,20 @@ mod tests {
 
     #[tokio::test]
     async fn logs_in_once_and_caches_the_token() {
-        use std::sync::atomic::Ordering;
-
         let (base, calls) = login_server().await;
         let state = AuthState::default();
         let http = HttpState::default();
         let section = section(login_auth(60), &base);
-        let secret = Some(r#"{"user":"me","password":"hunter2"}"#.to_string());
+        let (secret, _reads) = counted(Some(r#"{"user":"me","password":"hunter2"}"#));
 
-        let first = header_for(&state, &http, &section, secret.clone())
+        let first = header_for(&state, &http, &section, &secret)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(first.value, "Bearer tok1");
 
         // Second call must reuse the cache, not hit the login endpoint again.
-        let second = header_for(&state, &http, &section, secret.clone())
+        let second = header_for(&state, &http, &section, &secret)
             .await
             .unwrap()
             .unwrap();
@@ -427,7 +530,7 @@ mod tests {
 
         // Which is exactly what a 401 undoes.
         state.invalidate(&section.id);
-        let third = header_for(&state, &http, &section, secret)
+        let third = header_for(&state, &http, &section, &secret)
             .await
             .unwrap()
             .unwrap();
@@ -437,30 +540,26 @@ mod tests {
 
     #[tokio::test]
     async fn zero_ttl_caches_until_invalidated() {
-        use std::sync::atomic::Ordering;
-
         let (base, calls) = login_server().await;
         let state = AuthState::default();
         let http = HttpState::default();
         let section = section(login_auth(0), &base);
-        let secret = Some("{}".to_string());
+        let (secret, _) = counted(Some("{}"));
 
-        header_for(&state, &http, &section, secret.clone()).await.unwrap();
-        header_for(&state, &http, &section, secret.clone()).await.unwrap();
+        header_for(&state, &http, &section, &secret).await.unwrap();
+        header_for(&state, &http, &section, &secret).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1, "ttl 0 means cache until 401");
     }
 
     #[tokio::test]
     async fn elapsed_ttl_forces_a_new_login() {
-        use std::sync::atomic::Ordering;
-
         let (base, calls) = login_server().await;
         let state = AuthState::default();
         let http = HttpState::default();
         let section = section(login_auth(60), &base);
-        let secret = Some("{}".to_string());
+        let (secret, _) = counted(Some("{}"));
 
-        let first = header_for(&state, &http, &section, secret.clone())
+        let first = header_for(&state, &http, &section, &secret)
             .await
             .unwrap()
             .unwrap();
@@ -475,7 +574,7 @@ mod tests {
             .unwrap()
             .expires_at = Some(Instant::now() - Duration::from_secs(1));
 
-        let second = header_for(&state, &http, &section, secret)
+        let second = header_for(&state, &http, &section, &secret)
             .await
             .unwrap()
             .unwrap();
@@ -501,7 +600,7 @@ mod tests {
         let http = HttpState::default();
         let section = section(login_auth(60), &format!("http://{addr}"));
 
-        let outcome = header_for(&state, &http, &section, Some("{}".into())).await;
+        let outcome = header_for(&state, &http, &section, &counted(Some("{}")).0).await;
         assert!(matches!(outcome, Err(AuthError::Status(403))), "{outcome:?}");
     }
 }
