@@ -1,5 +1,21 @@
 # fiber
 
+## 0.6.0
+
+### Minor Changes
+
+- [#18](https://github.com/MathiasWP/fiber/pull/18) [`0434271`](https://github.com/MathiasWP/fiber/commit/04342714268d8ca4bcd934f4e9f02d3001a4fc17) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Query params replace the dead body tab on GET and HEAD, editing the URL directly. Right-clicking the collection list offers New collection and New request, and the webview's own "Reload" menu no longer appears where the app has nothing to offer.
+
+- [#20](https://github.com/MathiasWP/fiber/pull/20) [`d98f6a1`](https://github.com/MathiasWP/fiber/commit/d98f6a1c4fc4305d6fe889599da6d56c458dccbf) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Headers can be removed with an X, and the collection's auth header is shown in the table where it lands. Its value stays write-only — pasting a new token replaces it for the whole collection.
+
+### Patch Changes
+
+- [#19](https://github.com/MathiasWP/fiber/pull/19) [`7d514b8`](https://github.com/MathiasWP/fiber/commit/7d514b86d837041730dc1f5235eb8258648cded4) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Loaders are white everywhere, the waiting line is drawn fresh per request rather than cycling, history rows lead with the name and keep method, status and time together on the right, and the sidebar's create buttons use a matched icon pair.
+
+- [#20](https://github.com/MathiasWP/fiber/pull/20) [`695c0ad`](https://github.com/MathiasWP/fiber/commit/695c0add4929cfded9eb564c14b185c34a7efd1b) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Read a collection's credential from the keychain once per app run instead of once per request, so macOS stops asking for your password on every send.
+
+- [#17](https://github.com/MathiasWP/fiber/pull/17) [`48c61c2`](https://github.com/MathiasWP/fiber/commit/48c61c2bcc6b5d9d903837efda29f4f2d349e557) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Drop the trailing slash from a collection's base URL when you leave the field, so there is one obvious way for it to look rather than two that behave identically.
+
 ## 0.5.0
 
 ### Minor Changes
