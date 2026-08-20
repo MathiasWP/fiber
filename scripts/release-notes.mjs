@@ -6,7 +6,7 @@
 //
 //   node scripts/release-notes.mjs 0.2.0
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -18,7 +18,10 @@ if (!version) {
 	process.exit(1)
 }
 
-const changelog = readFileSync(join(root, 'CHANGELOG.md'), 'utf8')
+// There is no changelog until the first release lands one, and a release can be
+// forced by hand before then — so a missing file falls back rather than throwing.
+const path = join(root, 'CHANGELOG.md')
+const changelog = existsSync(path) ? readFileSync(path, 'utf8') : ''
 
 // Split on the version headings and take ours. Simpler than one regex spanning
 // heading to heading, and it can't run away to the end of the file.
