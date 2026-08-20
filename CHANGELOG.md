@@ -1,5 +1,11 @@
 # fiber
 
+## 0.5.0
+
+### Minor Changes
+
+- [#15](https://github.com/MathiasWP/fiber/pull/15) [`1067f31`](https://github.com/MathiasWP/fiber/commit/1067f3147952de912089be74cff96e77a6619f47) Thanks [@MathiasWP](https://github.com/MathiasWP)! - The waiting state reads better: a white loader, larger label, and messages that change as a slow request drags on. Updates can now be deferred to the next launch instead of restarting immediately, and the window comes back where you left it — in front — after an update restarts the app.
+
 ## 0.4.2
 
 ### Patch Changes
