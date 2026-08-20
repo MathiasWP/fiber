@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ContextMenu, Dialog } from 'bits-ui';
+	import { ContextMenu, Dialog, Tooltip } from 'bits-ui';
 	import {
 		LOOSE_SECTION_ID,
 		methodColor,
@@ -458,20 +458,39 @@
 				to look level. square-plus draws 18 against the same 17 — close enough
 				that a single size does, and the arithmetic can go.
 			-->
-			<button
-				class="ml-auto h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
-				title="New request — not in any collection"
-				onclick={addLooseRequest}
-			>
-				<span class="i-lucide-square-plus text-4"></span>
-			</button>
-			<button
-				class="h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
-				title="New collection"
-				onclick={() => (creating = true)}
-			>
-				<span class="i-lucide-folder-plus text-4"></span>
-			</button>
+			<!--
+				These already had `title`, which is a tooltip — just the system's,
+				after a second and a half, in its own styling. Bits UI's shows in
+				200ms and looks like the rest of the app, which for two unlabelled
+				icon buttons is the difference between a hint and a guess.
+			-->
+			<Tooltip.Provider delayDuration={200}>
+				<Tooltip.Root>
+					<Tooltip.Trigger
+						class="ml-auto h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
+						onclick={addLooseRequest}
+					>
+						<span class="i-lucide-square-plus text-4"></span>
+					</Tooltip.Trigger>
+					<Tooltip.Portal>
+						<Tooltip.Content class="tooltip" sideOffset={6}>
+							New request — not in any collection
+						</Tooltip.Content>
+					</Tooltip.Portal>
+				</Tooltip.Root>
+
+				<Tooltip.Root>
+					<Tooltip.Trigger
+						class="h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
+						onclick={() => (creating = true)}
+					>
+						<span class="i-lucide-folder-plus text-4"></span>
+					</Tooltip.Trigger>
+					<Tooltip.Portal>
+						<Tooltip.Content class="tooltip" sideOffset={6}>New collection</Tooltip.Content>
+					</Tooltip.Portal>
+				</Tooltip.Root>
+			</Tooltip.Provider>
 		{/if}
 	</header>
 
@@ -699,7 +718,7 @@
 						New collection
 					</ContextMenu.Item>
 					<ContextMenu.Item class="menu-item" onSelect={addLooseRequest}>
-						<span class="i-lucide-file-plus text-3"></span>
+						<span class="i-lucide-square-plus text-3"></span>
 						New request
 					</ContextMenu.Item>
 				</ContextMenu.Content>
@@ -831,13 +850,11 @@
 				</ContextMenu.Content>
 			</ContextMenu.Portal>
 		</ContextMenu.Root>
-		<!-- `mx-auto` rather than a fixed width: equal auto margins park it in the
-		     middle of whatever room the two ends leave. -->
-		<span class="mx-auto font-mono text-2.5 text-muted tabular-nums" title="Fiber {version}">
+		<!-- The ⌘K hint used to live here. A shortcut that common does not need
+		     explaining forever, and the version is the thing worth being able to
+		     read at a glance when something misbehaves. -->
+		<span class="ml-auto font-mono text-2.5 text-muted tabular-nums" title="Fiber {version}">
 			v{version}
-		</span>
-		<span class="text-2.5 text-muted">
-			<kbd class="font-mono">⌘K</kbd> search
 		</span>
 	</footer>
 </aside>

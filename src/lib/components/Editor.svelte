@@ -7,6 +7,7 @@
 	import { EditorView, placeholder as placeholderExt } from '@codemirror/view';
 	import { basicSetup } from 'codemirror';
 	import { untrack } from 'svelte';
+	import { editorFont, type EditorScope } from '$lib/editor.svelte';
 	import { theme } from '$lib/theme.svelte';
 
 	interface Props {
@@ -15,13 +16,16 @@
 		/** JSON gets highlighting, folding and inline parse errors. */
 		language?: 'json' | 'text' | 'typescript';
 		placeholder?: string;
+		/** Which of the two text sizes this editor follows. */
+		scope?: EditorScope;
 	}
 
 	let {
 		value = $bindable(''),
 		readonly = false,
 		language = 'json',
-		placeholder = ''
+		placeholder = '',
+		scope = 'request'
 	}: Props = $props();
 
 	let host = $state<HTMLDivElement>();
@@ -30,6 +34,7 @@
 	const editable = new Compartment();
 	const languageConf = new Compartment();
 	const themeConf = new Compartment();
+	const fontConf = new Compartment();
 
 	const parseJson = jsonParseLinter();
 
@@ -44,6 +49,11 @@
 			linter((target) => (target.state.doc.length === 0 ? [] : parseJson(target))),
 			lintGutter()
 		];
+	}
+
+	/** Its own compartment so the size can change without rebuilding the view. */
+	function fontTheme(size: number) {
+		return EditorView.theme({ '&': { fontSize: `${size}px` } });
 	}
 
 	$effect(() => {
@@ -67,10 +77,11 @@
 					EditorView.lineWrapping,
 					placeholderExt(untrack(() => placeholder)),
 					EditorView.theme({
-						'&': { height: '100%', fontSize: '13px' },
+						'&': { height: '100%' },
 						'.cm-scroller': { fontFamily: 'var(--font-mono)' },
 						'&.cm-focused': { outline: 'none' }
 					}),
+					fontConf.of(fontTheme(untrack(() => editorFont.size(scope)))),
 					EditorView.updateListener.of((update) => {
 						if (!update.docChanged) return;
 						value = update.state.doc.toString();
@@ -109,6 +120,10 @@
 	});
 
 	$effect(() => {
+		view?.dispatch({ effects: fontConf.reconfigure(fontTheme(editorFont.size(scope))) });
+	});
+
+	$effect(() => {
 		// Read-only is enforced by the state facet above; the view stays editable
 		// so it can hold focus.
 		view?.dispatch({
@@ -129,4 +144,10 @@
 	}
 </script>
 
-<div bind:this={host} class="h-full overflow-hidden"></div>
+<!-- `focusin` rather than `focus`: the latter doesn't bubble, and the thing
+     actually taking focus is CodeMirror's contenteditable inside this div. -->
+<div
+	bind:this={host}
+	class="h-full overflow-hidden"
+	onfocusin={() => (editorFont.active = scope)}
+></div>

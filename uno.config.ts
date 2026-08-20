@@ -55,9 +55,12 @@ export default defineConfig({
 		'menu-content':
 			'z-50 min-w-44 rounded-md border border-border bg-panel p-1 shadow-xl outline-none',
 		'menu-item':
-			'flex items-center gap-2 w-full px-2 py-1.5 rounded text-xs text-text cursor-pointer outline-none select-none data-[highlighted]:bg-raised',
+			'flex items-center gap-2 w-full px-2 py-1.5 rounded text-xs text-text cursor-default outline-none select-none data-[highlighted]:bg-raised',
 		'menu-item-bad':
 			'menu-item text-bad data-[highlighted]:(bg-bad/10 text-bad)',
-		'menu-separator': 'my-1 h-px bg-border'
+		'menu-separator': 'my-1 h-px bg-border',
+		// Same surface as the menus, so a hint and a menu read as one family.
+		tooltip:
+			'z-50 rounded border border-border bg-panel px-2 py-1 text-2.5 text-text shadow-lg'
 	}
 });

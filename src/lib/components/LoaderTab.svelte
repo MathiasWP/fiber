@@ -213,7 +213,7 @@
 	<label class="flex flex-col gap-1">
 		<span class="text-xs text-muted">Filter</span>
 		<div class="h-20 rounded border border-border overflow-hidden">
-			<Editor bind:value={section.loader.query} language="text" />
+			<Editor bind:value={section.loader.query} language="text" scope="request" />
 		</div>
 	</label>
 
@@ -225,7 +225,7 @@
 				<p class="p-2 text-2.5 text-muted">Fetch a sample to see it here.</p>
 			{:else}
 				<div class="flex-1 min-h-0">
-					<Editor value={documentPreview} readonly />
+					<Editor value={documentPreview} readonly scope="response" />
 				</div>
 			{/if}
 		</div>

@@ -77,7 +77,9 @@
 		collection works offline.
 	</p>
 
-	<label class="btn-ghost text-xs self-start cursor-pointer">
+	<!-- A label is not a button as far as the browser is concerned, so the cursor
+     has to be said out loud here to match everything else. -->
+<label class="btn-ghost text-xs self-start cursor-default">
 		<span class="i-lucide-folder-open"></span>
 		Choose a file…
 		<input
