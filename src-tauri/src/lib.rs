@@ -16,6 +16,8 @@ mod http;
 mod secrets;
 mod send;
 mod store;
+#[cfg(feature = "gui")]
+mod update;
 
 // The authenticated-send core is shared by the Tauri commands and the MCP
 // server, so it lives at the crate root regardless of which front end is built.
@@ -42,6 +44,7 @@ mod gui {
     use crate::secrets::{self, SecretError};
     use crate::send::send_authenticated;
     use crate::store::{self, Section, StoreError};
+    use crate::update;
     use tauri::{AppHandle, Manager, State};
 
     /// How many history entries the UI gets on startup.
@@ -111,6 +114,13 @@ mod gui {
     #[tauri::command]
     fn forget_token(auth_state: State<'_, Arc<AuthState>>, section_id: String) {
         auth_state.invalidate(&section_id);
+    }
+
+    /// `null` when we are already on the latest release. Errors are the caller's
+    /// to swallow — a failed check is not worth interrupting anyone over.
+    #[tauri::command]
+    async fn check_for_update() -> Result<Option<update::Update>, update::UpdateError> {
+        update::check(env!("CARGO_PKG_VERSION")).await
     }
 
     fn section_by_id(paths: &Paths, id: &str) -> Result<Section, BrowserError> {
@@ -456,8 +466,10 @@ mod gui {
                 loader_cache,
                 default_loader,
                 parse_openapi,
-                loader_examples
+                loader_examples,
+                check_for_update
             ])
+            .plugin(tauri_plugin_opener::init())
             .setup(|app| {
                 if cfg!(debug_assertions) {
                     app.handle().plugin(

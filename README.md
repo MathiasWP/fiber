@@ -159,6 +159,21 @@ manager like ToolHive. See [`deploy/toolhive.md`](deploy/toolhive.md) and the
 [`Dockerfile`](Dockerfile). These env vars are unset in the desktop app, so its
 behaviour is unchanged.
 
+## Updates
+
+The app checks GitHub for a newer release on launch, when the window regains
+focus, and every six hours. If there is one, a toast in the bottom-right offers
+to open the release page. *Not now* hides that version until a later one
+appears.
+
+It notices; it does not install. Fiber is only ad-hoc signed, and a
+self-replacing app bundle is the thing Gatekeeper re-examines on the next
+launch — a broken auto-update is a worse outcome than a manual download. So
+`check_for_update` reads the public releases API, compares the tag to
+`CARGO_PKG_VERSION`, and stops there. No token ships in the app, and every
+failure — offline, rate-limited, no releases published yet — is silent, because
+there is nothing the user could do about any of them.
+
 ## Releasing
 
 [Changesets](https://github.com/changesets/changesets) drives it. Nothing is

@@ -385,6 +385,22 @@ export function methodColor(method: string): string {
 	}
 }
 
+/** A release newer than the one running. */
+export interface Update {
+	/** Without the `v`. */
+	version: string;
+	/** What's running now. */
+	current: string;
+	/** The release page, for opening in a browser. */
+	url: string;
+	notes: string;
+}
+
+/** `null` when this is already the latest release. Throws if GitHub is unreachable. */
+export function checkForUpdate(): Promise<Update | null> {
+	return invoke<Update | null>('check_for_update');
+}
+
 export function statusColor(status: number): string {
 	if (status >= 500) return 'text-bad';
 	if (status >= 400) return 'text-warn';
