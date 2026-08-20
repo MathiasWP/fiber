@@ -565,7 +565,7 @@
 
 								<Tabs.Content value="body" class="flex-1 min-h-0">
 									{#key draft.id}
-										<Editor bind:this={bodyEditor} bind:value={draft.body} placeholder={'{}'} />
+										<Editor bind:this={bodyEditor} bind:value={draft.body} placeholder={'{}'} scope="request" />
 									{/key}
 								</Tabs.Content>
 
@@ -778,12 +778,12 @@
 														base64.
 													</p>
 												{:else}
-													<Editor value={responseText} readonly language={responseLanguage} />
+													<Editor value={responseText} readonly language={responseLanguage} scope="response" />
 												{/if}
 											</Tabs.Content>
 
 											<Tabs.Content value="raw" class="flex-1 min-h-0">
-												<Editor value={shownBody} readonly language="text" />
+												<Editor value={shownBody} readonly language="text" scope="response" />
 											</Tabs.Content>
 
 											<Tabs.Content value="headers" class="flex-1 min-h-0 overflow-y-auto p-3">

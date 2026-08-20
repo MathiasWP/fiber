@@ -7,7 +7,7 @@
 	import { EditorView, placeholder as placeholderExt } from '@codemirror/view';
 	import { basicSetup } from 'codemirror';
 	import { untrack } from 'svelte';
-	import { editorFont } from '$lib/editor.svelte';
+	import { editorFont, type EditorScope } from '$lib/editor.svelte';
 	import { theme } from '$lib/theme.svelte';
 
 	interface Props {
@@ -16,13 +16,16 @@
 		/** JSON gets highlighting, folding and inline parse errors. */
 		language?: 'json' | 'text' | 'typescript';
 		placeholder?: string;
+		/** Which of the two text sizes this editor follows. */
+		scope?: EditorScope;
 	}
 
 	let {
 		value = $bindable(''),
 		readonly = false,
 		language = 'json',
-		placeholder = ''
+		placeholder = '',
+		scope = 'request'
 	}: Props = $props();
 
 	let host = $state<HTMLDivElement>();
@@ -78,7 +81,7 @@
 						'.cm-scroller': { fontFamily: 'var(--font-mono)' },
 						'&.cm-focused': { outline: 'none' }
 					}),
-					fontConf.of(fontTheme(untrack(() => editorFont.size))),
+					fontConf.of(fontTheme(untrack(() => editorFont.size(scope)))),
 					EditorView.updateListener.of((update) => {
 						if (!update.docChanged) return;
 						value = update.state.doc.toString();
@@ -117,7 +120,7 @@
 	});
 
 	$effect(() => {
-		view?.dispatch({ effects: fontConf.reconfigure(fontTheme(editorFont.size)) });
+		view?.dispatch({ effects: fontConf.reconfigure(fontTheme(editorFont.size(scope))) });
 	});
 
 	$effect(() => {
@@ -141,4 +144,10 @@
 	}
 </script>
 
-<div bind:this={host} class="h-full overflow-hidden"></div>
+<!-- `focusin` rather than `focus`: the latter doesn't bubble, and the thing
+     actually taking focus is CodeMirror's contenteditable inside this div. -->
+<div
+	bind:this={host}
+	class="h-full overflow-hidden"
+	onfocusin={() => (editorFont.active = scope)}
+></div>
