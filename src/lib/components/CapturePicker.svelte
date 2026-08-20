@@ -247,7 +247,7 @@
 			<div class="flex-1 overflow-y-auto min-h-0">
 				{#if loading}
 					<p class="p-4 text-xs text-muted flex items-center gap-2">
-						<DotLoader size={16} />
+						<DotLoader size={16} class="text-text" />
 						Reading the sign-in window…
 					</p>
 				{:else if error}
