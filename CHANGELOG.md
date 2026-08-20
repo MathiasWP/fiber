@@ -1,5 +1,15 @@
 # fiber
 
+## 0.7.0
+
+### Minor Changes
+
+- [#26](https://github.com/MathiasWP/fiber/pull/26) [`6754934`](https://github.com/MathiasWP/fiber/commit/6754934eafb01fdf98766db1d3a9dd01e49264d6) Thanks [@MathiasWP](https://github.com/MathiasWP)! - ⌘+, ⌘- and ⌘0 change the text size, kept separately for the request and response editors so a response can be smaller than what you type. The sidebar's create buttons get proper tooltips and matching icons in their context menu, and the footer drops the ⌘K hint in favour of the version.
+
+### Patch Changes
+
+- [#26](https://github.com/MathiasWP/fiber/pull/26) [`7f4cdd4`](https://github.com/MathiasWP/fiber/commit/7f4cdd457e0b5078e2c7d1958d56c2faf6a6260f) Thanks [@MathiasWP](https://github.com/MathiasWP)! - A Cookie header typed on a request now joins the collection's captured cookie instead of replacing it, so you can send your own cookies alongside a browser session. Auth stays configured in the collection's settings rather than being echoed into the headers table.
+
 ## 0.6.2
 
 ### Patch Changes
