@@ -201,13 +201,28 @@
 		navigator.clipboard.writeText(absolute ? path : `${base}/${path.replace(/^\/+/, '')}`);
 	}
 
-	/** Matched against method, URL and status, so `404` or `POST` both work. */
+	/**
+	 * The name of the request an entry came from, when there still is one.
+	 *
+	 * Plenty of entries outlive their request: sent from scratch, sent by a
+	 * loader or the MCP server, or the request has since been deleted. Those get
+	 * no name rather than an invented one — the URL underneath is their identity.
+	 */
+	function requestName(entry: HistoryEntry): string | null {
+		return collections.findRequest(entry.requestId)?.request.name ?? null;
+	}
+
+	/**
+	 * Matched against the request's name, method, URL and status — so `404`,
+	 * `POST` and the name now on the row all work.
+	 */
 	const visibleHistory = $derived.by(() => {
 		const needle = historyQuery.trim().toLowerCase();
 		if (!needle) return history.entries;
 		return history.entries.filter((entry) => {
 			const status = entry.response ? String(entry.response.status) : entry.error ? 'error' : '';
-			return `${entry.method} ${entry.url} ${status}`.toLowerCase().includes(needle);
+			const name = requestName(entry) ?? '';
+			return `${name} ${entry.method} ${entry.url} ${status}`.toLowerCase().includes(needle);
 		});
 	});
 
@@ -696,6 +711,7 @@
 						class="block w-full text-left px-4 py-2 border-b border-border/50 hover:bg-raised transition-colors cursor-default"
 						onclick={() => onPickHistory(entry)}
 					>
+						{@const name = requestName(entry)}
 						<div class="flex items-center gap-2">
 							<span class="font-mono text-2.5 font-bold w-9 shrink-0 {methodColor(entry.method)}">
 								{entry.method}
@@ -711,7 +727,10 @@
 									<span class={statusColor(entry.response.status)}>{entry.response.status}</span>
 								{/if}
 							</span>
-							<span class="ml-auto text-2.5 text-muted shrink-0">{clockTime(entry.at)}</span>
+							{#if name}
+								<span class="min-w-0 flex-1 truncate text-xs text-text" title={name}>{name}</span>
+							{/if}
+							<span class="ml-auto pl-2 text-2.5 text-muted shrink-0">{clockTime(entry.at)}</span>
 						</div>
 						<div class="truncate text-2.5 text-muted mt-0.5" title={entry.url}>{entry.url}</div>
 					</ContextMenu.Trigger>
