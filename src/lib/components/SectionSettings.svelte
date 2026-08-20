@@ -7,6 +7,7 @@
 		deleteSecret,
 		forgetToken,
 		hasSecret,
+		normalizeBaseUrl,
 		setSecret,
 		type AuthKind,
 		type CaptureKind,
@@ -226,11 +227,17 @@
 
 						<label class="flex flex-col gap-1">
 							<span class="text-xs text-muted">Base URL</span>
+							<!-- Tidied on the way out rather than as you type, so a slash
+							     you are still typing past isn't snatched away. -->
 							<input
 								bind:value={section.baseUrl}
 								spellcheck="false"
 								placeholder="https://api.example.com"
 								class="input-base text-xs font-mono selectable"
+								onblur={() => {
+									section.baseUrl = normalizeBaseUrl(section.baseUrl);
+									collections.touch(section);
+								}}
 							/>
 						</label>
 

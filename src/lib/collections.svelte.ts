@@ -4,6 +4,7 @@ import {
 	LOOSE_SECTION_ID,
 	listSections,
 	loaderCache,
+	normalizeBaseUrl,
 	runLoader,
 	saveSection,
 	type LoadedEndpoint,
@@ -392,7 +393,9 @@ class Collections {
 		const section: Section = {
 			id: crypto.randomUUID(),
 			name: name.trim() || 'Untitled',
-			baseUrl: baseUrl.trim(),
+			// Also here, not just on blur: submitting the dialog with Enter never
+			// blurs the field, so that path would otherwise store the slash.
+			baseUrl: normalizeBaseUrl(baseUrl),
 			collapsed: false,
 			order: this.collectionSections.length,
 			auth: { kind: 'none' },
