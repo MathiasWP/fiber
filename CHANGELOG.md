@@ -1,5 +1,15 @@
 # fiber
 
+## 0.6.2
+
+### Patch Changes
+
+- [#24](https://github.com/MathiasWP/fiber/pull/24) [`b2c4a48`](https://github.com/MathiasWP/fiber/commit/b2c4a48efe59505abe5c595e6a0e1b87b84cd825) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Even out the spacing around the timestamp in the history list, and shrink the update toast's loader.
+
+- [#24](https://github.com/MathiasWP/fiber/pull/24) [`6d5af82`](https://github.com/MathiasWP/fiber/commit/6d5af829bfd1452a15821b4b4203f0b46c9abc64) Thanks [@MathiasWP](https://github.com/MathiasWP)! - A silent re-authentication no longer steals focus with a sign-in window. When the interface does fall over it now says so, with the error, instead of just looking frozen — and devtools are available in release builds.
+
+- [#24](https://github.com/MathiasWP/fiber/pull/24) [`ae8dc4a`](https://github.com/MathiasWP/fiber/commit/ae8dc4af6958f9b90bcedb9d5b3343c831e01094) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Fix the freeze when sending a request. The waiting message picked a new line by reading the one it was about to replace, which re-triggered itself forever and threw, leaving the window painted but dead.
+
 ## 0.6.1
 
 ### Patch Changes
