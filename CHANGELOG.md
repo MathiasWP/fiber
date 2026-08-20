@@ -1,5 +1,15 @@
 # fiber
 
+## 0.8.0
+
+### Minor Changes
+
+- [#30](https://github.com/MathiasWP/fiber/pull/30) [`4bd0066`](https://github.com/MathiasWP/fiber/commit/4bd0066cb000d8cac41b20e5f658aa6602490660) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Section settings is a drawer sliding out from the sidebar's edge rather than a centred dialog that resized on every tab, and CodeMirror's find panel is styled to match the app instead of showing raw browser controls.
+
+### Patch Changes
+
+- [#30](https://github.com/MathiasWP/fiber/pull/30) [`3bb398e`](https://github.com/MathiasWP/fiber/commit/3bb398ea919ba18f9589257878cfa10f6ffc202a) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Text can go down to 7px. Section settings keeps one height across its tabs instead of resizing under you, and a collection with auth shows whether a credential is actually stored.
+
 ## 0.7.1
 
 ### Patch Changes
