@@ -1,5 +1,11 @@
 # fiber
 
+## 0.8.1
+
+### Patch Changes
+
+- [#34](https://github.com/MathiasWP/fiber/pull/34) [`cee1a34`](https://github.com/MathiasWP/fiber/commit/cee1a349de9a8382b46cf9f32a946593fb31f082) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Dialogs open in front of the section settings drawer instead of behind it — picking a credential, searching endpoints, and the new-collection and delete prompts are all usable while the drawer is open.
+
 ## 0.8.0
 
 ### Minor Changes
