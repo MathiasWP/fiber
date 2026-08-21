@@ -81,7 +81,10 @@
 
 <span
 	class="dmx inline-grid align-middle {className}"
-	style="width:{size}px; height:{size}px; gap:{gap}px; --dmx-dot:{dot}px"
+	style:width="{size}px"
+	style:height="{size}px"
+	style:gap="{gap}px"
+	style:--dmx-dot="{dot}px"
 	role="status"
 	aria-label="Loading"
 >
@@ -90,7 +93,8 @@
 			{@const level = opacityAt(row, col)}
 			<span
 				class="dmx-dot rounded-full bg-current"
-				style="opacity:{level}; --dmx-level:{level}"
+				style:opacity={level}
+				style:--dmx-level={level}
 			></span>
 		{/each}
 	{/each}

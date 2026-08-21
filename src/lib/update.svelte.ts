@@ -49,20 +49,15 @@ class Updates {
 	 */
 	#declined: string | null = null;
 
-	/** Starts a check now and every few hours. Returns the teardown. */
+	/** Starts a check now and every few hours. Returns the teardown.
+	 *
+	 * Focus is listened for on `<svelte:window>` in the layout, not here:
+	 * window listeners belong there rather than in an effect.
+	 */
 	watch(): () => void {
 		void this.check();
 		const timer = setInterval(() => void this.check(), INTERVAL_MS);
-
-		// A laptop that slept through its interval should catch up on waking,
-		// which is the common case for "left open since last week".
-		const onFocus = () => void this.check();
-		window.addEventListener('focus', onFocus);
-
-		return () => {
-			clearInterval(timer);
-			window.removeEventListener('focus', onFocus);
-		};
+		return () => clearInterval(timer);
 	}
 
 	async check(): Promise<void> {

@@ -285,7 +285,7 @@
 							     you are still typing past isn't snatched away. -->
 							<input
 								bind:value={section.baseUrl}
-								use:urlField
+								{@attach urlField}
 								spellcheck="false"
 								placeholder="https://api.example.com"
 								class="input-base text-xs font-mono selectable"
@@ -378,7 +378,7 @@
 									<span class="text-xs text-muted">Login URL</span>
 									<input
 										bind:value={section.auth.url}
-										use:urlField
+										{@attach urlField}
 										spellcheck="false"
 										placeholder="/login"
 										class="input-base text-xs font-mono selectable"
@@ -437,7 +437,7 @@
 								<span class="text-xs text-muted">Sign-in page</span>
 								<input
 									bind:value={section.auth.loginUrl}
-									use:urlField
+									{@attach urlField}
 									spellcheck="false"
 									placeholder="https://app.example.com/login"
 									class="input-base text-xs font-mono selectable"

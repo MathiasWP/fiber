@@ -8,6 +8,7 @@ import {
 	attachClosestEdge,
 	extractClosestEdge
 } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
+import type { Attachment } from 'svelte/attachments';
 
 /**
  * The hitbox reports all four edges; only these two mean anything in a vertical
@@ -66,64 +67,54 @@ function isSection(data: Record<string, unknown>): data is Record<string, unknow
 }
 
 /** A request row: draggable, and a target for reordering around it. */
-export function requestRow(node: HTMLElement, ref: RequestRef) {
-	let current = ref;
-
-	const cleanup = combine(
-		draggable({
-			element: node,
-			getInitialData: () => ({ [REQUEST]: true, ...current })
-		}),
-		dropTargetForElements({
-			element: node,
-			canDrop: ({ source }) => isRequest(source.data),
-			getData: ({ input, element }) =>
-				attachClosestEdge({ [REQUEST]: true, ...current }, {
-					input,
-					element,
-					allowedEdges: ['top', 'bottom']
-				})
-		})
-	);
-
-	return {
-		update(next: RequestRef) {
-			current = next;
-		},
-		destroy: cleanup
-	};
+export function requestRow(ref: RequestRef): Attachment<HTMLElement> {
+	return (node) =>
+		combine(
+			draggable({
+				element: node,
+				getInitialData: () => ({ [REQUEST]: true, ...ref })
+			}),
+			dropTargetForElements({
+				element: node,
+				canDrop: ({ source }) => isRequest(source.data),
+				getData: ({ input, element }) =>
+					attachClosestEdge(
+						{ [REQUEST]: true, ...ref },
+						{
+							input,
+							element,
+							allowedEdges: ['top', 'bottom']
+						}
+					)
+			})
+		);
 }
 
 /**
  * A collection header: draggable to reorder, and a target for both collections
  * (reorder around it) and requests (move into it).
  */
-export function sectionHeader(node: HTMLElement, ref: SectionRef) {
-	let current = ref;
-
-	const cleanup = combine(
-		draggable({
-			element: node,
-			getInitialData: () => ({ [SECTION]: true, ...current })
-		}),
-		dropTargetForElements({
-			element: node,
-			canDrop: ({ source }) => isRequest(source.data) || isSection(source.data),
-			getData: ({ input, element }) =>
-				attachClosestEdge({ [SECTION]: true, ...current }, {
-					input,
-					element,
-					allowedEdges: ['top', 'bottom']
-				})
-		})
-	);
-
-	return {
-		update(next: SectionRef) {
-			current = next;
-		},
-		destroy: cleanup
-	};
+export function sectionHeader(ref: SectionRef): Attachment<HTMLElement> {
+	return (node) =>
+		combine(
+			draggable({
+				element: node,
+				getInitialData: () => ({ [SECTION]: true, ...ref })
+			}),
+			dropTargetForElements({
+				element: node,
+				canDrop: ({ source }) => isRequest(source.data) || isSection(source.data),
+				getData: ({ input, element }) =>
+					attachClosestEdge(
+						{ [SECTION]: true, ...ref },
+						{
+							input,
+							element,
+							allowedEdges: ['top', 'bottom']
+						}
+					)
+			})
+		);
 }
 
 /** What the target under the pointer means, or null when there isn't one. */

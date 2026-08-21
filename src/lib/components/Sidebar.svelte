@@ -20,8 +20,8 @@
 	import { theme } from '$lib/theme.svelte';
 	import DotLoader from '$lib/components/DotLoader.svelte';
 	import { getVersion } from '@tauri-apps/api/app';
-	import { urlField } from '$lib/urlfield';
 	import type { Attachment } from 'svelte/attachments';
+	import { urlField } from '$lib/urlfield';
 
 	interface Props {
 		onOpenSettings: (section: Section) => void;
@@ -36,24 +36,14 @@
 	// the version that is actually running — which is the number to quote when
 	// something misbehaves.
 	let version = $state('');
-	$effect(() => {
-		getVersion().then((value) => (version = value));
-	});
+	getVersion().then((value) => (version = value));
 	let query = $state('');
 	let historyQuery = $state('');
 	let creating = $state(false);
 	let newName = $state('');
 	let newBaseUrl = $state('');
-	let newNameInput = $state<HTMLInputElement>();
-
-	// Bits UI focuses the dialog content itself on open, so `autofocus` on the
-	// field loses that race. Asking for focus once the element exists wins it.
-	$effect(() => {
-		if (!creating || !newNameInput) return;
-		newNameInput.focus();
-	});
 	let renamingId = $state<string | null>(null);
-	let pendingDelete = $state<Section | null>(null);
+	let pendingDelete = $state.raw<Section | null>(null);
 
 	interface VisibleSection {
 		section: Section;
@@ -290,10 +280,12 @@
 	 */
 	let closedWhileSearching = $state<Record<string, boolean>>({});
 
-	// Clearing the search forgets them, so the next one starts open again.
-	$effect(() => {
-		if (!searching) closedWhileSearching = {};
-	});
+	function setQuery(value: string) {
+		query = value;
+		// A fresh search opens everything again; closing one is a fact about
+		// this query, not the next.
+		if (value.trim().length === 0) closedWhileSearching = {};
+	}
 
 	function toggle(section: Section) {
 		if (searching) {
@@ -401,7 +393,7 @@
 		showAllHistory ? visibleHistory : visibleHistory.slice(0, HISTORY_PAGE)
 	);
 
-	let hint = $state<DragHint>(null);
+	let hint = $state.raw<DragHint>(null);
 
 	/**
 	 * The class a row should wear, given where the drop would land.
@@ -465,6 +457,11 @@
 			second: '2-digit'
 		});
 	}
+
+	/** Focus the name field when the new-collection dialog opens. */
+	const focusName: Attachment<HTMLInputElement> = (node) => {
+		node.focus();
+	};
 </script>
 
 {#snippet requestRow(
@@ -475,7 +472,7 @@
 	index: number
 )}
 	<div
-		use:dragRequest={{ sectionId: section.id, requestId: request.id }}
+		{@attach dragRequest({ sectionId: section.id, requestId: request.id })}
 		class="draggable-row transition-shadow {lineFor(section.id, rows, index)}"
 	>
 		<ContextMenu.Root>
@@ -591,8 +588,8 @@
 					<!-- Bits UI moves focus to the content on open, so the field has to
 					     ask for it; `autofocus` alone loses the race. -->
 					<input
-						bind:this={newNameInput}
 						bind:value={newName}
+						{@attach creating && focusName}
 						placeholder="Payments API"
 						class="input-base text-xs"
 						onkeydown={(event) => event.key === 'Enter' && addSection()}
@@ -602,7 +599,7 @@
 					<span class="text-xs text-muted">Base URL</span>
 					<input
 						bind:value={newBaseUrl}
-						use:urlField
+						{@attach urlField}
 						spellcheck="false"
 						placeholder="https://api.example.com"
 						class="input-base text-xs font-mono"
@@ -732,7 +729,7 @@
 					class="i-lucide-search absolute left-2 top-1/2 -translate-y-1/2 text-muted text-3"
 				></span>
 				<input
-					bind:value={query}
+					bind:value={() => query, setQuery}
 					spellcheck="false"
 					placeholder="Search endpoints…"
 					class="input-base w-full text-xs pl-7"
@@ -772,7 +769,7 @@
 					{@const remaining = remainingEndpoints(section, requests, rows)}
 					<div class="border-b border-border/50">
 						<div
-							use:sectionHeader={{ sectionId: section.id }}
+							{@attach sectionHeader({ sectionId: section.id })}
 							class="draggable-row transition-shadow {sectionLineFor(section.id)}"
 						>
 						<ContextMenu.Root>
@@ -1058,7 +1055,7 @@
 						<span>{hidden.toLocaleString()} more hidden by filters</span>
 						<button
 							class="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 -mr-1 hover:bg-raised hover:text-text transition-colors"
-							onclick={() => (query = '')}
+							onclick={() => setQuery('')}
 						>
 							<span class="i-lucide-x text-3"></span>
 							Clear filters

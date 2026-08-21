@@ -30,10 +30,11 @@
 	let probing = $state(false);
 	let probeError = $state<string | null>(null);
 
-	let preview = $state<LoadedEndpoint[]>([]);
+	/** Replaced wholesale as the filter re-runs; never edited in place. */
+	let preview = $state.raw<LoadedEndpoint[]>([]);
 	let previewError = $state<string | null>(null);
 
-	let templates = $state<[string, string][]>([]);
+	let templates = $state.raw<[string, string][]>([]);
 	let runSummary = $state<string | null>(null);
 
 	/** The template the filter still matches, or nothing once it is edited. */
@@ -44,9 +45,7 @@
 	const running = $derived(collections.loading[section.id] === true);
 	const cached = $derived(collections.loaderCaches[section.id]);
 
-	$effect(() => {
-		loaderTemplates().then((found) => (templates = found));
-	});
+	loaderTemplates().then((found) => (templates = found));
 
 	async function addLoader() {
 		section.loader = await defaultLoader();
@@ -180,7 +179,7 @@
 			<span class="text-xs text-muted">Manifest URL</span>
 			<input
 				bind:value={section.loader.url}
-				use:urlField
+				{@attach urlField}
 				spellcheck="false"
 				placeholder="/openapi.json"
 				class="input-base text-xs font-mono selectable"

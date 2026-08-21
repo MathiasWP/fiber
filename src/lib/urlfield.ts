@@ -16,6 +16,8 @@
  * `ctrl` and already stop at punctuation, so they are left as they are.
  */
 
+import type { Attachment } from 'svelte/attachments';
+
 /** Letters and digits make up a word; every other character is a joint. */
 const WORD = /[\p{L}\p{N}]/u;
 
@@ -35,7 +37,7 @@ export function backward(value: string, from: number): number {
 	return i;
 }
 
-export function urlField(node: HTMLInputElement) {
+export const urlField: Attachment<HTMLInputElement> = (node) => {
 	function onKeydown(event: KeyboardEvent) {
 		if (!event.altKey || event.metaKey || event.ctrlKey) return;
 		if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -72,7 +74,5 @@ export function urlField(node: HTMLInputElement) {
 	}
 
 	node.addEventListener('keydown', onKeydown);
-	return {
-		destroy: () => node.removeEventListener('keydown', onKeydown)
-	};
-}
+	return () => node.removeEventListener('keydown', onKeydown);
+};

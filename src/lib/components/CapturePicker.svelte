@@ -13,7 +13,12 @@
 
 	let { open, sectionId, onPick, onClose }: Props = $props();
 
-	let snapshot = $state<Snapshot | null>(null);
+	/**
+	 * Everything the signed-in session is holding. `$state.raw` because it is
+	 * only ever replaced wholesale — a deep proxy would wrap every cookie and
+	 * storage entry just to hold a snapshot we never edit.
+	 */
+	let snapshot = $state.raw<Snapshot | null>(null);
 	let error = $state<string | null>(null);
 	let loading = $state(false);
 	let query = $state('');
