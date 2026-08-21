@@ -273,6 +273,9 @@
 
 	const shownBody = $derived(shown?.body ?? '');
 
+	/** Body streamed so far, while the request is still in flight. */
+	const streaming = $derived(shown?.pending ? (shown.body ?? '') : '');
+
 	const responseText = $derived.by(() => {
 		if (!shown?.response || shown.response.isBinary) return '';
 		return responseTab === 'pretty' ? tryFormatJson(shownBody) : shownBody;
@@ -303,23 +306,51 @@
 			requestBody: sendBody ? draft.body : ''
 		});
 
+		// Chunks can land faster than the editor can usefully repaint, so they are
+		// coalesced into one update a frame. Without this a fast stream spends
+		// more time re-rendering than reading the socket.
+		let buffered = '';
+		let frame = 0;
+		const flush = () => {
+			frame = 0;
+			if (!buffered) return;
+			history.stream(id, buffered);
+			buffered = '';
+		};
+
 		try {
-			const response = await sendRequest({
-				id,
-				requestId: requestKey,
-				sectionId: selection?.section.id ?? null,
-				method: draft.method,
-				url,
-				headers: outgoing,
-				body: sendBody ? draft.body : null,
-				timeoutMs: 60_000,
-				followRedirects: true,
-				acceptInvalidCerts: false
-			});
+			const response = await sendRequest(
+				{
+					id,
+					requestId: requestKey,
+					sectionId: selection?.section.id ?? null,
+					method: draft.method,
+					url,
+					headers: outgoing,
+					body: sendBody ? draft.body : null,
+					timeoutMs: 60_000,
+					followRedirects: true,
+					acceptInvalidCerts: false
+				},
+				(event) => {
+					if (event.event === 'start') {
+						// A retry after a 401. Drop what the first attempt streamed,
+						// including anything still waiting for a frame.
+						buffered = '';
+						history.restartBody(id);
+						return;
+					}
+					buffered += event.data.text;
+					frame ||= requestAnimationFrame(flush);
+				}
+			);
 			history.settle(id, { response });
 		} catch (error) {
 			history.settle(id, { error: String(error) });
 		} finally {
+			// Whatever is still buffered is about to be replaced by the settled
+			// body, so the pending frame has nothing left to do.
+			if (frame) cancelAnimationFrame(frame);
 			if (inflightId === id) inflightId = null;
 		}
 	}
@@ -621,12 +652,33 @@
 								<div class="flex-1 grid place-items-center text-muted text-xs px-4 text-center">
 									Send a request to see the response.
 								</div>
+							{:else if shown.pending && streaming}
+								<!-- The body is arriving. Showing it as it lands is the whole
+								     point for anything slow or unbounded — an SSE stream never
+								     "finishes", so waiting for the end shows nothing, ever.
+								     Headers and timings aren't known yet, so this is only the
+								     text; the full pane takes over once the request settles. -->
+								<div class="flex flex-col h-full min-h-0">
+									<div
+										class="flex items-center gap-2 px-3 h-9 border-b border-border bg-panel shrink-0 font-mono text-2.5 text-muted"
+									>
+										<DotLoader size={14} class="text-muted" />
+										Streaming
+										<span class="ml-auto tabular-nums">
+											{streaming.length.toLocaleString()} chars
+										</span>
+									</div>
+									<div class="flex-1 min-h-0">
+										<Editor value={streaming} readonly language="text" scope="response" />
+									</div>
+								</div>
 							{:else if shown.pending}
-								<!-- The whole pane is empty while this shows, so the loader is
-								     sized for the space rather than squeezed onto the text
-								     baseline: stacked, and large enough to actually read as
-								     the helix it is. `text-text` rather than the accent, so it
-								     stays the foreground colour in either theme. -->
+								<!-- Nothing has arrived yet. The whole pane is empty while this
+								     shows, so the loader is sized for the space rather than
+								     squeezed onto the text baseline: stacked, and large enough
+								     to actually read as the helix it is. `text-text` rather than
+								     the accent, so it stays the foreground colour in either
+								     theme. -->
 								<div class="flex-1 grid place-items-center">
 									<span class="flex flex-col items-center gap-5">
 										<DotLoader size={56} class="text-text" />
