@@ -1,0 +1,78 @@
+# Runs the tests. Nothing did, before this.
+#
+# Split in two because the Rust job needs Tauri's Linux system libraries and
+# takes minutes, while the web job needs none of them and takes seconds — so a
+# type error or a broken E2E test comes back long before the Rust build does.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  # A new push supersedes the run in progress for the same branch.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: cargo test
+    # Matches the release build rather than ubuntu-latest, so the tests run
+    # against the same libraries the shipped .deb is linked against.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the Linux build dependencies
+        # The same set release.yml installs, minus patchelf: nothing is bundled
+        # here. libdbus is for the keyring crate, which the auth tests reach.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libdbus-1-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  web:
+    name: check and e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          # One source of truth for the Node version, shared with local dev.
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm check
+
+      # Chromium only — see playwright.config.ts for why. `--with-deps` pulls
+      # the shared libraries the browser needs, which the runner lacks.
+      - name: Install Playwright's browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - run: pnpm test:e2e
+
+      - uses: actions/upload-artifact@v4
+        # Only worth keeping when something failed, and only the trace matters.
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
