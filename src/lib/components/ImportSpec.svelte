@@ -8,7 +8,8 @@
 
 	let { section }: Props = $props();
 
-	let parsed = $state<Import | null>(null);
+	/** The parsed spec, replaced wholesale once the file is read. */
+	let parsed = $state.raw<Import | null>(null);
 	let error = $state<string | null>(null);
 	let fileName = $state('');
 	let done = $state<string | null>(null);

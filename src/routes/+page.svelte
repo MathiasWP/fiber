@@ -50,7 +50,7 @@
 	let responseTab = $state('pretty');
 	let inflightId = $state<string | null>(null);
 	let paletteOpen = $state(false);
-	let settingsFor = $state<Section | null>(null);
+	let settingsFor = $state.raw<Section | null>(null);
 	let resolved = $state('');
 	let bodyEditor = $state<Editor>();
 
@@ -73,6 +73,18 @@
 	const bodilessMethod = $derived(draft.method === 'GET' || draft.method === 'HEAD');
 	const canSend = $derived(resolved.trim().length > 0 && !inflightId);
 
+	/**
+	 * The request pane's visible tab.
+	 *
+	 * `requestTab` is what the user last asked for; `shownRequestTab` is what
+	 * actually has a trigger. A GET has no body tab and a POST has no params
+	 * tab, so the other of those two is shown instead — without an effect that
+	 * writes the user's choice back when the method changes.
+	 */
+	const shownRequestTab = $derived(
+		requestTab === 'headers' ? 'headers' : bodilessMethod ? 'params' : 'body'
+	);
+
 	// An entry opened from the History tab wins; otherwise a request shows its
 	// own most recent response and never another request's.
 	const shown = $derived(history.viewing ?? history.selectedFor(requestKey));
@@ -85,11 +97,7 @@
 		editorFont.init();
 
 		const stopTheme = theme.init();
-		const stopFocus = collections.watchFocus();
-		return () => {
-			stopTheme();
-			stopFocus();
-		};
+		return stopTheme;
 	});
 
 	// Schemas are deliberately fetched endpoint-by-endpoint rather than with the
@@ -235,13 +243,6 @@
 		collections.touch(section);
 	});
 
-	// A method that lost its body tab must not leave the pane on it, and vice
-	// versa — Tabs with no matching trigger renders nothing at all.
-	$effect(() => {
-		if (bodilessMethod && requestTab === 'body') requestTab = 'params';
-		if (!bodilessMethod && requestTab === 'params') requestTab = 'body';
-	});
-
 	// Keep one blank row at the end of the header table to type into. Blank rows
 	// are stripped on the way to disk, so they never show up in a diff.
 	$effect(() => {
@@ -365,35 +366,11 @@
 
 	let waitingMessage = $state(WAITING_MESSAGES[0]);
 
-	/**
-	 * The line shown last, kept deliberately outside `$state`.
-	 *
-	 * The effect below writes `waitingMessage`, so it must not also read it.
-	 * `waitingMessage = differentMessage(waitingMessage)` did exactly that, and
-	 * since `differentMessage` never returns what it was given, the effect
-	 * re-triggered itself forever: every write changed a value the effect
-	 * depended on, and the next run was guaranteed to change it again. Svelte
-	 * stops that with `effect_update_depth_exceeded`, which throws — and a thrown
-	 * effect leaves the last paint on screen and no reactivity behind it, so the
-	 * window looks frozen while the styles still say otherwise.
-	 */
-	let lastWaitingMessage = WAITING_MESSAGES[0];
-
 	/** Never the same line twice running — repetition is what makes it feel canned. */
 	function differentMessage(previous: string): string {
 		const others = WAITING_MESSAGES.filter((message) => message !== previous);
 		return others[Math.floor(Math.random() * others.length)];
 	}
-
-	$effect(() => {
-		const entry = shown;
-		if (!entry?.pending) return;
-		// Read the id so each new request draws again, rather than only the
-		// first one after the pane was idle.
-		void entry.id;
-		lastWaitingMessage = differentMessage(lastWaitingMessage);
-		waitingMessage = lastWaitingMessage;
-	});
 
 	const shownBody = $derived(shown?.body ?? '');
 
@@ -431,6 +408,7 @@
 		}
 
 		inflightId = id;
+		waitingMessage = differentMessage(waitingMessage);
 		history.start({
 			id,
 			requestId: requestKey,
@@ -559,7 +537,7 @@
 	}
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onfocus={() => collections.refreshStale()} />
 
 <CommandPalette
 	bind:open={paletteOpen}
@@ -615,7 +593,7 @@
 							</span>
 							<input
 								bind:value={draft.path}
-								use:urlField
+								{@attach urlField}
 								spellcheck="false"
 								placeholder="/user/get"
 								class="input-base h-8 rounded-l-none flex-1 min-w-0 font-mono selectable"
@@ -623,7 +601,7 @@
 						{:else}
 							<input
 								bind:value={draft.path}
-								use:urlField
+								{@attach urlField}
 								spellcheck="false"
 								placeholder="https://api.example.com/users"
 								class="input-base h-8 flex-1 min-w-0 font-mono selectable"
@@ -648,7 +626,13 @@
 				<PaneGroup direction="horizontal" autoSaveId="fiber:main" class="min-h-0 min-w-0">
 					<Pane defaultSize={50} minSize={20}>
 						<section class="flex flex-col min-h-0 min-w-0 h-full">
-							<Tabs.Root bind:value={requestTab} class="flex flex-col h-full min-h-0">
+							<Tabs.Root
+								value={shownRequestTab}
+								onValueChange={(next) => {
+									if (next) requestTab = next;
+								}}
+								class="flex flex-col h-full min-h-0"
+							>
 								<Tabs.List
 									class="flex items-center gap-1 px-2 h-9 border-b border-border bg-panel shrink-0"
 								>
@@ -676,7 +660,7 @@
 										Headers{filledHeaders.length ? ` (${filledHeaders.length})` : ''}
 									</Tabs.Trigger>
 
-									{#if requestTab === 'body'}
+									{#if shownRequestTab === 'body'}
 										{#if manifestBody !== null}
 											<!-- Back to the generated skeleton, placeholders and all.
 											     Filling a body in is destructive to the gaps that guided
@@ -730,7 +714,7 @@
 								     bar above updates as you type and the two never disagree. -->
 								<Tabs.Content value="params" class="flex-1 min-h-0 overflow-y-auto p-2">
 									<div class="flex flex-col gap-1">
-										{#each queryParams as param, index (index)}
+										{#each queryParams as param, index (param)}
 											<div class="flex gap-1">
 												<input
 													bind:value={param.name}
@@ -769,7 +753,7 @@
 
 								<Tabs.Content value="headers" class="flex-1 min-h-0 overflow-y-auto p-2">
 									<div class="flex flex-col gap-1">
-										{#each draft.headers as header, index (index)}
+										{#each draft.headers as header, index (header)}
 											<div class="flex gap-1 items-center">
 												<input
 													bind:value={header.name}

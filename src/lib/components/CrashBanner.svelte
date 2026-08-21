@@ -18,10 +18,7 @@
 	let message = $state<string | null>(null);
 	let detail = $state('');
 	let version = $state('');
-
-	$effect(() => {
-		getVersion().then((value) => (version = value));
-	});
+	getVersion().then((value) => (version = value));
 
 	function record(what: string, error: unknown, source: string) {
 		// First one wins. A loop would otherwise overwrite the original cause with

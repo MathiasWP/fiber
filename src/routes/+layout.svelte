@@ -8,7 +8,8 @@
 	let { children } = $props();
 
 	// Here rather than in the page so the check survives navigation, and so
-	// there is exactly one of it.
+	// there is exactly one of it. Focus is on `<svelte:window>` below rather
+	// than inside `watch()` — window listeners belong there, not in an effect.
 	$effect(() => updates.watch());
 
 	/**
@@ -40,7 +41,7 @@
 	}
 </script>
 
-<svelte:window oncontextmenu={suppressNativeMenu} />
+<svelte:window oncontextmenu={suppressNativeMenu} onfocus={() => updates.check()} />
 
 <svelte:head>
 	<title>Fiber</title>

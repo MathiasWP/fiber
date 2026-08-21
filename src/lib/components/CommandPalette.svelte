@@ -67,10 +67,13 @@
 	/** Every match in render order, so arrow keys move through them as one list. */
 	const flat = $derived(groups.flatMap((group) => group.items));
 
-	// Keep the highlight in range as the result set shrinks under typing.
-	$effect(() => {
-		if (active >= flat.length) active = Math.max(0, flat.length - 1);
-	});
+	/**
+	 * The highlighted row, clamped to the current result set.
+	 *
+	 * Derived rather than written back from an effect: shrinking the list under
+	 * typing must not fight the keydown handler that also writes `active`.
+	 */
+	const highlight = $derived(flat.length === 0 ? 0 : Math.min(active, flat.length - 1));
 
 	$effect(() => {
 		if (open) {
@@ -88,13 +91,13 @@
 	function onKeydown(event: KeyboardEvent) {
 		if (event.key === 'ArrowDown') {
 			event.preventDefault();
-			active = Math.min(active + 1, flat.length - 1);
+			active = Math.min(highlight + 1, flat.length - 1);
 		} else if (event.key === 'ArrowUp') {
 			event.preventDefault();
-			active = Math.max(active - 1, 0);
+			active = Math.max(highlight - 1, 0);
 		} else if (event.key === 'Enter') {
 			event.preventDefault();
-			choose(flat[active]);
+			choose(flat[highlight]);
 		}
 	}
 </script>
@@ -131,7 +134,7 @@
 						{@const flatIndex = group.offset + index}
 						<button
 							class="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors
-								{flatIndex === active ? 'bg-raised' : 'hover:bg-raised/50'}"
+								{flatIndex === highlight ? 'bg-raised' : 'hover:bg-raised/50'}"
 							onclick={() => choose(match)}
 							onmouseenter={() => (active = flatIndex)}
 						>

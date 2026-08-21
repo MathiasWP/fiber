@@ -74,8 +74,14 @@ class Collections {
 	 */
 	#following = new Set<string>();
 
-	/** Last loader run per section id, mirrored from disk. */
-	loaderCaches = $state<Record<string, LoaderCache>>({});
+	/**
+	 * Last loader run per section id, mirrored from disk.
+	 *
+	 * `$state.raw` because each cache is replaced wholesale — never edited in
+	 * place — and a deep proxy would wrap every endpoint in a manifest of
+	 * hundreds just to hold something the sidebar only ever reads.
+	 */
+	loaderCaches = $state.raw<Record<string, LoaderCache>>({});
 	/** Sections whose loader is currently running. */
 	loading = $state<Record<string, boolean>>({});
 
@@ -331,14 +337,16 @@ class Collections {
 
 	/** Reads the cached run for every section that has a loader. */
 	async loadCaches(): Promise<void> {
+		const next = { ...this.loaderCaches };
 		for (const section of this.sections) {
 			if (!section.loader) continue;
 			try {
-				this.loaderCaches[section.id] = await loaderCache(section.id);
+				next[section.id] = await loaderCache(section.id);
 			} catch {
 				// A missing cache is simply "nothing loaded yet".
 			}
 		}
+		this.loaderCaches = next;
 	}
 
 	/**
@@ -347,6 +355,12 @@ class Collections {
 	 * Deliberately fire-and-forget and never awaited by startup: the cached
 	 * endpoints are already on screen, so a slow or unreachable API delays
 	 * nothing. A TTL of 0 means "only when asked".
+	 *
+	 * Called at startup and whenever the window comes back to the front
+	 * (`<svelte:window onfocus>` on the page) — focus is the moment you are
+	 * about to look, so it is the moment worth being current. Startup used to
+	 * be the only trigger, which for an app you leave open for days meant a TTL
+	 * almost never came round.
 	 */
 	refreshStale(): void {
 		const now = Date.now();
@@ -363,21 +377,9 @@ class Collections {
 		}
 	}
 
-	/**
-	 * Re-checks staleness whenever the window comes back to the front.
-	 *
-	 * Startup was the only trigger before, which for an app you leave open for
-	 * days meant a TTL almost never came round — coming back to Fiber after an
-	 * afternoon of deploys showed yesterday's endpoints. Focus is the moment you
-	 * are about to look, so it is the moment worth being current.
-	 *
-	 * It reuses the staleness rule rather than refetching outright: a TTL of 0
-	 * still means "only when asked", which some APIs need it to.
-	 */
-	watchFocus(): () => void {
-		const onFocus = () => this.refreshStale();
-		window.addEventListener('focus', onFocus);
-		return () => window.removeEventListener('focus', onFocus);
+	/** Replaces one section's cache, leaving the others untouched. */
+	#setCache(id: string, cache: LoaderCache): void {
+		this.loaderCaches = { ...this.loaderCaches, [id]: cache };
 	}
 
 	/** Runs a section's loader and refreshes its cache. Never throws. */
@@ -385,7 +387,7 @@ class Collections {
 		this.loading[section.id] = true;
 		try {
 			const run = await runLoader(section.id);
-			this.loaderCaches[section.id] = { loadedAt: run.loadedAt, endpoints: run.endpoints };
+			this.#setCache(section.id, { loadedAt: run.loadedAt, endpoints: run.endpoints });
 			return run;
 		} catch (error) {
 			return String(error);
@@ -638,10 +640,3 @@ export function allRequests(sections: Section[]): Selection[] {
 		...collections.rowsFor(section).map((row) => ({ section, request: row.request }))
 	]);
 }
-
-/**
- * Subsequence match, the way command palettes behave: "ugt" finds "user get".
- * Returns null when it doesn't match, otherwise a score where lower is better.
- */
-
-

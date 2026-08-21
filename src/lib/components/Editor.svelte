@@ -9,6 +9,7 @@
 	import { placeholders } from '$lib/placeholders';
 	import { basicSetup } from 'codemirror';
 	import { untrack } from 'svelte';
+	import type { Attachment } from 'svelte/attachments';
 	import { editorFont, type EditorScope } from '$lib/editor.svelte';
 	import { theme } from '$lib/theme.svelte';
 
@@ -33,7 +34,6 @@
 		schema = null
 	}: Props = $props();
 
-	let host = $state<HTMLDivElement>();
 	let view: EditorView | undefined;
 
 	/** Marks a transaction this component dispatched itself, from the `value` prop. */
@@ -93,11 +93,39 @@
 		return EditorView.theme({ '&': { fontSize: `${size}px` } });
 	}
 
-	$effect(() => {
-		if (!host) return;
+	/**
+	 * Whether `next` merely extends `prior` — the streaming case, where each
+	 * frame's value is the last one plus a chunk.
+	 *
+	 * Exact for anything small. Past a quarter megabyte the prefix compare is
+	 * itself a full walk of the old value every frame — the O(n²) this exists to
+	 * remove — so it samples instead: the head, and the stretch just before the
+	 * append point. A wholesale replacement that keeps the length growing *and*
+	 * matches both samples could fool it, but `prior` here is always the exact
+	 * string this component last put in the doc, and streams only ever append.
+	 */
+	function extendsPrior(next: string, prior: string): boolean {
+		if (next.length <= prior.length || prior.length === 0) return false;
+		if (prior.length <= 256 * 1024) return next.startsWith(prior);
+		const probe = 64;
+		return (
+			next.slice(0, probe) === prior.slice(0, probe) &&
+			next.slice(prior.length - probe, prior.length) === prior.slice(-probe)
+		);
+	}
 
+	/**
+	 * Mounts CodeMirror on the host. Nested effects push later changes into the
+	 * existing view rather than tearing it down — language, theme and font are
+	 * compartments, and a streaming body is an append, not a new document.
+	 *
+	 * Initial reads are untracked so this attachment itself does not re-run
+	 * (and destroy the editor) when those values move; the nested effects own
+	 * those subscriptions.
+	 */
+	const attachEditor: Attachment<HTMLDivElement> = (node) => {
 		const instance = new EditorView({
-			parent: host,
+			parent: node,
 			state: EditorState.create({
 				doc: untrack(() => value),
 				extensions: [
@@ -210,78 +238,51 @@
 
 		view = instance;
 		synced = untrack(() => value);
+
+		// Push external changes in without clobbering what the user is typing —
+		// the `synced` check is what stops this ping-ponging with the update
+		// listener. When the new value strictly extends the old one, only the
+		// new tail is dispatched: CodeMirror then treats it as an append rather
+		// than tearing down and re-inserting the whole document on every streamed
+		// chunk.
+		$effect(() => {
+			const next = value;
+			if (next === synced) return;
+			if (extendsPrior(next, synced)) {
+				instance.dispatch({
+					changes: { from: synced.length, insert: next.slice(synced.length) },
+					annotations: fromProp.of(true)
+				});
+			} else {
+				instance.dispatch({
+					changes: { from: 0, to: instance.state.doc.length, insert: next },
+					annotations: fromProp.of(true)
+				});
+			}
+			synced = next;
+		});
+
+		$effect(() => {
+			instance.dispatch({
+				effects: languageConf.reconfigure(languageExtensions(language, schema))
+			});
+		});
+
+		$effect(() => {
+			instance.dispatch({
+				effects: themeConf.reconfigure(theme.resolved === 'dark' ? oneDark : [])
+			});
+		});
+
+		$effect(() => {
+			instance.dispatch({ effects: fontConf.reconfigure(fontTheme(editorFont.size(scope))) });
+		});
+
 		return () => {
 			instance.destroy();
-			view = undefined;
+			if (view === instance) view = undefined;
 		};
-	});
-
-	/**
-	 * Whether `next` merely extends `prior` — the streaming case, where each
-	 * frame's value is the last one plus a chunk.
-	 *
-	 * Exact for anything small. Past a quarter megabyte the prefix compare is
-	 * itself a full walk of the old value every frame — the O(n²) this exists to
-	 * remove — so it samples instead: the head, and the stretch just before the
-	 * append point. A wholesale replacement that keeps the length growing *and*
-	 * matches both samples could fool it, but `prior` here is always the exact
-	 * string this component last put in the doc, and streams only ever append.
-	 */
-	function extendsPrior(next: string, prior: string): boolean {
-		if (next.length <= prior.length || prior.length === 0) return false;
-		if (prior.length <= 256 * 1024) return next.startsWith(prior);
-		const probe = 64;
-		return (
-			next.slice(0, probe) === prior.slice(0, probe) &&
-			next.slice(prior.length - probe, prior.length) === prior.slice(-probe)
-		);
-	}
-
-	// Push external changes in without clobbering what the user is typing — the
-	// `synced` check is what stops this ping-ponging with the update listener.
-	// When the new value strictly extends the old one, only the new tail is
-	// dispatched: CodeMirror then treats it as an append rather than tearing
-	// down and re-inserting the whole document on every streamed chunk.
-	$effect(() => {
-		const next = value;
-		if (!view || next === synced) return;
-		if (extendsPrior(next, synced)) {
-			view.dispatch({
-				changes: { from: synced.length, insert: next.slice(synced.length) },
-				annotations: fromProp.of(true)
-			});
-		} else {
-			view.dispatch({
-				changes: { from: 0, to: view.state.doc.length, insert: next },
-				annotations: fromProp.of(true)
-			});
-		}
-		synced = next;
-	});
-
-	$effect(() => {
-		view?.dispatch({
-			effects: languageConf.reconfigure(languageExtensions(language, schema))
-		});
-	});
-
-	$effect(() => {
-		view?.dispatch({
-			effects: themeConf.reconfigure(theme.resolved === 'dark' ? oneDark : [])
-		});
-	});
-
-	$effect(() => {
-		view?.dispatch({ effects: fontConf.reconfigure(fontTheme(editorFont.size(scope))) });
-	});
-
-	$effect(() => {
-		// Read-only is enforced by the state facet above; the view stays editable
-		// so it can hold focus.
-		view?.dispatch({
-			effects: editable.reconfigure(EditorView.editable.of(true))
-		});
-	});
+	};
 
 	export function format(): void {
 		if (!view) return;
@@ -299,7 +300,7 @@
 <!-- `focusin` rather than `focus`: the latter doesn't bubble, and the thing
      actually taking focus is CodeMirror's contenteditable inside this div. -->
 <div
-	bind:this={host}
+	{@attach attachEditor}
 	class="h-full overflow-hidden"
 	onfocusin={() => (editorFont.active = scope)}
 ></div>
