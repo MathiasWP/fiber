@@ -66,6 +66,8 @@ export interface MockOptions {
 	deferSend?: boolean;
 	/** Held open so a test can observe the refresh while it is still running. */
 	deferRefresh?: boolean;
+	/** Milliseconds `save_section` takes, standing in for a real disk write. */
+	saveLatencyMs?: number;
 }
 
 /** What the page exposes back to the test, once `install` has run. */
@@ -182,6 +184,10 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 				case 'has_secret':
 					return Promise.resolve(false);
 				case 'save_section':
+					if (opts.saveLatencyMs) {
+						return new Promise((resolve) => setTimeout(resolve, opts.saveLatencyMs));
+					}
+					return Promise.resolve(null);
 				case 'delete_section':
 					return Promise.resolve(null);
 				case 'resolve_url':

@@ -129,9 +129,14 @@ class Collections {
 		const cache = this.loaderCaches[section.id];
 		if (!cache) return [];
 
+		// Indexed rather than searched. `find` per endpoint made this quadratic —
+		// a manifest of several hundred endpoints against an overlay that grows
+		// every time you open one, walked afresh on every render.
+		const saved = new Map(section.overlay.map((entry) => [entry.id, entry]));
+
 		const rows: LoadedRow[] = cache.endpoints.map((endpoint: LoadedEndpoint) => {
 			const id = endpointKey(endpoint.method, endpoint.path);
-			const saved = section.overlay.find((entry) => entry.id === id);
+			const held = saved.get(id);
 			return {
 				request: {
 					id,
@@ -141,8 +146,8 @@ class Collections {
 					// The loader's body is a starting point, not an override: `??`
 					// rather than `||`, so a body you deliberately emptied stays
 					// empty instead of being refilled on every refresh.
-					body: saved?.body ?? endpoint.body ?? '',
-					headers: saved?.headers ?? []
+					body: held?.body ?? endpoint.body ?? '',
+					headers: held?.headers ?? []
 				},
 				missing: false
 			};
@@ -176,7 +181,12 @@ class Collections {
 			section.overlay.some((entry) => entry.id === request.id);
 		if (!known) {
 			section.overlay.push({ ...request });
-			this.flush(section);
+			// Debounced like every other edit, not written on the spot. Opening
+			// three endpoints in a row used to be three full section writes —
+			// stringify, snapshot, TOML, disk — and the entry being written holds
+			// nothing of yours yet, so there is nothing to lose by coalescing
+			// them. It would simply be re-promoted next time you clicked it.
+			this.touch(section);
 		}
 		this.selectedRequestId = request.id;
 	}

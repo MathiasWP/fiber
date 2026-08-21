@@ -413,3 +413,37 @@ test.describe('keeping endpoints current', () => {
 		await expect(spinner).toBeHidden();
 	});
 });
+
+/**
+ * Opening a loaded endpoint promotes it into the overlay, which is a change to
+ * the collection and so a write. It used to be an immediate one, per click —
+ * stringify the section, snapshot it, serialise TOML, hit the disk. The entry
+ * being written holds nothing of yours yet, so those coalesce like every other
+ * edit does.
+ */
+test('opening several endpoints writes the collection once, not once each', async ({ page }) => {
+	await install(page, {
+		sections: [section({ loader })],
+		loaded: Array.from({ length: 5 }, (_, i) => ({
+			method: 'POST',
+			path: `/thing/${i}`,
+			name: `thing-${i}`,
+			description: '',
+			body: ''
+		}))
+	});
+	await page.goto('/');
+
+	const saves = () =>
+		page.evaluate(
+			() => window.__FIBER_TEST__.calls.filter((c) => c.cmd === 'save_section').length
+		);
+
+	for (let i = 0; i < 5; i++) await page.getByText(`thing-${i}`).click();
+
+	// Every one of them is a new overlay entry, and none has been written yet.
+	expect(await saves()).toBe(0);
+
+	// They land together once the typing stops.
+	await expect.poll(saves, { timeout: 5000 }).toBe(1);
+});
