@@ -496,18 +496,23 @@ test.describe('filling in a generated body', () => {
 		await expect(page.locator('.cm-slot')).toHaveCount(2);
 	});
 
+	/**
+	 * This used to type the comma *inside* the string — `"hello,"` — and move on
+	 * anyway, so the value it left behind was wrong every time. The closing
+	 * quote is what ends the value; the comma after it is the separator, and
+	 * that is the one that carries on to the next gap.
+	 */
 	test('a comma moves on to the next one', async ({ page }) => {
 		const editor = await open(page);
 		await editor.click();
 		await page.keyboard.press('Tab');
-		await page.keyboard.type('"');
-		await page.keyboard.type('hello');
+		await page.keyboard.type('"hello"');
 
-		// Closing the value carries on to the next gap, no reaching for Tab.
 		await page.keyboard.type(',');
 		await expect
 			.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ''))
 			.toBe('number');
+		await expect(editor).toContainText('"label": "hello"');
 	});
 
 	test('leaves an ordinary body alone', async ({ page }) => {

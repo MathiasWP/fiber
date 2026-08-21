@@ -13,8 +13,12 @@ import { Decoration, EditorView, keymap, type DecorationSet } from '@codemirror/
  * This finds them, marks them, and moves between them.
  */
 
-/** What the schema walk leaves behind. `null` is absent on purpose: it is a value. */
-const TYPES = ['string', 'number', 'integer', 'boolean'];
+/**
+ * What the schema walk leaves behind. `null` is absent on purpose: it is a
+ * value. `unknown` is what the importer writes where the schema said nothing
+ * it could read — still a gap, so still tabbable.
+ */
+const TYPES = ['string', 'number', 'integer', 'boolean', 'unknown'];
 
 export interface Slot {
 	from: number;
@@ -89,11 +93,53 @@ function jump(view: EditorView, forward: boolean): boolean {
 		? (found.find((slot) => slot.from >= cursor.to) ?? found[0])
 		: (found.findLast((slot) => slot.to <= cursor.from) ?? found[found.length - 1]);
 
-	view.dispatch({
-		selection: EditorSelection.single(next.from, next.to),
-		scrollIntoView: true
-	});
+	view.dispatch({ selection: select(next), scrollIntoView: true });
 	return true;
+}
+
+/**
+ * The whole field, with the caret at the *start* of it.
+ *
+ * Backwards on purpose. A forward selection leaves the caret sitting after the
+ * last letter, and the field's own tint covers the selection highlight — so an
+ * unfilled field you have just tabbed to looks exactly like one you have not,
+ * with a caret parked next to it. Either way the next thing you type replaces
+ * the lot, but only one of them looks like it will.
+ */
+function select(slot: Slot) {
+	return EditorSelection.single(slot.to, slot.from);
+}
+
+/**
+ * Whether `index` sits inside a string, by the same reading [`slots`] uses.
+ *
+ * The one thing the advance below has to know. A comma in `"Ada, Lovelace"` is
+ * part of a name; a comma after it is punctuation.
+ */
+function quotedAt(text: string, index: number): boolean {
+	let quoted = false;
+	for (let i = 0; i < index && i < text.length; ) {
+		const char = text[i];
+		if (quoted) {
+			if (char === '\\') i += 2;
+			else {
+				if (char === '"') quoted = false;
+				i++;
+			}
+			continue;
+		}
+		if (char === '"') quoted = true;
+		i++;
+	}
+	return quoted;
+}
+
+/** The nearest non-space character either side of `index`, or `''`. */
+function neighbour(text: string, index: number, step: -1 | 1): string {
+	for (let i = index + step; i >= 0 && i < text.length; i += step) {
+		if (!/\s/.test(text[i])) return text[i];
+	}
+	return '';
 }
 
 /**
@@ -106,29 +152,66 @@ function jump(view: EditorView, forward: boolean): boolean {
  * the *opening* quote and the closing one are indistinguishable here. Advancing
  * on either one moved the cursor away mid-word.
  *
- * A comma is something you would type anyway, so this costs nothing when you
- * don't want it, and does nothing at all once the body has no gaps left.
+ * Two commas are not the signal, and this is where it went wrong. A comma
+ * inside a string value is part of the value: typing `"Ada, Lovelace"` used to
+ * jump to the next field halfway through the name and type the rest of it over
+ * that field's placeholder, which quietly destroyed both. And a body generated
+ * from a schema already has its separators, so the comma you type to mean
+ * "done" landed next to one that was already there and left `1,,`.
+ *
+ * So: only outside a string, and the typed comma is dropped when it only
+ * duplicates one already in the body. What you meant by it still happens.
  */
 const advance = EditorView.updateListener.of((update) => {
 	if (!update.docChanged) return;
 
-	let closed = false;
+	let at: number | null = null;
 	for (const tr of update.transactions) {
 		if (!tr.isUserEvent('input.type')) continue;
-		tr.changes.iterChanges((_fromA, _toA, _fromB, _toB, inserted) => {
-			if (inserted.toString() === ',') closed = true;
+		tr.changes.iterChanges((_fromA, _toA, _fromB, toB, inserted) => {
+			// One character, so the comma is the last position it occupies.
+			if (inserted.toString() === ',') at = toB - 1;
 		});
 	}
-	if (!closed) return;
+	if (at === null) return;
+	// A const, so the closure below keeps the narrowing.
+	const comma: number = at;
 
+	const text = update.state.doc.toString();
 	const cursor = update.state.selection.main;
-	const next = slots(update.state.doc.toString()).find((slot) => slot.from >= cursor.to);
-	if (!next) return;
+
+	if (quotedAt(text, comma)) {
+		// Inside a value a comma is part of the value, and there is no reading
+		// of the keystroke that says otherwise. `"Ada,` could be someone done
+		// with a name or halfway through `"Ada, Lovelace"`, and guessing wrong
+		// on the second one used to jump away and type the rest of the name
+		// over the next field's placeholder. Typing the closing quote is the
+		// unambiguous way to say "done" — the caret steps over the auto-closed
+		// one, and the comma after it lands here as an ordinary separator.
+		return;
+	}
+
+	// A double comma is never valid JSON, so a comma next to a comma is always
+	// the one just typed being redundant — whichever side it landed on. This is
+	// what a generated body does to you: it already has its separators, so the
+	// comma you type to mean "done" left `1,,`.
+	const duplicate = neighbour(text, comma, 1) === ',' || neighbour(text, comma, -1) === ',';
+	const cut = duplicate ? comma : null;
+	const from = duplicate ? comma : cursor.to;
+
+	const remaining = cut === null ? text : text.slice(0, cut) + text.slice(cut + 1);
+	// Everything after the cut has shifted left by one.
+	const start = cut !== null && cut < from ? from - 1 : from;
+	const next = slots(remaining).find((slot) => slot.from >= start);
+
+	// Nothing to drop and nowhere to go: leave the comma where the user put it.
+	if (cut === null && !next) return;
 
 	// Out of the update cycle: dispatching during one is not allowed.
 	queueMicrotask(() =>
 		update.view.dispatch({
-			selection: EditorSelection.single(next.from, next.to),
+			...(cut === null ? {} : { changes: { from: cut, to: cut + 1 } }),
+			...(next ? { selection: select(next) } : {}),
 			scrollIntoView: true
 		})
 	);
