@@ -1,5 +1,13 @@
 # fiber
 
+## 0.9.1
+
+### Patch Changes
+
+- [#40](https://github.com/MathiasWP/fiber/pull/40) [`dbd22ff`](https://github.com/MathiasWP/fiber/commit/dbd22ffa31848a52b30b28b0a738f6c2496ac9e4) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Searching the collections now says how many endpoints the filter is hiding, with a button to clear it. The count sits under the results, and pins to the bottom of the pane once they outgrow it.
+
+- [#39](https://github.com/MathiasWP/fiber/pull/39) [`91138a7`](https://github.com/MathiasWP/fiber/commit/91138a755345d787189754c0f5db9f9e256eb598) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Loaders pointed at an OpenAPI document now fill in request bodies from each operation's schema, the way importing the same file already did. The templates dropdown names the template in use and ticks it in the list, and Done runs the loader rather than leaving you to find Refresh.
+
 ## 0.9.0
 
 ### Minor Changes
