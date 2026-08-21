@@ -1,5 +1,27 @@
 # fiber
 
+## 0.11.0
+
+### Minor Changes
+
+- [#53](https://github.com/MathiasWP/fiber/pull/53) [`5da1e11`](https://github.com/MathiasWP/fiber/commit/5da1e11479125888553f3fe630ffa31cd40fb955) Thanks [@MathiasWP](https://github.com/MathiasWP)! - A generated body has a way back. Filling in a loader endpoint's request body is destructive to the placeholders that guided it — once `"offset": number` becomes `"offset": 42`, the tabbable gap is gone. A Reset button next to Format now restores the manifest's generated skeleton, placeholders and all. It sits disabled while the body already matches, and Cmd+Z undoes it.
+  
+  And clicking quickly through requests no longer builds a backlog that drains one slow response pane at a time. Loading a response body was a synchronous command, and synchronous commands share the event-loop thread — every click queued another read behind the last. The reads now run concurrently off that thread, and a body still in flight for an entry you have already left is dropped instead of parked in memory.
+
+### Patch Changes
+
+- [#53](https://github.com/MathiasWP/fiber/pull/53) [`a088263`](https://github.com/MathiasWP/fiber/commit/a0882637e4857483560c103a8cf48c01a398b86c) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Hover states that never were. The section cog, the two add-buttons in the sidebar header, header/param delete buttons, and a handful of others were written with UnoCSS variant-group syntax — `hover:(bg-border text-text)` — which the PostCSS pipeline never expands: it scans class names but does not rewrite source, so the browser received split-by-space junk and no rule matched. Every one is now written out in full, and the transformer that was quietly doing nothing is gone from the config, with a comment explaining the trap.
+
+- [#53](https://github.com/MathiasWP/fiber/pull/53) [`5da1e11`](https://github.com/MathiasWP/fiber/commit/5da1e11479125888553f3fe630ffa31cd40fb955) Thanks [@MathiasWP](https://github.com/MathiasWP)! - A hardening pass across security, reliability, and performance, from a full audit.
+  
+  Security: the MCP `send_request` tool no longer honors an absolute URL that leaves the section's origin — an agent could previously point `path` at any host and the section's credential went along with it. Custom auth headers (an `X-Api-Key`, say) are now dropped when a redirect leaves the original host, the way reqwest already drops `Authorization`. Inbound credential headers — `Set-Cookie` and friends — are redacted before they reach the history database. The app window has a Content-Security-Policy, the opener capability is scoped to https, and history spill filenames go through the same traversal guard section files always had.
+  
+  Reliability: a corrupt `history.db` is moved aside and rebuilt instead of panicking on every launch. A collection file that won't parse is now named in the sidebar — it used to vanish silently — and a corrupt file at send time is an error rather than a request quietly sent without auth. Quitting flushes the debounced saves that used to lose the last 400 ms of typing. Saves fsync before the atomic rename. The data-dir migration retries with a copy when the rename fails, and the keychain migration is keyed on a marker so it can't be orphaned. Deleting a history entry or section rolls back in the UI when the disk says no. Requests without an explicit timeout get 60 s instead of forever.
+  
+  Performance: responses past 1.5 MB skip pretty-printing, JSON parsing, and linting instead of freezing the window. Streaming appends to the editor instead of rewriting the whole document every frame. The loader preview is debounced and no longer ships the manifest across IPC per keystroke. Commands that read or parse files run off the event-loop thread. Typing no longer serializes the whole section per keystroke to ask whether anything changed, and the history tab looks names up in a map instead of scanning every section per row.
+
+- [#51](https://github.com/MathiasWP/fiber/pull/51) [`748226e`](https://github.com/MathiasWP/fiber/commit/748226e1fa6fb75c522db0b80b1e7e72b95a8270) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Filling in a generated body behaves. A comma typed to mean "next field" no longer lands next to the one the body already had, leaving `1,,`. A comma inside a string value stays in the string — typing `"Ada, Lovelace"` used to jump away at the comma and type the rest of the name over the next field. Tabbing to a field now puts the caret at the front of it rather than after it, so it looks like something you are about to replace. And a nullable field in an OpenAPI 3.1 document names its type again instead of coming out as `null`: 3.1 writes `"type": ["string", "null"]`, which read as no type at all, so every such field arrived looking already filled in. A choice with a `null` branch — `anyOf: [{"type": "null"}, {"type": "string"}]`, which is how most specs write it — now names the half that says something, whichever side it sits on. Anything else the importer cannot read is now an `unknown` gap you can tab to, rather than a `null` that claims the API wants null.
+
 ## 0.10.1
 
 ### Patch Changes
