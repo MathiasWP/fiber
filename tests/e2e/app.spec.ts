@@ -447,3 +447,85 @@ test('opening several endpoints writes the collection once, not once each', asyn
 	// They land together once the typing stops.
 	await expect.poll(saves, { timeout: 5000 }).toBe(1);
 });
+
+test.describe('filling in a generated body', () => {
+	/** What the schema walk produces: type names where values go. */
+	const generated = '{\n  "label": string,\n  "offset": number,\n  "dryRun": boolean\n}';
+
+	const open = async (page: import('@playwright/test').Page) => {
+		await install(page, {
+			sections: [section({ loader })],
+			loaded: [
+				{ method: 'POST', path: '/x', name: 'createThing', description: '', body: generated }
+			]
+		});
+		await page.goto('/');
+		await page.getByText('createThing').click();
+		const editor = page.locator('.cm-content').first();
+		await expect(editor).toContainText('"label": string');
+		return editor;
+	};
+
+	test('marks every unfilled field', async ({ page }) => {
+		await open(page);
+		// One per type name, and none for the quoted keys around them.
+		await expect(page.locator('.cm-slot')).toHaveCount(3);
+		await expect(page.locator('.cm-slot').first()).toHaveText('string');
+	});
+
+	test('tab moves between them and selects, so typing replaces', async ({ page }) => {
+		const editor = await open(page);
+		await editor.click();
+		await page.keyboard.press('Tab');
+
+		const selected = () => page.evaluate(() => window.getSelection()?.toString() ?? '');
+		expect(await selected()).toBe('string');
+
+		await page.keyboard.press('Tab');
+		expect(await selected()).toBe('number');
+
+		await page.keyboard.press('Shift+Tab');
+		expect(await selected()).toBe('string');
+
+		// Typing lands on the field rather than beside it. The quote wraps the
+		// selection rather than replacing it — CodeMirror's doing, and useful
+		// here: the placeholder stays selected inside the new quotes.
+		await page.keyboard.type('"');
+		await page.keyboard.type('hello');
+		await expect(editor).toContainText('"label": "hello"');
+		await expect(page.locator('.cm-slot')).toHaveCount(2);
+	});
+
+	test('a comma moves on to the next one', async ({ page }) => {
+		const editor = await open(page);
+		await editor.click();
+		await page.keyboard.press('Tab');
+		await page.keyboard.type('"');
+		await page.keyboard.type('hello');
+
+		// Closing the value carries on to the next gap, no reaching for Tab.
+		await page.keyboard.type(',');
+		await expect
+			.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ''))
+			.toBe('number');
+	});
+
+	test('leaves an ordinary body alone', async ({ page }) => {
+		await install(page, {
+			sections: [section({ loader })],
+			loaded: [
+				{
+					method: 'POST',
+					path: '/y',
+					name: 'plainThing',
+					description: '',
+					body: '{\n  "label": "already filled"\n}'
+				}
+			]
+		});
+		await page.goto('/');
+		await page.getByText('plainThing').click();
+		await expect(page.locator('.cm-content').first()).toContainText('already filled');
+		await expect(page.locator('.cm-slot')).toHaveCount(0);
+	});
+});
