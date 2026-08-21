@@ -67,9 +67,13 @@ function validate(value: unknown, schema: unknown, path: string): string[] {
 	}
 
 	for (const part of schema.allOf ?? []) errors.push(...validate(value, part, path));
-	for (const alternatives of [schema.anyOf, schema.oneOf]) {
-		if (alternatives && !alternatives.some((part) => validate(value, part, path).length === 0)) {
-			errors.push(`${path} does not match any allowed schema.`);
+	if (schema.anyOf && !schema.anyOf.some((part) => validate(value, part, path).length === 0)) {
+		errors.push(`${path} does not match any allowed schema.`);
+	}
+	if (schema.oneOf) {
+		const hits = schema.oneOf.filter((part) => validate(value, part, path).length === 0).length;
+		if (hits !== 1) {
+			errors.push(`${path} must match exactly one allowed schema.`);
 		}
 	}
 
@@ -81,7 +85,7 @@ function validate(value: unknown, schema: unknown, path: string): string[] {
 	}
 
 	for (const key of schema.required ?? []) {
-		if (!(key in value)) errors.push(`${childPath(path, key)} is required.`);
+		if (!Object.hasOwn(value, key)) errors.push(`${childPath(path, key)} is required.`);
 	}
 	for (const [key, item] of Object.entries(value)) {
 		const property = schema.properties?.[key];

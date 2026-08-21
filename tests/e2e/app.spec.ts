@@ -398,6 +398,38 @@ test('shows an OpenAPI error when a request body has the wrong field type', asyn
 	await expect(error).toContainText('$.enabled must be boolean, not null.');
 });
 
+test('shows an OpenAPI error when a body matches two oneOf variants', async ({ page }) => {
+	await install(page, {
+		sections: [section({ loader })],
+		loaded: [
+			{
+				method: 'POST',
+				path: '/value',
+				name: 'setValue',
+				description: '',
+				body: '{ "n": 1.5 }'
+			}
+		],
+		schemas: {
+			'POST /value': {
+				type: 'object',
+				properties: { n: { oneOf: [{ type: 'number' }, { type: 'integer' }] } }
+			}
+		}
+	});
+	await page.goto('/');
+	await page.getByText('setValue').click();
+
+	const editor = page.locator('.cm-content').first();
+	await editor.click();
+	await page.keyboard.press('ControlOrMeta+a');
+	await page.keyboard.type('{ "n": 1 }');
+
+	const error = page.getByRole('alert');
+	await expect(error).toContainText('Request body does not match the OpenAPI schema');
+	await expect(error).toContainText('$.n must match exactly one allowed schema.');
+});
+
 /**
  * Filling a generated body in is destructive to the placeholders that guided
  * it. Reset is the way back: the manifest still holds the skeleton, so one

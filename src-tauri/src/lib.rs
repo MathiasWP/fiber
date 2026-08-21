@@ -29,8 +29,9 @@ pub use gui::run;
 /// is what lets that binary build without Tauri or a webview at all.
 #[cfg(feature = "gui")]
 mod gui {
-    use std::path::PathBuf;
-    use std::sync::Arc;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
 
     use crate::auth::AuthState;
     use crate::browser::{BrowserError, BrowserRecapture, Snapshot};
@@ -52,6 +53,76 @@ mod gui {
     struct Paths {
         sections: PathBuf,
         loaders: PathBuf,
+    }
+
+    /// Parsed loader caches, keyed by section id.
+    ///
+    /// `loader_schema` used to deserialize the whole on-disk file — every
+    /// expanded schema included — on each endpoint click. The first read (or
+    /// the last successful run) lives here so later clicks are a map lookup.
+    struct LoaderMem {
+        inner: Mutex<HashMap<String, loader::LoaderCache>>,
+    }
+
+    impl LoaderMem {
+        fn new() -> Self {
+            Self {
+                inner: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, loader::LoaderCache>> {
+            self.inner.lock().unwrap_or_else(|err| err.into_inner())
+        }
+
+        fn fill<'a>(
+            map: &'a mut HashMap<String, loader::LoaderCache>,
+            dir: &Path,
+            section_id: &str,
+        ) -> &'a loader::LoaderCache {
+            if !map.contains_key(section_id) {
+                map.insert(
+                    section_id.to_string(),
+                    loader::read_cache(dir, section_id).unwrap_or_default(),
+                );
+            }
+            map.get(section_id).expect("just inserted")
+        }
+
+        fn view(&self, dir: &Path, section_id: &str) -> LoaderCacheView {
+            let mut map = self.lock();
+            let cache = Self::fill(&mut map, dir, section_id);
+            LoaderCacheView {
+                loaded_at: cache.loaded_at,
+                endpoints: cache.endpoints.clone(),
+            }
+        }
+
+        fn schema(
+            &self,
+            dir: &Path,
+            section_id: &str,
+            endpoint_id: &str,
+        ) -> Option<serde_json::Value> {
+            let mut map = self.lock();
+            Self::fill(&mut map, dir, section_id)
+                .schemas
+                .get(endpoint_id)
+                .cloned()
+        }
+
+        fn endpoints(&self, dir: &Path, section_id: &str) -> Vec<loader::LoadedEndpoint> {
+            let mut map = self.lock();
+            Self::fill(&mut map, dir, section_id).endpoints.clone()
+        }
+
+        fn remember(&self, section_id: &str, cache: loader::LoaderCache) {
+            self.lock().insert(section_id.to_string(), cache);
+        }
+
+        fn forget(&self, section_id: &str) {
+            self.lock().remove(section_id);
+        }
     }
 
     /// The cache data the sidebar needs at startup. Schemas stay on disk until
@@ -273,6 +344,7 @@ mod gui {
         http_state: State<'_, Arc<HttpState>>,
         auth_state: State<'_, Arc<AuthState>>,
         paths: State<'_, Paths>,
+        mem: State<'_, LoaderMem>,
         section_id: String,
     ) -> Result<LoaderRun, LoaderError> {
         let section = section_for_loader(&paths, &section_id)?;
@@ -281,21 +353,19 @@ mod gui {
 
         let (endpoints, schemas, pages) = loader::run(&config, fetcher).await?;
 
-        let previous = loader::read_cache(&paths.loaders, &section_id).unwrap_or_default();
-        let (added, removed) = loader::diff(&previous.endpoints, &endpoints);
+        let previous = mem.endpoints(&paths.loaders, &section_id);
+        let (added, removed) = loader::diff(&previous, &endpoints);
         let loaded_at = history::now_millis();
 
-        if let Err(err) = loader::write_cache(
-            &paths.loaders,
-            &section_id,
-            &loader::LoaderCache {
-                loaded_at,
-                endpoints: endpoints.clone(),
-                schemas,
-            },
-        ) {
+        let cache = loader::LoaderCache {
+            loaded_at,
+            endpoints: endpoints.clone(),
+            schemas,
+        };
+        if let Err(err) = loader::write_cache(&paths.loaders, &section_id, &cache) {
             ::log::warn!("could not cache loader output: {err}");
         }
+        mem.remember(&section_id, cache);
 
         Ok(LoaderRun {
             endpoints,
@@ -363,25 +433,21 @@ mod gui {
     #[tauri::command]
     async fn loader_cache(
         paths: State<'_, Paths>,
+        mem: State<'_, LoaderMem>,
         section_id: String,
     ) -> Result<LoaderCacheView, LoaderError> {
-        let cache = loader::read_cache(&paths.loaders, &section_id).unwrap_or_default();
-        Ok(LoaderCacheView {
-            loaded_at: cache.loaded_at,
-            endpoints: cache.endpoints,
-        })
+        Ok(mem.view(&paths.loaders, &section_id))
     }
 
     /// Retrieves one request-body schema only when its endpoint is opened.
     #[tauri::command]
     async fn loader_schema(
         paths: State<'_, Paths>,
+        mem: State<'_, LoaderMem>,
         section_id: String,
         endpoint_id: String,
     ) -> Result<Option<serde_json::Value>, LoaderError> {
-        Ok(loader::read_cache(&paths.loaders, &section_id)
-            .and_then(|cache| cache.schemas.get(&endpoint_id).cloned())
-        )
+        Ok(mem.schema(&paths.loaders, &section_id, &endpoint_id))
     }
 
     /// Parses an OpenAPI or Swagger document. Pure — the frontend decides what to
@@ -407,7 +473,9 @@ mod gui {
     }
 
     #[tauri::command]
-    async fn history_list(log: State<'_, HistoryStore>) -> Result<Vec<HistoryRecord>, HistoryError> {
+    async fn history_list(
+        log: State<'_, HistoryStore>,
+    ) -> Result<Vec<HistoryRecord>, HistoryError> {
         let records = log.list(HISTORY_PAGE)?;
         ::log::info!("loaded {} history entr(ies)", records.len());
         Ok(records)
@@ -468,9 +536,14 @@ mod gui {
     }
 
     #[tauri::command]
-    fn delete_section(paths: State<'_, Paths>, id: String) -> Result<(), StoreError> {
+    fn delete_section(
+        paths: State<'_, Paths>,
+        mem: State<'_, LoaderMem>,
+        id: String,
+    ) -> Result<(), StoreError> {
         // The loader cache is derived data; it has no business outliving its section.
         loader::forget_cache(&paths.loaders, &id);
+        mem.forget(&id);
         store::delete(&paths.sections, &id)
     }
 
@@ -558,6 +631,7 @@ mod gui {
                     sections: store::sections_dir(&app_data_dir),
                     loaders: loader::loaders_dir(&app_data_dir),
                 });
+                app.manage(LoaderMem::new());
                 // `open_or_recover`: a corrupt history database is moved aside
                 // and replaced. Plain `open` here fed the `.expect` below —
                 // one bad file meant a panic on every launch thereafter.

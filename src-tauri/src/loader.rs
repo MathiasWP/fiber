@@ -400,20 +400,22 @@ fn fill_bodies(
     let mut schemas = BTreeMap::new();
 
     for endpoint in endpoints {
-        // A filter that supplies its own body outranks anything derived.
-        if !endpoint.body.is_empty() {
-            continue;
-        }
-        let operation = paths
+        let Some(operation) = paths
             .get(&endpoint.path)
             .and_then(|item| item.get(endpoint.method.to_ascii_lowercase()))
-            .and_then(|operation| operation.as_object());
+            .and_then(|operation| operation.as_object())
+        else {
+            continue;
+        };
 
-        if let Some(operation) = operation {
+        // A filter that supplies its own body outranks anything derived — but
+        // the schema still governs the editor, so a custom example does not
+        // silence OpenAPI feedback.
+        if endpoint.body.is_empty() {
             endpoint.body = crate::openapi::request_body(document, operation);
-            if let Some(schema) = crate::openapi::request_schema(document, operation) {
-                schemas.insert(endpoint.key(), schema);
-            }
+        }
+        if let Some(schema) = crate::openapi::request_schema(document, operation) {
+            schemas.insert(endpoint.key(), schema);
         }
     }
 
@@ -704,6 +706,48 @@ mod tests {
         // A GET declares no body, and gets none.
         let get = endpoints.iter().find(|e| e.method == "GET").unwrap();
         assert_eq!(get.body, "");
+    }
+
+    /// A jq filter that already filled in a body used to skip schema extraction
+    /// entirely. The body stays as the filter wrote it; the schema still lands
+    /// in the cache so the editor can validate against the document.
+    #[tokio::test]
+    async fn a_filter_supplied_body_still_gets_a_schema() {
+        let manifest = r##"{
+            "openapi": "3.0.0",
+            "paths": {
+                "/flags": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["enabled"],
+                                        "properties": { "enabled": { "type": "boolean" } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let settings = config(
+            r#".paths | to_entries | map(.key as $path | .value | to_entries | map({method: .key, path: $path, body: "{\"enabled\": true}"})) | flatten"#,
+        );
+        let (endpoints, schemas, _) = run(&settings, answering(manifest)).await.unwrap();
+
+        let post = endpoints.iter().find(|e| e.method == "POST").unwrap();
+        assert_eq!(post.body, "{\"enabled\": true}");
+        assert_eq!(
+            schemas
+                .get("POST /flags")
+                .and_then(|schema| schema.pointer("/properties/enabled/type"))
+                .and_then(|kind| kind.as_str()),
+            Some("boolean")
+        );
     }
 
     /// A manifest that is not OpenAPI has no `paths`, so nothing is derived and

@@ -64,6 +64,9 @@
 	const manifestBody = $derived(selection ? collections.manifestBodyFor(selection) : null);
 	let bodySchema = $state<unknown | null>(null);
 	let schemaToken = 0;
+	/** Last section/request the schema effect armed for, so a loader refresh
+	 *  can refetch without flashing the banner off first. */
+	let schemaKey = '';
 	const bodySchemaErrors = $derived(validateJsonBody(bodySchema, draft.body));
 	const requestKey = $derived(selection?.request.id ?? SCRATCH_ID);
 	const baseUrl = $derived(selection?.section.baseUrl ?? '');
@@ -95,9 +98,17 @@
 	// keeps collection startup and expansion quick.
 	$effect(() => {
 		const selected = selection;
+		// `loadedAt` is the stamp `refresh` writes. Reading it here is what
+		// picks up a new schema after a loader run without changing selection.
+		const loadedAt = selected ? (collections.loaderCaches[selected.section.id]?.loadedAt ?? 0) : 0;
+		const key = selected ? `${selected.section.id}\0${selected.request.id}` : '';
 		const token = ++schemaToken;
-		bodySchema = null;
-		if (!selected) return;
+		if (key !== schemaKey) {
+			schemaKey = key;
+			bodySchema = null;
+		}
+		if (!selected?.section.loader) return;
+		void loadedAt;
 		loaderSchema(selected.section.id, selected.request.id)
 			.then((schema) => {
 				if (token === schemaToken) bodySchema = schema;

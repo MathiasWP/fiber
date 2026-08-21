@@ -168,37 +168,44 @@
 		return Math.max(0, requests.length + rows.length - endpointLimit(section));
 	}
 
-	function loadMoreEndpoints(section: Section): void {
-		endpointLimits[section.id] = endpointLimit(section) + ENDPOINT_PAGE_SIZE;
+	function loadMoreEndpoints(sectionId: string): void {
+		endpointLimits[sectionId] = (endpointLimits[sectionId] ?? ENDPOINT_PAGE_SIZE) + ENDPOINT_PAGE_SIZE;
 	}
 
 	/**
-	 * Extends a long collection just before its current final row scrolls into
-	 * view. The observer sees through the sidebar's scroll container, so this
-	 * works without handling or measuring every scroll event ourselves.
+	 * Extends a long collection just before its current final row reaches the
+	 * sidebar. IntersectionObserver (with the sidebar scroller as `root`) is
+	 * the right tool here: several collections share one overflow container,
+	 * and a scroll listener would have to measure each sentinel itself.
+	 *
+	 * Stable attachment identity — `{@attach loadWhenVisible}` rather than a
+	 * factory called during render — so a sidebar re-render does not tear the
+	 * observer down and immediately fire another page.
 	 */
-	function loadWhenVisible(section: Section): Attachment<HTMLElement> {
-		return (node) => {
-			let loading = false;
-			const observer = new IntersectionObserver(
-				([entry]) => {
-					if (!entry.isIntersecting || loading) return;
-					loading = true;
-					loadMoreEndpoints(section);
-					// Svelte applies the new rows before the next frame. The marker moves
-					// below the viewport then, and can trigger another page on a later
-					// scroll without one intersection producing several pages at once.
-					requestAnimationFrame(() => (loading = false));
-				},
-				{ rootMargin: '300px 0px' }
-			);
-			observer.observe(node);
+	const loadWhenVisible: Attachment<HTMLElement> = (node) => {
+		let loading = false;
+		const scroller = node.closest('.sidebar-scroller');
+		const observer = new IntersectionObserver(
+			([entry]) => {
+				if (!entry.isIntersecting || loading) return;
+				const sectionId = node.dataset.section;
+				if (!sectionId) return;
+				loading = true;
+				loadMoreEndpoints(sectionId);
+				// Svelte applies the new rows before the next frame. The marker
+				// moves below the scroller then, and can trigger another page
+				// on a later scroll without one intersection producing several
+				// pages at once.
+				requestAnimationFrame(() => (loading = false));
+			},
+			{ root: scroller, rootMargin: '300px 0px' }
+		);
+		observer.observe(node);
 
-			return () => {
-				observer.disconnect();
-			};
+		return () => {
+			observer.disconnect();
 		};
-	}
+	};
 
 	/**
 	 * How much the search is keeping out of sight.
@@ -293,8 +300,8 @@
 			closedWhileSearching[section.id] = !closedWhileSearching[section.id];
 			return;
 		}
-		// Closing tears down the currently visible page. Start from the quick
-		// initial page when it is next opened, even if "Show all" was used.
+		// Closing tears down the currently visible page. Start from the first
+		// screen when it is next opened, even if the user had scrolled further.
 		if (!section.collapsed) delete endpointLimits[section.id];
 		section.collapsed = !section.collapsed;
 		collections.touch(section);
@@ -745,7 +752,7 @@
 		     it can sit outside the scroller without disturbing the layout. -->
 		<Tooltip.Provider delayDuration={200}>
 		<ContextMenu.Root>
-			<ContextMenu.Trigger class="flex-1 overflow-y-auto min-h-0">
+			<ContextMenu.Trigger class="sidebar-scroller flex-1 overflow-y-auto min-h-0" data-sidebar-scroller>
 				{#if collections.looseSection && looseRequests.length}
 					<div class="border-b border-border/50 pb-1">
 						{#each looseRequests as request, index (request.id)}
@@ -1013,7 +1020,9 @@
 								     stays continuous while only a bounded number of interactive
 								     rows are mounted at each step. -->
 								<div
-									{@attach loadWhenVisible(section)}
+									{@attach loadWhenVisible}
+									data-section={section.id}
+									class="h-px"
 									aria-hidden="true"
 								></div>
 							{/if}
