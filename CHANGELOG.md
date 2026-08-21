@@ -1,5 +1,13 @@
 # fiber
 
+## 0.12.0
+
+### Minor Changes
+
+- [#54](https://github.com/MathiasWP/fiber/pull/54) [`1af9a51`](https://github.com/MathiasWP/fiber/commit/1af9a51c2836324bc91048faa13c3cbcad468abd) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Large collections keep scrolling instead of asking you to page them. Opening a header still mounts a first screen of endpoints so that click stays quick; reaching the end of the list loads the next screen on its own.
+  
+  And a loaded OpenAPI body now says when it does not match the operation's schema — under the editor, and in the lint gutter — without dragging every component schema across the bridge at startup. The schema for the open endpoint is fetched when you select it, and again if you refresh the loader while it is still open.
+
 ## 0.11.0
 
 ### Minor Changes
