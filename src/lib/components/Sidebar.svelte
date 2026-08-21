@@ -21,6 +21,7 @@
 	import DotLoader from '$lib/components/DotLoader.svelte';
 	import { getVersion } from '@tauri-apps/api/app';
 	import { urlField } from '$lib/urlfield';
+	import type { Attachment } from 'svelte/attachments';
 
 	interface Props {
 		onOpenSettings: (section: Section) => void;
@@ -176,30 +177,26 @@
 	 * view. The observer sees through the sidebar's scroll container, so this
 	 * works without handling or measuring every scroll event ourselves.
 	 */
-	function loadWhenVisible(node: HTMLElement, callback: () => void) {
-		let current = callback;
-		let loading = false;
-		const observer = new IntersectionObserver(
-			([entry]) => {
-				if (!entry.isIntersecting || loading) return;
-				loading = true;
-				current();
-				// Svelte applies the new rows before the next frame. The marker moves
-				// below the viewport then, and can trigger another page on a later
-				// scroll without one intersection producing several pages at once.
-				requestAnimationFrame(() => (loading = false));
-			},
-			{ rootMargin: '300px 0px' }
-		);
-		observer.observe(node);
+	function loadWhenVisible(section: Section): Attachment<HTMLElement> {
+		return (node) => {
+			let loading = false;
+			const observer = new IntersectionObserver(
+				([entry]) => {
+					if (!entry.isIntersecting || loading) return;
+					loading = true;
+					loadMoreEndpoints(section);
+					// Svelte applies the new rows before the next frame. The marker moves
+					// below the viewport then, and can trigger another page on a later
+					// scroll without one intersection producing several pages at once.
+					requestAnimationFrame(() => (loading = false));
+				},
+				{ rootMargin: '300px 0px' }
+			);
+			observer.observe(node);
 
-		return {
-			update(next: () => void) {
-				current = next;
-			},
-			destroy() {
+			return () => {
 				observer.disconnect();
-			}
+			};
 		};
 	}
 
@@ -1016,7 +1013,7 @@
 								     stays continuous while only a bounded number of interactive
 								     rows are mounted at each step. -->
 								<div
-									use:loadWhenVisible={() => loadMoreEndpoints(section)}
+									{@attach loadWhenVisible(section)}
 									aria-hidden="true"
 								></div>
 							{/if}
