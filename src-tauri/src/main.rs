@@ -11,6 +11,18 @@
 /// provides `fiber mcp`, which is what ships in a container.
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
+        // `export-secrets` is setup rather than serving: it reads the keychain,
+        // prints the map a containerised copy needs, and exits. No runtime, no
+        // protocol. See mcp::export_secrets for why it is allowed to do the one
+        // thing nothing else in the app does.
+        if std::env::args().nth(2).as_deref() == Some("export-secrets") {
+            if let Err(err) = fiber_lib::mcp::export_secrets() {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+            return;
+        }
+
         let runtime = match tokio::runtime::Runtime::new() {
             Ok(runtime) => runtime,
             Err(err) => {

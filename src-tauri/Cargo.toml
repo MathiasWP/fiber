@@ -27,6 +27,13 @@ gui = [
   "dep:tauri-plugin-process",
   "dep:tauri-plugin-window-state",
   "dep:tauri-build",
+  # The Linux keychain backend talks to the Secret Service over D-Bus. That
+  # needs libdbus (and pkg-config) at build time and a session bus at runtime —
+  # a container has neither, and the build fails outright without them. So it
+  # belongs to the desktop build only; headless takes its secrets from
+  # FIBER_SECRETS. macOS and Windows have no such cost: their backends are
+  # system frameworks, already linked.
+  "keyring/sync-secret-service",
 ]
 
 [build-dependencies]
@@ -59,7 +66,7 @@ thiserror = "2.0.20"
 reqwest = { version = "0.13.4", features = ["cookies", "gzip", "brotli", "deflate", "zstd", "stream", "multipart"] }
 toml = "1.1.4"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native"] }
 jaq-core = "3.1.0"
 jaq-std = "3.0.2"
 jaq-json = "2.0.2"

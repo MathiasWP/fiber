@@ -76,3 +76,41 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+  image:
+    # The headless MCP image built the same way the release does. Worth its own
+    # job: the container build turns Tauri *off*, which is a different dependency
+    # graph from the one the `rust` job compiles, and it had been broken for a
+    # while without anybody noticing — nothing built it.
+    #
+    # One architecture is enough here. Both are built at release time, and an
+    # arm64 runner would only catch a difference that musl and Rust hide anyway.
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: fiber-mcp:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # It starting is the thing worth knowing: the binary is static, so a
+      # missing shared library shows up here and nowhere earlier.
+      #
+      # /data has to be writable by uid 65532 — the server opens its history
+      # database at startup and gives up if it cannot. Without the mount Docker
+      # supplies a root-owned anonymous volume, and this fails for a reason that
+      # has nothing to do with the image.
+      - name: Does it speak MCP?
+        run: |
+          mkdir -p /tmp/fiber-data && chmod 777 /tmp/fiber-data
+          request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
+          reply=$(echo "$request" | docker run -i --rm -v /tmp/fiber-data:/data fiber-mcp:ci)
+          echo "$reply"
+          echo "$reply" | jq -e '.result.serverInfo.name == "fiber"' > /dev/null
