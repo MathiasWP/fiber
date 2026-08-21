@@ -32,7 +32,7 @@ test('a collection file that cannot be read is reported, not swallowed', async (
 });
 
 test.describe('the collection header', () => {
-	test('opens large collections a page at a time', async ({ page }) => {
+	test('loads more endpoints while you scroll', async ({ page }) => {
 		const requests = Array.from({ length: 102 }, (_, index) => ({
 			id: `r-${index}`,
 			name: `Request ${index + 1}`,
@@ -46,7 +46,7 @@ test.describe('the collection header', () => {
 
 		await expect(page.getByText('Request 100', { exact: true })).toBeVisible();
 		await expect(page.getByText('Request 101', { exact: true })).toBeHidden();
-		await page.getByRole('button', { name: 'Show 2 more' }).click();
+		await page.getByText('Request 100', { exact: true }).scrollIntoViewIfNeeded();
 		await expect(page.getByText('Request 102', { exact: true })).toBeVisible();
 	});
 
@@ -363,6 +363,71 @@ test('a loaded endpoint arrives with the body its manifest declared', async ({ p
 
 	await page.getByText('activity_backfill_activity').click();
 	await expect(page.locator('.cm-content').first()).toContainText('"dryRun"');
+});
+
+test('shows an OpenAPI error when a request body has the wrong field type', async ({ page }) => {
+	await install(page, {
+		sections: [section({ loader })],
+		loaded: [
+			{
+				method: 'POST',
+				path: '/flags',
+				name: 'setFlags',
+				description: '',
+				body: '{ "enabled": true }'
+			}
+		],
+		schemas: {
+			'POST /flags': {
+				type: 'object',
+				required: ['enabled'],
+				properties: { enabled: { type: 'boolean' } }
+			}
+		}
+	});
+	await page.goto('/');
+	await page.getByText('setFlags').click();
+
+	const editor = page.locator('.cm-content').first();
+	await editor.click();
+	await page.keyboard.press('ControlOrMeta+a');
+	await page.keyboard.type('{ "enabled": null }');
+
+	const error = page.getByRole('alert');
+	await expect(error).toContainText('Request body does not match the OpenAPI schema');
+	await expect(error).toContainText('$.enabled must be boolean, not null.');
+});
+
+test('shows an OpenAPI error when a body matches two oneOf variants', async ({ page }) => {
+	await install(page, {
+		sections: [section({ loader })],
+		loaded: [
+			{
+				method: 'POST',
+				path: '/value',
+				name: 'setValue',
+				description: '',
+				body: '{ "n": 1.5 }'
+			}
+		],
+		schemas: {
+			'POST /value': {
+				type: 'object',
+				properties: { n: { oneOf: [{ type: 'number' }, { type: 'integer' }] } }
+			}
+		}
+	});
+	await page.goto('/');
+	await page.getByText('setValue').click();
+
+	const editor = page.locator('.cm-content').first();
+	await editor.click();
+	await page.keyboard.press('ControlOrMeta+a');
+	await page.keyboard.type('{ "n": 1 }');
+
+	const error = page.getByRole('alert');
+	await expect(error).toContainText('Request body does not match the OpenAPI schema');
+	await expect(error).toContainText('$.n must match exactly one allowed schema.');
 });
 
 /**

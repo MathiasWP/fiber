@@ -14,6 +14,7 @@
 		flushComplete,
 		formatBytes,
 		JSON_TOOLING_LIMIT,
+		loaderSchema,
 		parseQuery,
 		resolveUrl,
 		sendRequest,
@@ -24,6 +25,7 @@
 		type SavedRequest,
 		type Section
 	} from '$lib/api';
+	import { validateJsonBody } from '$lib/json-schema';
 	import { LOOSE_SECTION_ID } from '$lib/api';
 	import { collections, type Selection } from '$lib/collections.svelte';
 	import { editorFont } from '$lib/editor.svelte';
@@ -60,6 +62,12 @@
 	const draft = $derived<SavedRequest>(selection?.request ?? scratch);
 	/** The loader's generated body for the selected endpoint, if it has one. */
 	const manifestBody = $derived(selection ? collections.manifestBodyFor(selection) : null);
+	let bodySchema = $state<unknown | null>(null);
+	let schemaToken = 0;
+	/** Last section/request the schema effect armed for, so a loader refresh
+	 *  can refetch without flashing the banner off first. */
+	let schemaKey = '';
+	const bodySchemaErrors = $derived(validateJsonBody(bodySchema, draft.body));
 	const requestKey = $derived(selection?.request.id ?? SCRATCH_ID);
 	const baseUrl = $derived(selection?.section.baseUrl ?? '');
 	const bodilessMethod = $derived(draft.method === 'GET' || draft.method === 'HEAD');
@@ -82,6 +90,33 @@
 			stopTheme();
 			stopFocus();
 		};
+	});
+
+	// Schemas are deliberately fetched endpoint-by-endpoint rather than with the
+	// loader cache. A large OpenAPI document often repeats the same component
+	// hundreds of times; pulling it across the bridge only when its body opens
+	// keeps collection startup and expansion quick.
+	$effect(() => {
+		const selected = selection;
+		// `loadedAt` is the stamp `refresh` writes. Reading it here is what
+		// picks up a new schema after a loader run without changing selection.
+		const loadedAt = selected ? (collections.loaderCaches[selected.section.id]?.loadedAt ?? 0) : 0;
+		const key = selected ? `${selected.section.id}\0${selected.request.id}` : '';
+		const token = ++schemaToken;
+		if (key !== schemaKey) {
+			schemaKey = key;
+			bodySchema = null;
+		}
+		if (!selected?.section.loader) return;
+		void loadedAt;
+		loaderSchema(selected.section.id, selected.request.id)
+			.then((schema) => {
+				if (token === schemaToken) bodySchema = schema;
+			})
+			.catch(() => {
+				// A loader schema is an enhancement. The request stays editable if
+				// its cache predates schemas or has been removed from disk.
+			});
 	});
 
 	/**
@@ -667,10 +702,28 @@
 									{/if}
 								</Tabs.List>
 
-								<Tabs.Content value="body" class="flex-1 min-h-0">
+								<Tabs.Content value="body" class="flex-1 min-h-0 flex flex-col">
 									{#key draft.id}
-										<Editor bind:this={bodyEditor} bind:value={draft.body} placeholder={'{}'} scope="request" />
+										<div class="flex-1 min-h-0">
+											<Editor
+												bind:this={bodyEditor}
+												bind:value={draft.body}
+												placeholder={'{}'}
+												scope="request"
+												schema={bodySchema}
+											/>
+										</div>
 									{/key}
+									{#if bodySchemaErrors.length}
+										<div class="border-t border-bad/40 bg-bad/8 px-3 py-2 text-xs text-bad" role="alert">
+											<p class="font-medium">Request body does not match the OpenAPI schema</p>
+											<ul class="mt-1 list-disc pl-4 font-mono text-2.5 leading-relaxed">
+												{#each bodySchemaErrors as error (error)}
+													<li>{error}</li>
+												{/each}
+											</ul>
+										</div>
+									{/if}
 								</Tabs.Content>
 
 								<!-- Editing a row rewrites the query on `draft.path`, so the URL
