@@ -143,10 +143,16 @@ class Collections {
 					name: endpoint.name || endpoint.path,
 					method: endpoint.method,
 					path: endpoint.path,
-					// The loader's body is a starting point, not an override: `??`
-					// rather than `||`, so a body you deliberately emptied stays
-					// empty instead of being refilled on every refresh.
-					body: held?.body ?? endpoint.body ?? '',
+					// `||`, not `??`. An empty saved body has to mean "nothing here"
+					// rather than "deliberately blank": every endpoint opened before
+					// bodies existed carries one, and an empty string is not nullish,
+					// so it won and the schema's body never appeared — on exactly the
+					// endpoints you had used most.
+					//
+					// The cost is that clearing a body and refreshing brings it back.
+					// That is the lesser problem: an empty body says nothing, and the
+					// one it is replaced with is a starting point, not an answer.
+					body: held?.body || endpoint.body || '',
 					headers: held?.headers ?? []
 				},
 				missing: false
@@ -176,10 +182,21 @@ class Collections {
 	 */
 	select(selection: Selection): void {
 		const { section, request } = selection;
-		const known =
-			section.requests.some((entry) => entry.id === request.id) ||
-			section.overlay.some((entry) => entry.id === request.id);
-		if (!known) {
+		const held =
+			section.requests.find((entry) => entry.id === request.id) ??
+			section.overlay.find((entry) => entry.id === request.id);
+
+		// An endpoint opened before its manifest carried a body has an overlay
+		// entry holding an empty one, and that entry — not the merged row — is
+		// what the editor is handed. So it adopts the body here, at the moment
+		// you open it. Only when it has none: anything you have written is
+		// yours, and a refresh must not overwrite it.
+		if (held && !held.body && request.body) {
+			held.body = request.body;
+			this.touch(section);
+		}
+
+		if (!held) {
 			section.overlay.push({ ...request });
 			// Debounced like every other edit, not written on the spot. Opening
 			// three endpoints in a row used to be three full section writes —
