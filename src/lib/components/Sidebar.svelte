@@ -210,7 +210,26 @@
 		collections.flush(section);
 	}
 
+	/**
+	 * Collections closed during the search you are running.
+	 *
+	 * Separate from `section.collapsed` on purpose: while searching, whether a
+	 * collection is open is a fact about the search, not about the collection,
+	 * and closing one to get it out of the way should not be written to disk and
+	 * still be there tomorrow.
+	 */
+	let closedWhileSearching = $state<Record<string, boolean>>({});
+
+	// Clearing the search forgets them, so the next one starts open again.
+	$effect(() => {
+		if (!searching) closedWhileSearching = {};
+	});
+
 	function toggle(section: Section) {
+		if (searching) {
+			closedWhileSearching[section.id] = !closedWhileSearching[section.id];
+			return;
+		}
 		section.collapsed = !section.collapsed;
 		collections.touch(section);
 	}
@@ -638,7 +657,11 @@
 				{/if}
 
 				{#each visible as { section, requests, rows, total } (section.id)}
-					{@const open = searching || !section.collapsed}
+					<!-- A search opens everything, because a match you cannot see is
+					     no use — but only until you say otherwise. -->
+					{@const open = searching
+						? !closedWhileSearching[section.id]
+						: !section.collapsed}
 					<div class="border-b border-border/50">
 						<div
 							use:sectionHeader={{ sectionId: section.id }}

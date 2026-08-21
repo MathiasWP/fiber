@@ -581,3 +581,69 @@ test.describe('what a search matches', () => {
 		await expect(page.getByText('/activity/backfill-activity')).toBeVisible();
 	});
 });
+
+test.describe('collapsing while searching', () => {
+	const requests = [
+		{ id: 'r1', name: '/users/list', method: 'POST', path: '/users/list', body: '', headers: [] },
+		{ id: 'r2', name: '/users/create', method: 'POST', path: '/users/create', body: '', headers: [] }
+	];
+
+	const search = (page: import('@playwright/test').Page) =>
+		page.getByPlaceholder('Search endpoints…');
+
+	test('a search opens a closed collection', async ({ page }) => {
+		await install(page, { sections: [section({ collapsed: true, requests })] });
+		await page.goto('/');
+
+		await expect(page.getByText('/users/list')).toBeHidden();
+		await search(page).fill('users');
+		await expect(page.getByText('/users/list')).toBeVisible();
+	});
+
+	test('but closing it then keeps it closed', async ({ page }) => {
+		await install(page, { sections: [section({ requests })] });
+		await page.goto('/');
+
+		await search(page).fill('users');
+		await expect(page.getByText('/users/list')).toBeVisible();
+
+		await page.getByText('Acme', { exact: true }).click();
+		await expect(page.getByText('/users/list')).toBeHidden();
+
+		// Refining the same search is not a new one, so it stays shut.
+		await search(page).fill('users/');
+		await expect(page.getByText('/users/list')).toBeHidden();
+	});
+
+	test('and a fresh search starts open again', async ({ page }) => {
+		await install(page, { sections: [section({ requests })] });
+		await page.goto('/');
+
+		await search(page).fill('users');
+		await page.getByText('Acme', { exact: true }).click();
+		await expect(page.getByText('/users/list')).toBeHidden();
+
+		// Clearing is what ends the search; the next one forgets what you shut.
+		await search(page).fill('');
+		await search(page).fill('users');
+		await expect(page.getByText('/users/list')).toBeVisible();
+	});
+
+	/** Closing one to get it out of the way is about the search, not the collection. */
+	test('closing during a search is not saved to the collection', async ({ page }) => {
+		await install(page, { sections: [section({ requests })] });
+		await page.goto('/');
+
+		await search(page).fill('users');
+		await page.getByText('Acme', { exact: true }).click();
+
+		const saved = await page.evaluate(() =>
+			window.__FIBER_TEST__.calls.filter((c) => c.cmd === 'save_section').length
+		);
+		expect(saved).toBe(0);
+
+		// And the collection is still open once the search is gone.
+		await search(page).fill('');
+		await expect(page.getByText('/users/list')).toBeVisible();
+	});
+});
