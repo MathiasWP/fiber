@@ -14,6 +14,11 @@ use std::path::Path;
 /// Where data lived before the rename.
 const FORMER_IDENTIFIER: &str = "dev.fetch.app";
 
+/// Written once the keychain copy has run, so it happens exactly once per
+/// install rather than only on the launch that happened to move the data
+/// directory. A failed directory move used to skip the secrets forever.
+const SECRETS_MARKER: &str = ".migrated-secrets";
+
 /// Where the app's data used to live, on this machine.
 fn former_data_dir() -> Option<std::path::PathBuf> {
     dirs::data_dir().map(|dir| dir.join(FORMER_IDENTIFIER))
@@ -48,11 +53,70 @@ fn move_across(former: &Path, new_dir: &Path) -> bool {
             );
             true
         }
+        // A rename can fail where a copy works — across volumes, most
+        // commonly. The old directory is left in place: once the new one
+        // exists nothing looks at it again, and a downgrade still finds its
+        // data where it expects.
         Err(err) => {
-            log::warn!("could not move {} across: {err}", former.display());
-            false
+            log::warn!(
+                "could not move {} across ({err}); copying instead",
+                former.display()
+            );
+            match copy_dir(former, new_dir) {
+                Ok(()) => {
+                    log::info!(
+                        "copied collections from {} to {}",
+                        former.display(),
+                        new_dir.display()
+                    );
+                    true
+                }
+                Err(err) => {
+                    log::warn!("could not copy {} across: {err}", former.display());
+                    false
+                }
+            }
         }
     }
+}
+
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Runs the keychain copy at most once per install, keyed on a marker file in
+/// the data directory rather than on the directory move having happened this
+/// launch — a move that failed (and fell back, or will succeed next time) must
+/// not cost the credentials their one chance to migrate. Safe to call every
+/// startup; returns whether the copy actually ran.
+pub fn secrets_once(app_data_dir: &Path) -> bool {
+    let marker = app_data_dir.join(SECRETS_MARKER);
+    if marker.exists() {
+        return false;
+    }
+
+    let sections = crate::store::sections_dir(app_data_dir);
+    secrets(references(&sections).into_iter());
+
+    // The marker is written even when nothing was found: `secrets` itself
+    // never clobbers, so a retry would be harmless — just a pointless keychain
+    // walk on every launch from here on.
+    if let Err(err) =
+        std::fs::create_dir_all(app_data_dir).and_then(|()| std::fs::write(&marker, b""))
+    {
+        log::warn!("could not write {}: {err}", marker.display());
+    }
+    true
 }
 
 /// Copies credentials across for the references the given sections name.
@@ -131,6 +195,46 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(former);
         let _ = std::fs::remove_dir_all(current);
+    }
+
+    /// A rename can fail — across volumes, say — and the migration must not
+    /// give up there. A destination whose parent doesn't exist makes the
+    /// rename fail the same way, which lets the fallback be exercised without
+    /// a second disk.
+    #[test]
+    fn falls_back_to_copying_when_the_rename_fails() {
+        let former = scratch("copy-from");
+        let current = scratch("copy-to").join("deep/target");
+        std::fs::create_dir_all(former.join("sections")).unwrap();
+        std::fs::write(former.join("sections/acme.toml"), "id = \"acme\"").unwrap();
+
+        assert!(move_across(&former, &current));
+        assert_eq!(
+            std::fs::read_to_string(current.join("sections/acme.toml")).unwrap(),
+            "id = \"acme\""
+        );
+        // A copy leaves the source: nothing reads it once the new dir exists,
+        // and a downgrade still finds its data.
+        assert!(former.exists());
+
+        let _ = std::fs::remove_dir_all(former);
+        let _ = std::fs::remove_dir_all(current);
+    }
+
+    /// The keychain copy runs once per install, marker-keyed — not "once, if
+    /// the directory happened to move this launch".
+    #[test]
+    fn the_secrets_migration_runs_exactly_once() {
+        // An empty data dir: no sections, so no references, so `secrets_once`
+        // never actually reaches the real keychain here.
+        let dir = scratch("secrets-once");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert!(secrets_once(&dir), "first launch runs it");
+        assert!(dir.join(SECRETS_MARKER).exists());
+        assert!(!secrets_once(&dir), "every later launch skips it");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

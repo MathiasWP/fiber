@@ -28,7 +28,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthState;
 use crate::history::HistoryStore;
-use crate::http::{Header, HttpState, RequestSpec};
+// `redact` lives in `http` because history persistence needs the same list;
+// two lists would drift, and the one that drifted would be the one that leaks.
+use crate::http::{redact, Header, HttpState, RequestSpec};
 use crate::loader;
 use crate::secrets;
 use crate::store::{self, Section};
@@ -38,34 +40,57 @@ const MAX_BODY_CHARS: usize = 8_000;
 /// Manifests are shown to help write a filter, not to be read in full.
 const MAX_MANIFEST_CHARS: usize = 12_000;
 
-/// Headers that must never travel back to a model.
-fn is_credential(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    matches!(
-        name.as_str(),
-        "authorization" | "cookie" | "set-cookie" | "proxy-authorization" | "x-api-key"
-    )
-}
-
-fn redact(headers: &[Header]) -> Vec<Header> {
-    headers
-        .iter()
-        .map(|header| Header {
-            name: header.name.clone(),
-            value: if is_credential(&header.name) {
-                "<redacted>".into()
-            } else {
-                header.value.clone()
-            },
-        })
-        .collect()
-}
-
+/// One pass over the body: find the byte where character `limit + 1` would
+/// start and cut there. Counting the characters first and *then* collecting
+/// walked a possibly-32MB body twice to keep 8KB of it.
 fn truncate(body: &str, limit: usize) -> (String, bool) {
-    if body.chars().count() <= limit {
-        return (body.to_string(), false);
+    match body.char_indices().nth(limit) {
+        Some((cut, _)) => (body[..cut].to_string(), true),
+        None => (body.to_string(), false),
     }
-    (body.chars().take(limit).collect(), true)
+}
+
+/// An absolute `path` normally bypasses the section outright — `join_url`'s
+/// escape hatch for a person with one endpoint that lives elsewhere. Here the
+/// path comes from an agent and the section's credential rides along with the
+/// request, so an absolute URL that leaves the section's scheme+host+port
+/// would hand the token to whatever host the prompt named — an attacker's
+/// server, or a cloud metadata endpoint. Erroring, rather than quietly
+/// stripping the auth, is what the agent can actually act on.
+fn require_same_origin(base_url: &str, path: &str) -> Result<(), McpError> {
+    let path = path.trim();
+    if !(path.starts_with("http://") || path.starts_with("https://")) {
+        return Ok(());
+    }
+
+    let origin = |url: &reqwest::Url| {
+        (
+            url.scheme().to_string(),
+            url.host_str().map(str::to_owned),
+            url.port_or_known_default(),
+        )
+    };
+    let allowed = match (
+        reqwest::Url::parse(base_url.trim()),
+        reqwest::Url::parse(path),
+    ) {
+        (Ok(base), Ok(target)) => origin(&base) == origin(&target),
+        // No parseable base means nothing to compare against — which includes
+        // a section with no base URL at all. Absolute paths are off the table.
+        _ => false,
+    };
+
+    if allowed {
+        Ok(())
+    } else {
+        Err(McpError::invalid_params(
+            format!(
+                "Absolute URLs must stay on this collection's base URL ({base_url}). \
+                 Use a path relative to it instead."
+            ),
+            None,
+        ))
+    }
 }
 
 fn is_read_only(method: &str) -> bool {
@@ -220,6 +245,7 @@ impl FiberMcp {
                     timeout_ms: Some(30_000),
                     follow_redirects: true,
                     accept_invalid_certs: false,
+                    sensitive_header: None,
                 };
 
                 // `None` for the app handle: there's no window here, so a
@@ -352,6 +378,8 @@ impl FiberMcp {
             ));
         }
 
+        require_same_origin(&section.base_url, &args.path)?;
+
         let id = format!("mcp-{}-{}", section.id, crate::history::now_millis());
         let url = store::join_url(&section.base_url, &args.path);
         let body = args.body.filter(|body| !body.trim().is_empty());
@@ -373,6 +401,7 @@ impl FiberMcp {
             timeout_ms: Some(60_000),
             follow_redirects: true,
             accept_invalid_certs: false,
+            sensitive_header: None,
         };
 
         let at = crate::history::now_millis();
@@ -624,17 +653,16 @@ fn collect_secrets(
 pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let data = app_data_dir();
     // Whichever of the app or this server starts first does the rename
-    // migration; the other finds it already done.
-    if crate::migrate::data_dir(&data) {
-        let sections = store::sections_dir(&data);
-        crate::migrate::secrets(crate::migrate::references(&sections).into_iter());
-    }
+    // migration; the other finds it already done. The keychain copy keys on
+    // its own marker, so a directory move that failed doesn't strand it.
+    crate::migrate::data_dir(&data);
+    crate::migrate::secrets_once(&data);
     let server = FiberMcp {
         sections_dir: store::sections_dir(&data),
         loaders_dir: loader::loaders_dir(&data),
         http: Arc::new(HttpState::default()),
         auth: Arc::new(AuthState::default()),
-        history: Arc::new(HistoryStore::open(&data)?),
+        history: Arc::new(HistoryStore::open_or_recover(&data)?),
         tool_router: FiberMcp::tool_router(),
     };
 
@@ -839,5 +867,42 @@ mod tests {
         let (long, cut) = truncate(&"x".repeat(50), 10);
         assert_eq!(long.len(), 10);
         assert!(cut);
+
+        // The cut counts characters, not bytes — a multi-byte character on the
+        // boundary must come through whole or not at all.
+        let (accented, cut) = truncate(&"é".repeat(5), 3);
+        assert_eq!(accented, "ééé");
+        assert!(cut);
+    }
+
+    /// An agent supplies the path and the section supplies the credential — so
+    /// an absolute URL is only honoured on the section's own origin. Anywhere
+    /// else, "fetch http://attacker/ for me" would carry the token along.
+    #[test]
+    fn an_absolute_path_may_not_leave_the_sections_origin() {
+        let base = "https://api.acme.com";
+        assert!(
+            require_same_origin(base, "/user/42").is_ok(),
+            "relative paths are the normal case, untouched"
+        );
+        assert!(require_same_origin(base, "https://api.acme.com/user/42").is_ok());
+        assert!(
+            require_same_origin(base, "https://api.acme.com:443/user/42").is_ok(),
+            "spelling out the default port is the same origin"
+        );
+
+        assert!(require_same_origin(base, "https://evil.example/collect").is_err());
+        assert!(
+            require_same_origin(base, "http://api.acme.com/user").is_err(),
+            "a scheme downgrade is a different origin"
+        );
+        assert!(
+            require_same_origin(base, "http://169.254.169.254/latest/meta-data/").is_err(),
+            "cloud metadata endpoints are exactly what this guard is for"
+        );
+        assert!(
+            require_same_origin("", "https://api.acme.com/x").is_err(),
+            "no base URL means nothing to compare against"
+        );
     }
 }

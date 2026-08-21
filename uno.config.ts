@@ -1,5 +1,5 @@
 import extractorSvelte from '@unocss/extractor-svelte';
-import { defineConfig, presetIcons, presetWind4, transformerVariantGroup } from 'unocss';
+import { defineConfig, presetIcons, presetWind4 } from 'unocss';
 
 /**
  * Colours are RGB channel triplets in CSS variables (see src/app.css) so a
@@ -25,7 +25,11 @@ export default defineConfig({
 			extraProperties: { display: 'inline-block', 'vertical-align': 'middle' }
 		})
 	],
-	transformers: [transformerVariantGroup()],
+	// No transformers, and none would run: the PostCSS pipeline scans files for
+	// class names but never rewrites them, so `hover:(a b)` in markup stays
+	// split-by-space junk in the DOM and matches no rule. Write variants out in
+	// full — `hover:a hover:b`. Shortcuts below are exempt: their values are
+	// expanded config-side, where variant groups do work.
 	theme: {
 		colors: {
 			bg: themed('bg'),

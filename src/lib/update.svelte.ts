@@ -11,6 +11,8 @@ export type UpdateStage =
 	| 'installing'
 	/** Swapped in on disk, waiting for the next launch to take effect. */
 	| 'staged'
+	/** Installed fine, but the automatic restart didn't happen. */
+	| 'restart-failed'
 	| 'failed';
 
 /**
@@ -114,24 +116,35 @@ class Updates {
 					this.stage = 'installing';
 				}
 			});
+		} catch (error) {
+			this.stage = 'failed';
+			this.error = String(error);
+			return;
+		}
 
-			if (!restart) {
-				// Done, and staying out of the way until the app is next opened.
-				//
-				// Marked declined too: this process still reports the old version,
-				// so a later check would find the same update again and offer to
-				// install what is already sitting on disk. Not persisting it is
-				// fine — the next launch *is* the new version, so there is nothing
-				// left to offer.
-				this.#declined = this.version;
-				this.stage = 'staged';
-				return;
-			}
+		if (!restart) {
+			// Done, and staying out of the way until the app is next opened.
+			//
+			// Marked declined too: this process still reports the old version,
+			// so a later check would find the same update again and offer to
+			// install what is already sitting on disk. Not persisting it is
+			// fine — the next launch *is* the new version, so there is nothing
+			// left to offer.
+			this.#declined = this.version;
+			this.stage = 'staged';
+			return;
+		}
 
+		try {
 			// The new version is on disk; this process is still the old one.
 			await relaunch();
 		} catch (error) {
-			this.stage = 'failed';
+			// Not the same failure as a download that died: the update *is*
+			// installed, and only the restart went wrong. Saying "failed" here
+			// would send someone off to retry a download they don't need — the
+			// only thing left to do is close Fiber and open it again.
+			this.#declined = this.version;
+			this.stage = 'restart-failed';
 			this.error = String(error);
 		}
 	}

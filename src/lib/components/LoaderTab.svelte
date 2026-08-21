@@ -20,8 +20,13 @@
 
 	let { section }: Props = $props();
 
-	/** The manifest as fetched. Held so the filter can be re-run without refetching. */
-	let document = $state<unknown>(null);
+	/**
+	 * The manifest as fetched. Held so the filter can be re-run without
+	 * refetching. `$state.raw` because it is only ever replaced wholesale, never
+	 * edited in place — and a deep proxy over a whole OpenAPI document meant
+	 * proxying thousands of nodes just to hold something read-only.
+	 */
+	let document = $state.raw<unknown>(null);
 	let probing = $state(false);
 	let probeError = $state<string | null>(null);
 
@@ -73,32 +78,39 @@
 		}
 	}
 
-	// Re-map on every keystroke. This is only possible because a filter is a
-	// pure transformation — nothing is refetched and nothing can escape.
+	/**
+	 * Re-mapped as you type. Possible at all because a filter is a pure
+	 * transformation — nothing is refetched and nothing can escape — but the
+	 * document crosses the IPC boundary whole on every call, so the call waits
+	 * for a short pause in the typing rather than firing per keystroke. The
+	 * token guards against out-of-order replies: a slow run of an old filter
+	 * must not land on top of a fast run of the current one.
+	 */
+	let previewToken = 0;
 	$effect(() => {
 		const query = section.loader?.query ?? '';
 		const input = document;
+		const token = ++previewToken;
 		if (input === null || !query.trim()) {
 			preview = [];
 			previewError = null;
 			return;
 		}
 
-		let current = true;
-		loaderPreview(input, query)
-			.then((endpoints) => {
-				if (!current) return;
-				preview = endpoints;
-				previewError = null;
-			})
-			.catch((error) => {
-				if (!current) return;
-				preview = [];
-				previewError = String(error);
-			});
-		return () => {
-			current = false;
-		};
+		const timer = setTimeout(() => {
+			loaderPreview(input, query)
+				.then((endpoints) => {
+					if (token !== previewToken) return;
+					preview = endpoints;
+					previewError = null;
+				})
+				.catch((error) => {
+					if (token !== previewToken) return;
+					preview = [];
+					previewError = String(error);
+				});
+		}, 150);
+		return () => clearTimeout(timer);
 	});
 
 	async function runNow() {

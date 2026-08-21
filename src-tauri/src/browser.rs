@@ -109,6 +109,9 @@ pub enum BrowserError {
     Url(String),
     #[error("nothing matched the capture rule — sign in again")]
     NothingCaptured,
+    // The section file could not be read; its message already names the file.
+    #[error("{0}")]
+    Section(String),
 }
 
 impl Serialize for BrowserError {
@@ -521,7 +524,13 @@ async fn eval_json(window: &WebviewWindow, js: &str) -> Result<String, BrowserEr
 
     window
         .eval_with_callback(js, move |raw| {
-            if let Some(sender) = sender.lock().unwrap().take() {
+            // A poisoned lock here would mean a previous callback panicked;
+            // the one-shot sender inside is still fine to take.
+            if let Some(sender) = sender
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+            {
                 let _ = sender.send(raw);
             }
         })

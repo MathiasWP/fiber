@@ -42,8 +42,9 @@ export interface LoadedRow {
  * Sections, mirrored from disk.
  *
  * Edits mutate the in-memory section and `touch()` schedules a debounced write.
- * Saves are skipped when nothing actually changed, so the effect that watches
- * the selected section can fire freely without causing redundant disk writes.
+ * `touch` trusts its callers to only speak up when something changed — the
+ * effect that watches the selected section fires on actual edits, and guards
+ * the one case where it fires for another reason (the selection moving).
  */
 class Collections {
 	sections = $state<Section[]>([]);
@@ -52,7 +53,16 @@ class Collections {
 	error = $state<string | null>(null);
 
 	#timers = new Map<string, ReturnType<typeof setTimeout>>();
-	#lastSaved = new Map<string, string>();
+
+	/**
+	 * The corrupt-file report from the last load, if there was one.
+	 *
+	 * Held separately from `error` because that field is also how save failures
+	 * surface, and a save that then *succeeds* clears it — which would quietly
+	 * dismiss a warning about files that are still broken on disk. A successful
+	 * save falls back to this instead of to nothing.
+	 */
+	#loadError: string | null = null;
 
 	/**
 	 * Requests whose name is still following their path, by id.
@@ -143,16 +153,15 @@ class Collections {
 					name: endpoint.name || endpoint.path,
 					method: endpoint.method,
 					path: endpoint.path,
-					// `||`, not `??`. An empty saved body has to mean "nothing here"
-					// rather than "deliberately blank": every endpoint opened before
-					// bodies existed carries one, and an empty string is not nullish,
-					// so it won and the schema's body never appeared — on exactly the
-					// endpoints you had used most.
-					//
-					// The cost is that clearing a body and refreshing brings it back.
-					// That is the lesser problem: an empty body says nothing, and the
-					// one it is replaced with is a starting point, not an answer.
-					body: held?.body || endpoint.body || '',
+					// The manifest's body, never the overlay's. The overlay entry is
+					// what the editor is actually handed once an endpoint is opened —
+					// see `select` — so the merged row's body only matters twice: at
+					// promotion, where the manifest body is the right starting point,
+					// and at adoption, which only happens when the saved body is empty
+					// and the manifest body would have won the merge anyway. Reading
+					// `held.body` here did nothing but subscribe every sidebar row to
+					// every keystroke typed into a loaded endpoint's body.
+					body: endpoint.body || '',
 					headers: held?.headers ?? []
 				},
 				missing: false
@@ -164,6 +173,20 @@ class Collections {
 			if (!reported.has(entry.id)) rows.push({ request: entry, missing: true });
 		}
 		return rows;
+	}
+
+	/**
+	 * The body the loader generated for an endpoint — what it looked like
+	 * before anybody typed, placeholders and all. Null for ordinary requests,
+	 * and for endpoints whose manifest never carried a body.
+	 */
+	manifestBodyFor(selection: Selection): string | null {
+		const cache = this.loaderCaches[selection.section.id];
+		if (!cache) return null;
+		const endpoint = cache.endpoints.find(
+			(candidate) => endpointKey(candidate.method, candidate.path) === selection.request.id
+		);
+		return endpoint?.body || null;
 	}
 
 	/** Selects a loaded endpoint from the sidebar. */
@@ -373,12 +396,24 @@ class Collections {
 
 	async load(): Promise<void> {
 		try {
-			this.sections = await listSections();
+			const { sections, errors } = await listSections();
+			this.sections = sections;
 			for (const section of this.sections) {
-				this.#lastSaved.set(section.id, JSON.stringify(section));
 				this.#adopt(section);
 			}
-			this.error = null;
+			// A file that couldn't be read is skipped, not deleted — and saying so
+			// is the difference between "my collection is corrupt" and "my
+			// collection is gone". The good sections still load around it.
+			if (errors.length > 0) {
+				const listed = errors.map((entry) => `${entry.file} (${entry.message})`).join(', ');
+				const one = errors.length === 1;
+				this.#loadError =
+					`Skipped ${errors.length} collection ${one ? 'file' : 'files'} that couldn't be read: ${listed}. ` +
+					`The ${one ? 'file is' : 'files are'} untouched on disk — fix or remove ${one ? 'it' : 'them'}.`;
+			} else {
+				this.#loadError = null;
+			}
+			this.error = this.#loadError;
 			await this.loadCaches();
 			await this.refreshCredentials();
 		} catch (error) {
@@ -428,11 +463,16 @@ class Collections {
 		request.name = name.trim() || 'Untitled';
 	}
 
-	/** Schedules a write if `section` differs from what's on disk. */
+	/**
+	 * Schedules a debounced write. Callers are believed: every path that calls
+	 * this has just changed something, or fired precisely because something
+	 * changed — the effect in the page that watches the selected section only
+	 * runs when a field it read actually moved. It used to verify that with a
+	 * full JSON.stringify compare, which against a section holding a 30 MB body
+	 * was a serialization per keystroke to answer a question the reactivity
+	 * system had already answered.
+	 */
 	touch(section: Section): void {
-		const serialized = JSON.stringify(section);
-		if (this.#lastSaved.get(section.id) === serialized) return;
-
 		clearTimeout(this.#timers.get(section.id));
 		this.#timers.set(
 			section.id,
@@ -440,6 +480,33 @@ class Collections {
 				this.#timers.delete(section.id);
 				this.#write(section);
 			}, SAVE_DEBOUNCE_MS)
+		);
+	}
+
+	/** Whether any section has an edit waiting on its debounce timer. */
+	get pending(): boolean {
+		return this.#timers.size > 0;
+	}
+
+	/**
+	 * Runs every pending save now, timers be damned.
+	 *
+	 * This is the quit path: the debounce exists to spare the disk while you
+	 * type, and the one moment it can cost you data is when the app goes away
+	 * before a timer fires. Settles rather than rejects — with the window on
+	 * its way out there is nobody left to retry, so every write that can land
+	 * should, whatever its neighbours did.
+	 */
+	async flushAll(): Promise<void> {
+		const waiting = [...this.#timers.keys()];
+		for (const timer of this.#timers.values()) clearTimeout(timer);
+		this.#timers.clear();
+
+		await Promise.allSettled(
+			waiting.map((id) => {
+				const section = this.sections.find((candidate) => candidate.id === id);
+				return section ? this.#write(section) : Promise.resolve();
+			})
 		);
 	}
 
@@ -451,7 +518,6 @@ class Collections {
 	}
 
 	async #write(section: Section): Promise<void> {
-		const serialized = JSON.stringify(section);
 		const snapshot = $state.snapshot(section) as Section;
 		// The header table keeps a trailing blank row for editing; it has no
 		// business in a file someone might read or diff.
@@ -461,8 +527,9 @@ class Collections {
 
 		try {
 			await saveSection(snapshot);
-			this.#lastSaved.set(section.id, serialized);
-			this.error = null;
+			// Back to the standing load warning, if there is one — a save that
+			// worked says nothing about the files that never loaded.
+			this.error = this.#loadError;
 		} catch (error) {
 			this.error = String(error);
 		}
@@ -491,16 +558,26 @@ class Collections {
 	}
 
 	async removeSection(section: Section): Promise<void> {
+		// Optimistic: the row disappears the moment you ask. But everything
+		// removed is held on to, because if the delete then fails the file is
+		// still on disk — and a sidebar that disagrees with the disk it claims to
+		// mirror is worse than a row that briefly came back.
+		const index = this.sections.findIndex((candidate) => candidate.id === section.id);
+		const selected = this.selectedRequestId;
+
 		this.sections = this.sections.filter((candidate) => candidate.id !== section.id);
 		if (section.requests.some((r) => r.id === this.selectedRequestId)) {
 			this.selectedRequestId = null;
 		}
 		clearTimeout(this.#timers.get(section.id));
 		this.#timers.delete(section.id);
-		this.#lastSaved.delete(section.id);
 		try {
 			await deleteSection(section.id);
 		} catch (error) {
+			const restored = [...this.sections];
+			restored.splice(Math.max(0, index), 0, section);
+			this.sections = restored;
+			this.selectedRequestId = selected;
 			this.error = String(error);
 		}
 	}

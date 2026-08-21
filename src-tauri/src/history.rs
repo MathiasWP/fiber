@@ -13,6 +13,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,6 +27,9 @@ const SPILL_BYTES: usize = 256 * 1024;
 /// Per request, newest kept. Enough to compare a few attempts, not a log.
 const MAX_PER_REQUEST: usize = 50;
 const MAX_AGE_DAYS: i64 = 30;
+/// Re-run the age prune after this many inserts. It otherwise only runs at
+/// open, which an app left running for weeks never reaches again.
+const PRUNE_EVERY: u64 = 100;
 
 /// Everything about a response except the body, which is fetched separately.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +69,8 @@ pub enum HistoryError {
     Io(#[from] std::io::Error),
     #[error("history data: {0}")]
     Encoding(#[from] serde_json::Error),
+    #[error("unsafe history id `{0}`")]
+    UnsafeId(String),
 }
 
 impl Serialize for HistoryError {
@@ -83,6 +89,10 @@ pub fn now_millis() -> i64 {
 pub struct HistoryStore {
     connection: Mutex<Connection>,
     bodies_dir: PathBuf,
+    /// Counts inserts so [`Self::record`] can re-run the age prune now and
+    /// then. The alternative — a background timer — needs a runtime this
+    /// deliberately Tauri-free module has no other reason to know about.
+    inserts: AtomicU64,
 }
 
 impl HistoryStore {
@@ -122,9 +132,34 @@ impl HistoryStore {
         let store = Self {
             connection: Mutex::new(connection),
             bodies_dir,
+            inserts: AtomicU64::new(0),
         };
         store.prune_old()?;
         Ok(store)
+    }
+
+    /// [`Self::open`], but a database that cannot be opened — corrupt after a
+    /// crash, say — is moved aside and replaced rather than propagated.
+    /// History is a convenience; a bad copy of it must not become "the app
+    /// panics on every launch until someone finds the file". The broken copy
+    /// is kept next to the new one in case any of it is worth recovering.
+    pub fn open_or_recover(app_data_dir: &Path) -> Result<Self, HistoryError> {
+        match Self::open(app_data_dir) {
+            Ok(store) => Ok(store),
+            Err(err) => {
+                log::warn!("history database unusable ({err}); moving it aside and starting fresh");
+                let stamp = now_millis() / 1000;
+                // The WAL siblings go with it: a fresh database next to a
+                // stale -wal is its own kind of corrupt.
+                for name in ["history.db", "history.db-wal", "history.db-shm"] {
+                    let path = app_data_dir.join(name);
+                    if path.exists() {
+                        let _ = fs::rename(&path, app_data_dir.join(format!("{name}.broken-{stamp}")));
+                    }
+                }
+                Self::open(app_data_dir)
+            }
+        }
     }
 
     fn spill_path(&self, id: &str) -> PathBuf {
@@ -142,6 +177,11 @@ impl HistoryStore {
     ) -> Result<(), HistoryError> {
         if matches!(outcome, Err(HttpError::Cancelled)) {
             return Ok(());
+        }
+        // The id becomes a file name when the body spills, and it arrives over
+        // the IPC bridge — the same guard section ids get, for the same reason.
+        if !crate::store::is_safe_id(&spec.id) {
+            return Err(HistoryError::UnsafeId(spec.id.clone()));
         }
 
         let (error, response) = match outcome {
@@ -162,11 +202,19 @@ impl HistoryStore {
             }
         }
 
+        // Inbound credentials — Set-Cookie above all — are redacted before
+        // they touch disk. The live response pane shows them; a database that
+        // outlives the session they belong to should not.
         let headers = response
-            .map(|r| serde_json::to_string(&r.headers))
+            .map(|r| serde_json::to_string(&crate::http::redact(&r.headers)))
             .transpose()?;
 
-        let connection = self.connection.lock().unwrap();
+        // Locks below tolerate poisoning: SQLite's state lives in SQLite, not
+        // in whatever a panicked thread was doing with the handle.
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         connection.execute(
             "INSERT OR REPLACE INTO history (
                 id, request_id, at, method, url, request_body, error,
@@ -199,13 +247,19 @@ impl HistoryStore {
         drop(connection);
 
         self.prune_request(&spec.request_id)?;
+        if self.inserts.fetch_add(1, Ordering::Relaxed) % PRUNE_EVERY == PRUNE_EVERY - 1 {
+            self.prune_old()?;
+        }
         Ok(())
     }
 
     /// Metadata for the most recent entries, newest first. Bodies are fetched
     /// separately by [`Self::body`].
     pub fn list(&self, limit: usize) -> Result<Vec<HistoryRecord>, HistoryError> {
-        let connection = self.connection.lock().unwrap();
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut statement = connection.prepare(
             "SELECT id, request_id, at, method, url, request_body, error,
                     status, status_text, final_url, headers, is_binary, truncated,
@@ -252,7 +306,10 @@ impl HistoryStore {
 
     /// The response body for one entry, read from the row or its spill file.
     pub fn body(&self, id: &str) -> Result<Option<String>, HistoryError> {
-        let connection = self.connection.lock().unwrap();
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let found: Option<(Option<String>, Option<String>)> = connection
             .query_row(
                 "SELECT body, body_path FROM history WHERE id = ?1",
@@ -305,7 +362,10 @@ impl HistoryStore {
         predicate: &str,
         args: impl rusqlite::Params + Clone,
     ) -> Result<(), HistoryError> {
-        let connection = self.connection.lock().unwrap();
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let mut statement =
             connection.prepare(&format!("SELECT body_path FROM history WHERE {predicate}"))?;
@@ -342,6 +402,7 @@ mod tests {
             timeout_ms: None,
             follow_redirects: true,
             accept_invalid_certs: false,
+            sensitive_header: None,
         }
     }
 
@@ -524,6 +585,106 @@ mod tests {
 
         store.clear_all().unwrap();
         assert!(store.list(10).unwrap().is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// A corrupt database must cost the history, not the app: it is moved
+    /// aside — timestamped, in case any of it is recoverable — and a fresh one
+    /// takes its place.
+    #[test]
+    fn a_corrupt_database_is_moved_aside_not_fatal() {
+        let dir = std::env::temp_dir().join(format!("fetch-history-broken-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("history.db"), "this is not a sqlite database").unwrap();
+
+        assert!(HistoryStore::open(&dir).is_err(), "plain open should refuse it");
+
+        let store = HistoryStore::open_or_recover(&dir).unwrap();
+        store
+            .record(&spec("e1", "req-a"), 1000, "https://example.com/x", &Ok(response("{}")))
+            .unwrap();
+        assert_eq!(store.list(10).unwrap().len(), 1, "the fresh database works");
+
+        let moved_aside = fs::read_dir(&dir).unwrap().flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("history.db.broken-")
+        });
+        assert!(moved_aside, "the broken file should still be there, renamed");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Set-Cookie is a credential the server handed *us*. The pane may show it
+    /// while the response is fresh; thirty days of history may not.
+    #[test]
+    fn inbound_credentials_never_reach_the_database() {
+        let (store, dir) = store("redact");
+        let mut ok = response("{}");
+        ok.headers.push(crate::http::Header {
+            name: "set-cookie".into(),
+            value: "session=super-secret".into(),
+        });
+        store
+            .record(&spec("e1", "req-a"), 1000, "https://example.com/x", &Ok(ok))
+            .unwrap();
+
+        let listed = store.list(10).unwrap();
+        let headers = &listed[0].response.as_ref().unwrap().headers;
+        let cookie = headers.iter().find(|h| h.name == "set-cookie").unwrap();
+        assert_eq!(cookie.value, "<redacted>", "the name survives, the value must not");
+        let content_type = headers.iter().find(|h| h.name == "content-type").unwrap();
+        assert_eq!(content_type.value, "application/json", "ordinary headers are untouched");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The id becomes a spill file's name, and it comes from the webview.
+    #[test]
+    fn an_id_that_could_escape_the_bodies_directory_is_rejected() {
+        let (store, dir) = store("escape");
+        let outcome = store.record(
+            &spec("../../outside", "req-a"),
+            1000,
+            "https://example.com/x",
+            &Ok(response("{}")),
+        );
+        assert!(matches!(outcome, Err(HistoryError::UnsafeId(_))), "{outcome:?}");
+        assert!(store.list(10).unwrap().is_empty(), "nothing should be recorded");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The age prune used to run only at open — useless to an app that stays
+    /// running. It now rides along on inserts.
+    #[test]
+    fn expired_entries_are_pruned_as_new_ones_arrive() {
+        let (store, dir) = store("age");
+        // Recorded *after* open's prune, with a timestamp far past retention.
+        store
+            .record(&spec("ancient", "req-old"), 1000, "https://example.com/x", &Ok(response("{}")))
+            .unwrap();
+        assert!(store.list(500).unwrap().iter().any(|e| e.id == "ancient"));
+
+        for index in 0..PRUNE_EVERY {
+            // Distinct request ids, or the per-request cap would be what
+            // removes the older ones and the test would prove nothing.
+            store
+                .record(
+                    &spec(&format!("new{index}"), &format!("req-{index}")),
+                    now_millis(),
+                    "https://example.com/x",
+                    &Ok(response("{}")),
+                )
+                .unwrap();
+        }
+
+        let listed = store.list(500).unwrap();
+        assert!(!listed.iter().any(|e| e.id == "ancient"), "the prune should have caught it");
+        assert!(listed.iter().any(|e| e.id == "new0"), "recent entries stay");
 
         let _ = fs::remove_dir_all(dir);
     }

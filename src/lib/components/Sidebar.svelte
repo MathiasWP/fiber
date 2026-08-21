@@ -138,6 +138,44 @@
 	);
 
 	/**
+	 * A collection can have hundreds of imported or loader-provided endpoints.
+	 * Each row carries interactive machinery (a context menu and, for saved
+	 * requests, a drag target), so mounting all of them when a header opens
+	 * makes that click noticeably slow. Keep the initial mount to a useful first
+	 * page and let the person reveal the rest in the same order.
+	 */
+	const ENDPOINT_PAGE_SIZE = 100;
+	let endpointLimits = $state<Record<string, number>>({});
+
+	function endpointLimit(section: Section): number {
+		return endpointLimits[section.id] ?? ENDPOINT_PAGE_SIZE;
+	}
+
+	function shownRequests(section: Section, requests: SavedRequest[]): SavedRequest[] {
+		return requests.slice(0, endpointLimit(section));
+	}
+
+	function shownLoadedRows(
+		section: Section,
+		requests: SavedRequest[],
+		rows: LoadedRow[]
+	): LoadedRow[] {
+		return rows.slice(0, Math.max(0, endpointLimit(section) - requests.length));
+	}
+
+	function remainingEndpoints(section: Section, requests: SavedRequest[], rows: LoadedRow[]): number {
+		return Math.max(0, requests.length + rows.length - endpointLimit(section));
+	}
+
+	function showMoreEndpoints(section: Section): void {
+		endpointLimits[section.id] = endpointLimit(section) + ENDPOINT_PAGE_SIZE;
+	}
+
+	function showAllEndpoints(section: Section, total: number): void {
+		endpointLimits[section.id] = total;
+	}
+
+	/**
 	 * How much the search is keeping out of sight.
 	 *
 	 * Counted across every collection rather than the visible ones, because a
@@ -230,6 +268,9 @@
 			closedWhileSearching[section.id] = !closedWhileSearching[section.id];
 			return;
 		}
+		// Closing tears down the currently visible page. Start from the quick
+		// initial page when it is next opened, even if "Show all" was used.
+		if (!section.collapsed) delete endpointLimits[section.id];
 		section.collapsed = !section.collapsed;
 		collections.touch(section);
 	}
@@ -275,6 +316,23 @@
 	}
 
 	/**
+	 * Every request's name by id, built once per collections change.
+	 *
+	 * The history tab needs a name per entry, per row and again per keystroke of
+	 * the filter — and `findRequest` walks every section to answer each one, so
+	 * a few hundred entries over a few collections was a scan-per-scan-per-scan.
+	 * One map answers all of them.
+	 */
+	const requestNames = $derived.by(() => {
+		const names = new Map<string, string>();
+		for (const section of collections.sections) {
+			for (const request of section.requests) names.set(request.id, request.name);
+			for (const entry of section.overlay) names.set(entry.id, entry.name);
+		}
+		return names;
+	});
+
+	/**
 	 * The name of the request an entry came from, when there still is one.
 	 *
 	 * Plenty of entries outlive their request: sent from scratch, sent by a
@@ -282,7 +340,7 @@
 	 * no name rather than an invented one — the URL underneath is their identity.
 	 */
 	function requestName(entry: HistoryEntry): string | null {
-		return collections.findRequest(entry.requestId)?.request.name ?? null;
+		return requestNames.get(entry.requestId) ?? null;
 	}
 
 	/**
@@ -298,6 +356,18 @@
 			return `${name} ${entry.method} ${entry.url} ${status}`.toLowerCase().includes(needle);
 		});
 	});
+
+	/**
+	 * How many history rows are rendered before asking. The list can hold 500
+	 * entries, each a two-line row with its own context menu — most sessions
+	 * never look past the first screenful, and the ones that do get the rest on
+	 * request rather than everyone paying for them up front.
+	 */
+	const HISTORY_PAGE = 100;
+	let showAllHistory = $state(false);
+	const shownHistory = $derived(
+		showAllHistory ? visibleHistory : visibleHistory.slice(0, HISTORY_PAGE)
+	);
 
 	let hint = $state<DragHint>(null);
 
@@ -572,7 +642,7 @@
 		</button>
 		{#if tab === 'history'}
 			<button
-				class="ml-auto p-1 rounded text-muted hover:(bg-raised text-text) transition-colors"
+				class="ml-auto p-1 rounded text-muted hover:bg-raised hover:text-text transition-colors"
 				title="Clear history"
 				onclick={() => history.clear()}
 			>
@@ -596,7 +666,7 @@
 			<Tooltip.Provider delayDuration={200}>
 				<Tooltip.Root>
 					<Tooltip.Trigger
-						class="ml-auto h-6 w-6 grid place-items-center rounded text-muted transition-colors hover:(bg-border text-text)"
+						class="ml-auto h-6 w-6 grid place-items-center rounded text-muted transition-colors hover:bg-border hover:text-text"
 						onclick={addLooseRequest}
 					>
 						<span class="i-lucide-square-plus text-4"></span>
@@ -610,7 +680,7 @@
 
 				<Tooltip.Root>
 					<Tooltip.Trigger
-						class="h-6 w-6 grid place-items-center rounded text-muted transition-colors hover:(bg-border text-text)"
+						class="h-6 w-6 grid place-items-center rounded text-muted transition-colors hover:bg-border hover:text-text"
 						onclick={() => (creating = true)}
 					>
 						<span class="i-lucide-folder-plus text-4"></span>
@@ -665,6 +735,9 @@
 					{@const open = searching
 						? !closedWhileSearching[section.id]
 						: !section.collapsed}
+					{@const displayedRequests = shownRequests(section, requests)}
+					{@const displayedRows = shownLoadedRows(section, requests, rows)}
+					{@const remaining = remainingEndpoints(section, requests, rows)}
 					<div class="border-b border-border/50">
 						<div
 							use:sectionHeader={{ sectionId: section.id }}
@@ -750,7 +823,7 @@
 													onOpenSettings(section);
 												}}
 												class="flex shrink-0 items-center rounded p-1 -my-1 text-muted
-													transition-colors hover:(bg-border text-text)"
+													transition-colors hover:bg-border hover:text-text"
 											>
 												<span class="i-lucide-settings text-3"></span>
 											</button>
@@ -851,13 +924,13 @@
 						</div>
 
 						{#if open}
-							{#each requests as request, index (request.id)}
-								{@render requestRow(section, request, 'pl-8', requests, index)}
+							{#each displayedRequests as request, index (request.id)}
+								{@render requestRow(section, request, 'pl-8', displayedRequests, index)}
 							{/each}
 
 							<!-- Loader output. Regenerated on every refresh; the user's
 							     bodies live in the section's overlay and survive it. -->
-							{#each rows as row (row.request.id)}
+							{#each displayedRows as row (row.request.id)}
 								<ContextMenu.Root>
 									<ContextMenu.Trigger
 										class="flex items-center gap-2 pl-8 pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
@@ -910,6 +983,23 @@
 								</ContextMenu.Root>
 							{/each}
 
+							{#if remaining > 0}
+								<div class="flex items-center gap-2 pl-8 pr-4 py-1.5 text-2.5 text-muted">
+									<button
+										class="hover:text-text transition-colors"
+										onclick={() => showMoreEndpoints(section)}
+									>
+										Show {Math.min(ENDPOINT_PAGE_SIZE, remaining)} more
+									</button>
+									<button
+										class="ml-auto hover:text-text transition-colors"
+										onclick={() => showAllEndpoints(section, total)}
+									>
+										Show all {remaining.toLocaleString()} remaining
+									</button>
+								</div>
+							{/if}
+
 							{#if requests.length === 0 && rows.length === 0}
 								<p class="pl-8 pr-4 py-1 text-2.5 text-muted">
 									{section.loader ? 'No endpoints loaded yet.' : 'No requests yet.'}
@@ -940,7 +1030,7 @@
 					>
 						<span>{hidden.toLocaleString()} more hidden by filters</span>
 						<button
-							class="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 -mr-1 hover:(bg-raised text-text) transition-colors"
+							class="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 -mr-1 hover:bg-raised hover:text-text transition-colors"
 							onclick={() => (query = '')}
 						>
 							<span class="i-lucide-x text-3"></span>
@@ -986,7 +1076,7 @@
 		</div>
 
 		<div class="flex-1 overflow-y-auto min-h-0">
-			{#each visibleHistory as entry (entry.id)}
+			{#each shownHistory as entry (entry.id)}
 				<ContextMenu.Root>
 					<ContextMenu.Trigger
 						class="block w-full text-left px-4 py-2 border-b border-border/50 hover:bg-raised transition-colors cursor-default"
@@ -1066,13 +1156,28 @@
 					{/if}
 				</p>
 			{/each}
+
+			{#if !showAllHistory && visibleHistory.length > HISTORY_PAGE}
+				<button
+					class="w-full px-4 py-2 text-2.5 text-muted text-left hover:bg-raised hover:text-text transition-colors"
+					onclick={() => (showAllHistory = true)}
+				>
+					Show all {visibleHistory.length.toLocaleString()} entries
+				</button>
+			{/if}
 		</div>
+
+		{#if history.error}
+			<p class="px-4 py-2 text-2.5 text-bad border-t border-border shrink-0">
+				{history.error}
+			</p>
+		{/if}
 	{/if}
 
 	<footer class="flex items-center gap-2 px-2 h-8 border-t border-border shrink-0">
 		<ContextMenu.Root>
 			<ContextMenu.Trigger
-				class="flex items-center gap-1.5 px-1.5 py-1 rounded text-2.5 text-muted hover:(bg-raised text-text) transition-colors cursor-default"
+				class="flex items-center gap-1.5 px-1.5 py-1 rounded text-2.5 text-muted hover:bg-raised hover:text-text transition-colors cursor-default"
 				title="Switch to {theme.resolved === 'dark' ? 'light' : 'dark'}{theme.mode === 'system'
 					? ' — currently following the system'
 					: ''}"

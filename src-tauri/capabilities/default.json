@@ -8,7 +8,15 @@
   "permissions": [
     "core:default",
     "core:app:allow-version",
-    "opener:allow-open-url",
+    "core:window:allow-destroy",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://*"
+        }
+      ]
+    },
     "updater:default",
     "process:allow-restart"
   ]

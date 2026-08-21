@@ -7,9 +7,13 @@
 	import MethodSelect from '$lib/components/MethodSelect.svelte';
 	import SectionSettings from '$lib/components/SectionSettings.svelte';
 	import Sidebar from '$lib/components/Sidebar.svelte';
+	import { listen } from '@tauri-apps/api/event';
+	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import {
 		cancelRequest,
+		flushComplete,
 		formatBytes,
+		JSON_TOOLING_LIMIT,
 		parseQuery,
 		resolveUrl,
 		sendRequest,
@@ -54,6 +58,8 @@
 		selection !== null && selection.section.id !== LOOSE_SECTION_ID
 	);
 	const draft = $derived<SavedRequest>(selection?.request ?? scratch);
+	/** The loader's generated body for the selected endpoint, if it has one. */
+	const manifestBody = $derived(selection ? collections.manifestBodyFor(selection) : null);
 	const requestKey = $derived(selection?.request.id ?? SCRATCH_ID);
 	const baseUrl = $derived(selection?.section.baseUrl ?? '');
 	const bodilessMethod = $derived(draft.method === 'GET' || draft.method === 'HEAD');
@@ -78,10 +84,51 @@
 		};
 	});
 
+	/**
+	 * The debounced saves are the one thing quitting can lose, so both ways out
+	 * wait for them.
+	 *
+	 * Cmd+Q never reaches the webview — Rust intercepts it, emits
+	 * `flush-before-exit`, and holds the exit until `flush_complete` arrives (or
+	 * a grace period runs out, so a wedged frontend can't make the app unquittable).
+	 * Cmd+W closes the window from this side: the close is cancelled only when
+	 * something is actually pending, flushed, and then the window is destroyed
+	 * for real — `close()` again would just re-enter this handler.
+	 */
+	$effect(() => {
+		const stopFlush = listen('flush-before-exit', async () => {
+			await collections.flushAll();
+			await flushComplete();
+		});
+		const stopClose = getCurrentWindow().onCloseRequested(async (event) => {
+			if (!collections.pending) return;
+			event.preventDefault();
+			await collections.flushAll();
+			getCurrentWindow().destroy();
+		});
+		return () => {
+			stopFlush.then((stop) => stop());
+			stopClose.then((stop) => stop());
+		};
+	});
+
 	// Bodies aren't loaded with the history list; pull one in when it's about
 	// to be shown.
 	$effect(() => {
 		if (shown) history.ensureBody(shown);
+	});
+
+	/**
+	 * And let go of the one no longer shown. A settled response keeps its full
+	 * body on the entry so the pane needs no round trip — but bodies run to
+	 * 32 MB, and holding every one for the session is a slow leak. The entry
+	 * re-fetches through `ensureBody` if it is ever opened again.
+	 */
+	let lastShownId: string | null = null;
+	$effect(() => {
+		const id = shown?.id ?? null;
+		if (lastShownId !== null && lastShownId !== id) history.release(lastShownId);
+		lastShownId = id;
 	});
 
 	$effect(() => {
@@ -110,11 +157,47 @@
 		collections.followPath(request);
 	});
 
+	/**
+	 * Visits every field without keeping any of it. The visit is the point:
+	 * reading a property inside an effect is what subscribes the effect to it,
+	 * and a read touches only the reference — unlike the JSON.stringify this
+	 * replaces, which copied and escaped every character of every body on every
+	 * keystroke just to notice that something had changed.
+	 */
+	function readDeep(node: unknown): void {
+		if (node === null || typeof node !== 'object') return;
+		if (Array.isArray(node)) {
+			for (const item of node) readDeep(item);
+			return;
+		}
+		for (const key of Object.keys(node)) {
+			readDeep((node as Record<string, unknown>)[key]);
+		}
+	}
+
+	/**
+	 * The request the save-watcher last ran for. The effect below fires for two
+	 * reasons — a field changed, or the selection moved — and only the first is
+	 * an edit. Picking a request must not mark it dirty on arrival.
+	 */
+	let watchedRequestId: string | null = null;
+
 	// Reading the whole section deeply is what subscribes this effect to every
-	// field the user can edit; `touch` no-ops when nothing actually changed.
+	// field the user can edit; the effect firing again for the same request is
+	// then itself the "something changed" signal `touch` used to recompute.
 	$effect(() => {
 		const section = selection?.section;
-		if (section) collections.touch(section);
+		const requestId = selection?.request.id ?? null;
+		if (!section) {
+			watchedRequestId = null;
+			return;
+		}
+		readDeep(section);
+		if (watchedRequestId !== requestId) {
+			watchedRequestId = requestId;
+			return;
+		}
+		collections.touch(section);
 	});
 
 	// A method that lost its body tab must not leave the pane on it, and vice
@@ -213,10 +296,10 @@
 
 	const filledHeaders = $derived(draft.headers.filter((header) => header.name.trim().length > 0));
 
-	/** An empty or non-JSON body shouldn't be linted as JSON. */
+	/** An empty, non-JSON or oversized body shouldn't be parsed as JSON. */
 	const responseLanguage = $derived.by<'json' | 'text'>(() => {
 		const response = shown?.response;
-		if (!response || response.isBinary) return 'text';
+		if (!response || response.isBinary || oversized) return 'text';
 		const contentType =
 			response.headers.find((header) => header.name.toLowerCase() === 'content-type')?.value ?? '';
 		return /json/i.test(contentType) ? 'json' : 'text';
@@ -279,12 +362,22 @@
 
 	const shownBody = $derived(shown?.body ?? '');
 
+	/**
+	 * Whether the shown body is past the point where JSON tooling helps.
+	 * Everything downstream keys off this one answer: no pretty-print, no
+	 * syntax tree, no lint pass — just the text, which is the only thing that
+	 * stays interactive at that size.
+	 */
+	const oversized = $derived(shownBody.length > JSON_TOOLING_LIMIT);
+
 	/** Body streamed so far, while the request is still in flight. */
 	const streaming = $derived(shown?.pending ? (shown.body ?? '') : '');
 
 	const responseText = $derived.by(() => {
 		if (!shown?.response || shown.response.isBinary) return '';
-		return responseTab === 'pretty' ? tryFormatJson(shownBody) : shownBody;
+		// `tryFormatJson` refuses oversized input on its own; skipping the call
+		// keeps this from even branching on a string that large.
+		return responseTab === 'pretty' && !oversized ? tryFormatJson(shownBody) : shownBody;
 	});
 
 	async function send() {
@@ -549,8 +642,24 @@
 									</Tabs.Trigger>
 
 									{#if requestTab === 'body'}
+										{#if manifestBody !== null}
+											<!-- Back to the generated skeleton, placeholders and all.
+											     Filling a body in is destructive to the gaps that guided
+											     it; this is the way back. Undo undoes it, so it need not
+											     ask first. -->
+											<button
+												class="btn-ghost ml-auto text-xs px-2 py-1"
+												disabled={draft.body === manifestBody}
+												title={draft.body === manifestBody
+													? 'The body already matches the generated one'
+													: 'Restore the generated body and its placeholders'}
+												onclick={() => (draft.body = manifestBody)}
+											>
+												Reset
+											</button>
+										{/if}
 										<button
-											class="btn-ghost ml-auto text-xs px-2 py-1"
+											class="btn-ghost text-xs px-2 py-1 {manifestBody === null ? 'ml-auto' : ''}"
 											onclick={() => bodyEditor?.format()}
 										>
 											Format
@@ -589,7 +698,7 @@
 												<span class="w-6 shrink-0">
 													{#if removable(queryParams, index)}
 														<button
-															class="w-6 h-6 grid place-items-center rounded text-muted hover:(bg-bad/10 text-bad) transition-colors"
+															class="w-6 h-6 grid place-items-center rounded text-muted hover:bg-bad/10 hover:text-bad transition-colors"
 															title={index === queryParams.length - 1 ? 'Clear' : 'Remove parameter'}
 															onclick={() => removeParam(index)}
 														>
@@ -624,7 +733,7 @@
 												<span class="w-6 shrink-0">
 													{#if removable(draft.headers, index)}
 														<button
-															class="w-6 h-6 grid place-items-center rounded text-muted hover:(bg-bad/10 text-bad) transition-colors"
+															class="w-6 h-6 grid place-items-center rounded text-muted hover:bg-bad/10 hover:text-bad transition-colors"
 															title={index === draft.headers.length - 1 ? 'Clear' : 'Remove header'}
 															onclick={() => removeHeader(index)}
 														>
@@ -705,9 +814,17 @@
 									<Tabs.List
 										class="flex items-center gap-1 px-2 h-9 border-b border-border bg-panel shrink-0"
 									>
+										<!-- Disabled rather than hidden past the size limit: the tab
+										     staying put with a reason on hover explains itself, where a
+										     tab that vanished would just look broken. The pane falls
+										     back to the raw text either way. -->
 										<Tabs.Trigger
 											value="pretty"
-											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
+											disabled={oversized}
+											title={oversized
+												? `Too large to pretty-print — bodies over ${formatBytes(JSON_TOOLING_LIMIT)} are shown raw`
+												: undefined}
+											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors disabled:opacity-50 disabled:hover:text-muted"
 										>
 											Pretty
 										</Tabs.Trigger>

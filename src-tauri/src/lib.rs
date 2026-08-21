@@ -43,7 +43,7 @@ mod gui {
     use crate::send::{send_authenticated, send_authenticated_streaming};
     use crate::store::{self, Section, StoreError};
     use tauri::ipc::Channel;
-    use tauri::{AppHandle, Manager, State};
+    use tauri::{AppHandle, Emitter, Manager, State};
 
     /// How many history entries the UI gets on startup.
     const HISTORY_PAGE: usize = 500;
@@ -67,10 +67,14 @@ mod gui {
         spec: RequestSpec,
         on_body: Channel<BodyEvent>,
     ) -> Result<ResponseData, HttpError> {
-        let section = spec
-            .section_id
-            .as_deref()
-            .and_then(|id| store::load_one(&paths.sections, id).ok().flatten());
+        // A section file that exists but no longer parses fails the send. The
+        // old `.ok().flatten()` here treated corrupt as absent — and sent the
+        // request anyway, with the section's auth silently missing.
+        let section = match spec.section_id.as_deref() {
+            Some(id) => store::load_one(&paths.sections, id)
+                .map_err(|err| HttpError::Section(err.to_string()))?,
+            None => None,
+        };
 
         let at = history::now_millis();
         let url = spec.url.clone();
@@ -133,8 +137,7 @@ mod gui {
 
     fn section_by_id(paths: &Paths, id: &str) -> Result<Section, BrowserError> {
         store::load_one(&paths.sections, id)
-            .ok()
-            .flatten()
+            .map_err(|err| BrowserError::Section(err.to_string()))?
             .ok_or(BrowserError::NotConfigured)
     }
 
@@ -224,6 +227,7 @@ mod gui {
                     timeout_ms: Some(30_000),
                     follow_redirects: true,
                     accept_invalid_certs: false,
+                    sensitive_header: None,
                 };
 
                 let recapture = BrowserRecapture::new(app);
@@ -248,8 +252,7 @@ mod gui {
 
     fn section_for_loader(paths: &Paths, id: &str) -> Result<Section, LoaderError> {
         store::load_one(&paths.sections, id)
-            .ok()
-            .flatten()
+            .map_err(|err| LoaderError::Section(err.to_string()))?
             .ok_or(LoaderError::NoUrl)
     }
 
@@ -332,7 +335,7 @@ mod gui {
     /// section, no state — which is what lets the editor re-run it on every
     /// keystroke, and what makes it safe to hand to an agent.
     #[tauri::command]
-    fn loader_preview(
+    async fn loader_preview(
         document: serde_json::Value,
         query: String,
     ) -> Result<Vec<loader::LoadedEndpoint>, LoaderError> {
@@ -341,15 +344,24 @@ mod gui {
 
     /// The last successful run, read from disk. Lets the UI show endpoints
     /// immediately — and while offline — without waiting on the network.
+    ///
+    /// `async`, like every command below that touches the disk or real work:
+    /// a synchronous command runs on the thread that pumps the event loop (see
+    /// the note on `set_secret`), and a slow read there is a frozen window.
+    /// The `Result` is Tauri's price for `async` + borrowed `State`.
     #[tauri::command]
-    fn loader_cache(paths: State<'_, Paths>, section_id: String) -> loader::LoaderCache {
-        loader::read_cache(&paths.loaders, &section_id).unwrap_or_default()
+    async fn loader_cache(
+        paths: State<'_, Paths>,
+        section_id: String,
+    ) -> Result<loader::LoaderCache, LoaderError> {
+        Ok(loader::read_cache(&paths.loaders, &section_id).unwrap_or_default())
     }
 
     /// Parses an OpenAPI or Swagger document. Pure — the frontend decides what to
     /// do with the result, and nothing is written until the user confirms.
+    /// The document can be megabytes, so the parse happens off the event loop.
     #[tauri::command]
-    fn parse_openapi(text: String) -> Result<openapi::Import, openapi::ImportError> {
+    async fn parse_openapi(text: String) -> Result<openapi::Import, openapi::ImportError> {
         openapi::parse(&text)
     }
 
@@ -368,15 +380,17 @@ mod gui {
     }
 
     #[tauri::command]
-    fn history_list(log: State<'_, HistoryStore>) -> Result<Vec<HistoryRecord>, HistoryError> {
+    async fn history_list(log: State<'_, HistoryStore>) -> Result<Vec<HistoryRecord>, HistoryError> {
         let records = log.list(HISTORY_PAGE)?;
         ::log::info!("loaded {} history entr(ies)", records.len());
         Ok(records)
     }
 
-    /// Bodies are fetched per entry so listing history stays cheap.
+    /// Bodies are fetched per entry so listing history stays cheap. A single
+    /// body can still be 32MB from a spill file, which is why this must not
+    /// run on the event-loop thread.
     #[tauri::command]
-    fn history_body(
+    async fn history_body(
         log: State<'_, HistoryStore>,
         id: String,
     ) -> Result<Option<String>, HistoryError> {
@@ -406,19 +420,23 @@ mod gui {
         state.cancel(&id)
     }
 
+    /// Sections, plus the files that failed to load. The UI shows the failures
+    /// by name — a corrupt file that only reached the log read exactly like
+    /// the section having been deleted.
     #[tauri::command]
-    fn list_sections(paths: State<'_, Paths>) -> Result<Vec<Section>, StoreError> {
-        let sections = store::load_all(&paths.sections)?;
+    async fn list_sections(paths: State<'_, Paths>) -> Result<store::SectionLoad, StoreError> {
+        let load = store::load_all_reporting(&paths.sections)?;
         ::log::info!(
-            "loaded {} section(s) from {}",
-            sections.len(),
+            "loaded {} section(s), {} unreadable, from {}",
+            load.sections.len(),
+            load.errors.len(),
             paths.sections.display()
         );
-        Ok(sections)
+        Ok(load)
     }
 
     #[tauri::command]
-    fn save_section(paths: State<'_, Paths>, section: Section) -> Result<(), StoreError> {
+    async fn save_section(paths: State<'_, Paths>, section: Section) -> Result<(), StoreError> {
         store::save(&paths.sections, &section)
     }
 
@@ -440,6 +458,14 @@ mod gui {
     #[tauri::command]
     fn sections_path(paths: State<'_, Paths>) -> String {
         paths.sections.display().to_string()
+    }
+
+    /// The frontend's reply to the `flush-before-exit` event: its debounced
+    /// saves are on disk, so quitting may proceed. `app.exit` carries an exit
+    /// code, which is what tells the run loop below not to intercept it again.
+    #[tauri::command]
+    fn flush_complete(app: AppHandle) {
+        app.exit(0);
     }
 
     #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -474,7 +500,8 @@ mod gui {
                 loader_cache,
                 default_loader,
                 parse_openapi,
-                loader_templates
+                loader_templates,
+                flush_complete
             ])
             .plugin(tauri_plugin_opener::init())
             .plugin(tauri_plugin_updater::Builder::new().build())
@@ -493,17 +520,20 @@ mod gui {
 
                 let app_data_dir = app.path().app_data_dir()?;
                 // The app used to be called Fetch. Carry its collections and
-                // credentials across before anything reads them.
-                if migrate::data_dir(&app_data_dir) {
-                    let sections = store::sections_dir(&app_data_dir);
-                    migrate::secrets(migrate::references(&sections).into_iter());
-                }
+                // credentials across before anything reads them. The keychain
+                // copy keys on its own marker rather than on the directory
+                // move, so a move that failed once doesn't strand it forever.
+                migrate::data_dir(&app_data_dir);
+                migrate::secrets_once(&app_data_dir);
 
                 app.manage(Paths {
                     sections: store::sections_dir(&app_data_dir),
                     loaders: loader::loaders_dir(&app_data_dir),
                 });
-                app.manage(HistoryStore::open(&app_data_dir)?);
+                // `open_or_recover`: a corrupt history database is moved aside
+                // and replaced. Plain `open` here fed the `.expect` below —
+                // one bad file meant a panic on every launch thereafter.
+                app.manage(HistoryStore::open_or_recover(&app_data_dir)?);
 
                 // An update relaunches the app while the old process is still
                 // exiting, and macOS hands focus back to whatever was behind it
@@ -516,7 +546,36 @@ mod gui {
 
                 Ok(())
             })
-            .run(tauri::generate_context!())
-            .expect("error while running tauri application");
+            .build(tauri::generate_context!())
+            .expect("error while running tauri application")
+            .run(|app_handle, event| {
+                // The frontend debounces its saves, so a Cmd+Q can land inside
+                // the 400ms where edits exist only in the webview. `code` is
+                // `None` exactly when the quit came from user interaction; our
+                // own `app.exit(0)` — `flush_complete`, or the fallback below
+                // — carries `Some`, and sails through this match untouched.
+                if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
+                    use std::sync::atomic::{AtomicBool, Ordering};
+                    static FLUSH_ASKED: AtomicBool = AtomicBool::new(false);
+                    // Asked once already: either the flush is in flight and
+                    // the user pressed Cmd+Q again, or something re-requested
+                    // exit. Letting it through beats a quit that can't quit.
+                    if FLUSH_ASKED.swap(true, Ordering::SeqCst) {
+                        return;
+                    }
+
+                    api.prevent_exit();
+                    let _ = app_handle.emit("flush-before-exit", ());
+
+                    // If the frontend never answers — hung webview, listener
+                    // not yet attached — quit anyway. Losing 400ms of edits is
+                    // recoverable; an app that refuses to exit is not.
+                    let handle = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        handle.exit(0);
+                    });
+                }
+            });
     }
 }

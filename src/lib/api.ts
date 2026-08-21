@@ -372,8 +372,28 @@ export function forgetToken(sectionId: string): Promise<void> {
 	return invoke<void>('forget_token', { sectionId });
 }
 
-export function listSections(): Promise<Section[]> {
-	return invoke<Section[]>('list_sections');
+/** A section file that could not be read. The file itself is left untouched. */
+export interface SectionFileError {
+	/** The file name, e.g. `books.toml`. */
+	file: string;
+	/** What the parser objected to. */
+	message: string;
+}
+
+/**
+ * Every section that could be read, and a report on every file that couldn't.
+ *
+ * The split matters: one corrupt TOML file must not take the rest of the
+ * collections down with it, but skipping it silently would look like data
+ * loss — the file still exists on disk, and the user is the one who can fix it.
+ */
+export interface SectionList {
+	sections: Section[];
+	errors: SectionFileError[];
+}
+
+export function listSections(): Promise<SectionList> {
+	return invoke<SectionList>('list_sections');
 }
 
 export function saveSection(section: Section): Promise<void> {
@@ -455,20 +475,13 @@ export function methodColor(method: string): string {
 	}
 }
 
-/** A release newer than the one running. */
-export interface Update {
-	/** Without the `v`. */
-	version: string;
-	/** What's running now. */
-	current: string;
-	/** The release page, for opening in a browser. */
-	url: string;
-	notes: string;
-}
-
-/** `null` when this is already the latest release. Throws if GitHub is unreachable. */
-export function checkForUpdate(): Promise<Update | null> {
-	return invoke<Update | null>('check_for_update');
+/**
+ * Tells Rust that every pending save has been written, so a user-initiated
+ * quit may proceed. The other half of the `flush-before-exit` event: Rust
+ * holds the exit open until this arrives, or gives up after a grace period.
+ */
+export function flushComplete(): Promise<void> {
+	return invoke<void>('flush_complete');
 }
 
 /**
@@ -503,8 +516,22 @@ export function formatBytes(bytes: number): string {
 	return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** Pretty-prints JSON, returning the input untouched when it isn't JSON. */
+/**
+ * Above this, JSON tooling steps aside: no pretty-printing, no syntax tree, no
+ * lint pass. Bodies can be up to 32 MB, and every one of those passes is a
+ * synchronous walk of the whole string on the main thread — a parse, a
+ * stringify and a Lezer tree over a body that size is seconds of frozen UI to
+ * produce indentation nobody asked for. Character count rather than bytes:
+ * close enough at this scale, and it's the unit everything here already has.
+ */
+export const JSON_TOOLING_LIMIT = 1.5 * 1024 * 1024;
+
+/**
+ * Pretty-prints JSON, returning the input untouched when it isn't JSON — or
+ * when it's too large to parse without freezing the UI (see the limit above).
+ */
 export function tryFormatJson(text: string): string {
+	if (text.length > JSON_TOOLING_LIMIT) return text;
 	try {
 		return JSON.stringify(JSON.parse(text), null, 2);
 	} catch {

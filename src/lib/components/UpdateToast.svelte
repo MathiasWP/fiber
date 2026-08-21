@@ -72,6 +72,25 @@
 				<DotLoader size={13} class="text-text" />
 				<p class="text-xs text-text">Installing {updates.version} — restarting…</p>
 			</div>
+		{:else if updates.stage === 'restart-failed'}
+			<!-- The update is in — only the restart went wrong. Anything that reads
+			     as "failed" here sends someone off to retry a download they don't
+			     need, when the fix is just: close Fiber, open Fiber. -->
+			<div class="flex items-start gap-2">
+				<span class="i-lucide-check-circle-2 mt-0.5 shrink-0 text-3.5 text-ok"></span>
+				<div class="min-w-0 flex-1">
+					<p class="text-xs font-medium text-text">
+						Update installed — restart Fiber to finish
+					</p>
+					<p class="mt-0.5 text-xs text-muted">
+						The automatic restart didn't happen, so {updates.version} takes over the next time
+						you open Fiber.
+					</p>
+				</div>
+			</div>
+			<div class="mt-2.5 flex justify-end">
+				<button class="btn-ghost text-xs" onclick={() => updates.reset()}>Close</button>
+			</div>
 		{:else if updates.stage === 'failed'}
 			<div class="flex items-start gap-2">
 				<span class="i-lucide-circle-alert mt-0.5 shrink-0 text-3.5 text-bad"></span>

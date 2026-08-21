@@ -45,7 +45,6 @@
 	"dependencies": {
 		"@atlaskit/pragmatic-drag-and-drop": "^3.0.0",
 		"@atlaskit/pragmatic-drag-and-drop-hitbox": "^2.1.0",
-		"@codemirror/lang-javascript": "^6.2.5",
 		"@codemirror/lang-json": "^6.0.2",
 		"@codemirror/lint": "^6.9.7",
 		"@codemirror/state": "^6.7.1",
