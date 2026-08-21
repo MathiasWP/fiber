@@ -25,3 +25,8 @@ vite.config.ts.timestamp-*
 # Release scratch — see scripts/changelog.mjs
 .release-notes.md
 .pr-body.md
+
+# Playwright
+/test-results
+/playwright-report
+/blob-report
