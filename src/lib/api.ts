@@ -346,8 +346,8 @@ export function parseOpenApi(text: string): Promise<Import> {
 }
 
 /** Worked filters for the manifest shapes people actually hit. */
-export function loaderExamples(): Promise<[string, string][]> {
-	return invoke<[string, string][]>('loader_examples');
+export function loaderTemplates(): Promise<[string, string][]> {
+	return invoke<[string, string][]>('loader_templates');
 }
 
 /** Write-only by design: there is no command to read a secret back out. */

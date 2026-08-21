@@ -348,8 +348,8 @@ mod gui {
 
     /// Worked filters for the manifest shapes people actually hit.
     #[tauri::command]
-    fn loader_examples() -> Vec<(String, String)> {
-        loader::EXAMPLES
+    fn loader_templates() -> Vec<(String, String)> {
+        loader::TEMPLATES
             .iter()
             .map(|(name, query)| (name.to_string(), query.to_string()))
             .collect()
@@ -462,7 +462,7 @@ mod gui {
                 loader_cache,
                 default_loader,
                 parse_openapi,
-                loader_examples
+                loader_templates
             ])
             .plugin(tauri_plugin_opener::init())
             .plugin(tauri_plugin_updater::Builder::new().build())
