@@ -601,7 +601,7 @@
 		</button>
 		{#if tab === 'history'}
 			<button
-				class="ml-auto p-1 rounded text-muted hover:(bg-raised text-text) transition-colors"
+				class="ml-auto p-1 rounded text-muted hover:bg-raised hover:text-text transition-colors"
 				title="Clear history"
 				onclick={() => history.clear()}
 			>
@@ -625,7 +625,7 @@
 			<Tooltip.Provider delayDuration={200}>
 				<Tooltip.Root>
 					<Tooltip.Trigger
-						class="ml-auto h-6 w-6 grid place-items-center rounded text-muted transition-colors hover:(bg-border text-text)"
+						class="ml-auto h-6 w-6 grid place-items-center rounded text-muted transition-colors hover:bg-border hover:text-text"
 						onclick={addLooseRequest}
 					>
 						<span class="i-lucide-square-plus text-4"></span>
@@ -639,7 +639,7 @@
 
 				<Tooltip.Root>
 					<Tooltip.Trigger
-						class="h-6 w-6 grid place-items-center rounded text-muted transition-colors hover:(bg-border text-text)"
+						class="h-6 w-6 grid place-items-center rounded text-muted transition-colors hover:bg-border hover:text-text"
 						onclick={() => (creating = true)}
 					>
 						<span class="i-lucide-folder-plus text-4"></span>
@@ -779,7 +779,7 @@
 													onOpenSettings(section);
 												}}
 												class="flex shrink-0 items-center rounded p-1 -my-1 text-muted
-													transition-colors hover:(bg-border text-text)"
+													transition-colors hover:bg-border hover:text-text"
 											>
 												<span class="i-lucide-settings text-3"></span>
 											</button>
@@ -969,7 +969,7 @@
 					>
 						<span>{hidden.toLocaleString()} more hidden by filters</span>
 						<button
-							class="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 -mr-1 hover:(bg-raised text-text) transition-colors"
+							class="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 -mr-1 hover:bg-raised hover:text-text transition-colors"
 							onclick={() => (query = '')}
 						>
 							<span class="i-lucide-x text-3"></span>
@@ -1098,7 +1098,7 @@
 
 			{#if !showAllHistory && visibleHistory.length > HISTORY_PAGE}
 				<button
-					class="w-full px-4 py-2 text-2.5 text-muted text-left hover:(bg-raised text-text) transition-colors"
+					class="w-full px-4 py-2 text-2.5 text-muted text-left hover:bg-raised hover:text-text transition-colors"
 					onclick={() => (showAllHistory = true)}
 				>
 					Show all {visibleHistory.length.toLocaleString()} entries
@@ -1116,7 +1116,7 @@
 	<footer class="flex items-center gap-2 px-2 h-8 border-t border-border shrink-0">
 		<ContextMenu.Root>
 			<ContextMenu.Trigger
-				class="flex items-center gap-1.5 px-1.5 py-1 rounded text-2.5 text-muted hover:(bg-raised text-text) transition-colors cursor-default"
+				class="flex items-center gap-1.5 px-1.5 py-1 rounded text-2.5 text-muted hover:bg-raised hover:text-text transition-colors cursor-default"
 				title="Switch to {theme.resolved === 'dark' ? 'light' : 'dark'}{theme.mode === 'system'
 					? ' — currently following the system'
 					: ''}"

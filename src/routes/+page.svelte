@@ -698,7 +698,7 @@
 												<span class="w-6 shrink-0">
 													{#if removable(queryParams, index)}
 														<button
-															class="w-6 h-6 grid place-items-center rounded text-muted hover:(bg-bad/10 text-bad) transition-colors"
+															class="w-6 h-6 grid place-items-center rounded text-muted hover:bg-bad/10 hover:text-bad transition-colors"
 															title={index === queryParams.length - 1 ? 'Clear' : 'Remove parameter'}
 															onclick={() => removeParam(index)}
 														>
@@ -733,7 +733,7 @@
 												<span class="w-6 shrink-0">
 													{#if removable(draft.headers, index)}
 														<button
-															class="w-6 h-6 grid place-items-center rounded text-muted hover:(bg-bad/10 text-bad) transition-colors"
+															class="w-6 h-6 grid place-items-center rounded text-muted hover:bg-bad/10 hover:text-bad transition-colors"
 															title={index === draft.headers.length - 1 ? 'Clear' : 'Remove header'}
 															onclick={() => removeHeader(index)}
 														>
@@ -824,7 +824,7 @@
 											title={oversized
 												? `Too large to pretty-print — bodies over ${formatBytes(JSON_TOOLING_LIMIT)} are shown raw`
 												: undefined}
-											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors disabled:(opacity-50 hover:text-muted)"
+											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors disabled:opacity-50 disabled:hover:text-muted"
 										>
 											Pretty
 										</Tabs.Trigger>
