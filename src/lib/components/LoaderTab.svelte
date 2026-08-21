@@ -12,6 +12,7 @@
 	import { collections } from '$lib/collections.svelte';
 	import Editor from './Editor.svelte';
 	import DotLoader from '$lib/components/DotLoader.svelte';
+	import { urlField } from '$lib/urlfield';
 
 	interface Props {
 		section: Section;
@@ -162,6 +163,7 @@
 			<span class="text-xs text-muted">Manifest URL</span>
 			<input
 				bind:value={section.loader.url}
+				use:urlField
 				spellcheck="false"
 				placeholder="/internal/endpoints"
 				class="input-base text-xs font-mono selectable"

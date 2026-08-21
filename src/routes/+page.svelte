@@ -25,6 +25,7 @@
 	import { editorFont } from '$lib/editor.svelte';
 	import { history, SCRATCH_ID, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
+	import { urlField } from '$lib/urlfield';
 
 	/**
 	 * The unsaved request you get before picking anything from the sidebar.
@@ -449,6 +450,7 @@
 							</span>
 							<input
 								bind:value={draft.path}
+								use:urlField
 								spellcheck="false"
 								placeholder="/user/get"
 								class="input-base h-8 rounded-l-none flex-1 min-w-0 font-mono selectable"
@@ -456,6 +458,7 @@
 						{:else}
 							<input
 								bind:value={draft.path}
+								use:urlField
 								spellcheck="false"
 								placeholder="https://api.example.com/users"
 								class="input-base h-8 flex-1 min-w-0 font-mono selectable"

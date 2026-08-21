@@ -24,6 +24,7 @@
 	import { theme } from '$lib/theme.svelte';
 	import DotLoader from '$lib/components/DotLoader.svelte';
 	import { getVersion } from '@tauri-apps/api/app';
+	import { urlField } from '$lib/urlfield';
 
 	interface Props {
 		onOpenSettings: (section: Section) => void;
@@ -443,6 +444,7 @@
 					<span class="text-xs text-muted">Base URL</span>
 					<input
 						bind:value={newBaseUrl}
+						use:urlField
 						spellcheck="false"
 						placeholder="https://api.example.com"
 						class="input-base text-xs font-mono"
