@@ -217,9 +217,9 @@
 	}}
 >
 	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 bg-black/50" />
+		<Dialog.Overlay class="dialog-scrim" />
 		<Dialog.Content
-			class="fixed left-1/2 top-1/2 w-[min(680px,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-panel shadow-2xl flex flex-col max-h-[80vh]"
+			class="fixed left-1/2 top-1/2 z-60 w-[min(680px,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-panel shadow-2xl flex flex-col max-h-[80vh]"
 		>
 			<div class="p-4 pb-3 border-b border-border">
 				<Dialog.Title class="text-sm font-semibold">Pick your credential</Dialog.Title>

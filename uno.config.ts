@@ -51,9 +51,26 @@ export default defineConfig({
 			'inline-flex items-center gap-1.5 rounded px-3 py-1.5 font-medium transition-colors disabled:(opacity-40 cursor-not-allowed)',
 		'btn-primary': 'btn-base bg-accent text-white hover:bg-accent/85',
 		'btn-ghost': 'btn-base text-muted hover:(bg-raised text-text)',
+		/*
+		 * The layers, low to high. Everything that floats picks one of these, so
+		 * two things that can be open at once can't argue about which is on top:
+		 *
+		 *   40/50  the settings drawer and its scrim — anchored in a pane, so it
+		 *          covers that pane and nothing else
+		 *   60     dialogs — portalled to `body`, so they cover the window, which
+		 *          means they have to sit above a drawer rather than under it
+		 *   70     menus and tooltips — a popover belongs above whatever opened
+		 *          it, and it can be opened from either of the two layers above
+		 *   100    the update toast
+		 *   200    the crash banner, which is the one thing that always shows
+		 *
+		 * A dialog with no z-index at all is the trap: it lands at `auto` beside
+		 * the app root and disappears under the drawer.
+		 */
+		'dialog-scrim': 'fixed inset-0 z-60 bg-black/50',
 		// Bits UI menus — `data-highlighted` is what it sets on the active item.
 		'menu-content':
-			'z-50 min-w-44 rounded-md border border-border bg-panel p-1 shadow-xl outline-none',
+			'z-70 min-w-44 rounded-md border border-border bg-panel p-1 shadow-xl outline-none',
 		'menu-item':
 			'flex items-center gap-2 w-full px-2 py-1.5 rounded text-xs text-text cursor-default outline-none select-none data-[highlighted]:bg-raised',
 		'menu-item-bad':
@@ -61,6 +78,6 @@ export default defineConfig({
 		'menu-separator': 'my-1 h-px bg-border',
 		// Same surface as the menus, so a hint and a menu read as one family.
 		tooltip:
-			'z-50 rounded border border-border bg-panel px-2 py-1 text-2.5 text-text shadow-lg'
+			'z-70 rounded border border-border bg-panel px-2 py-1 text-2.5 text-text shadow-lg'
 	}
 });
