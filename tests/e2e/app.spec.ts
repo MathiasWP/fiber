@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { install, response, section } from './mock-ipc';
+import { install, response, section, TEMPLATES } from './mock-ipc';
 
 const loader = {
 	enabled: true,
@@ -202,16 +202,43 @@ test('the response pane fills in while the body is still arriving', async ({ pag
 	await expect(page.getByText('200')).toBeVisible();
 });
 
-test('the loader offers templates, OpenAPI first', async ({ page }) => {
-	await install(page, { sections: [section({ loader })] });
-	await page.goto('/');
+test.describe('the templates dropdown', () => {
+	const [openapiName, openapiQuery] = TEMPLATES[0];
 
-	await page.getByLabel('Settings for Acme').click();
-	await page.getByRole('tab', { name: /^Loader/ }).click();
+	test('names the template in use and ticks it in the list', async ({ page }) => {
+		await install(page, {
+			sections: [section({ loader: { ...loader, query: openapiQuery } })]
+		});
+		await page.goto('/');
 
-	await page.getByRole('button', { name: 'Templates' }).click();
-	const options = page.getByRole('option');
-	await expect(options.first()).toHaveText('OpenAPI');
+		await page.getByLabel('Settings for Acme').click();
+		await page.getByRole('tab', { name: /^Loader/ }).click();
+
+		// The trigger says which one, rather than just "Templates".
+		const trigger = page.getByRole('button', { name: openapiName });
+		await expect(trigger).toBeVisible();
+
+		await trigger.click();
+		const options = page.getByRole('option');
+		await expect(options.first()).toContainText(openapiName);
+
+		// And the one in use is the one marked.
+		await expect(options.first()).toHaveAttribute('aria-selected', 'true');
+		// Unselected items carry no aria-selected at all, rather than 'false'.
+		await expect(options.nth(1)).not.toHaveAttribute('aria-selected', 'true');
+	});
+
+	test('reads as Custom once the filter no longer matches one', async ({ page }) => {
+		await install(page, {
+			sections: [section({ loader: { ...loader, query: '.paths | keys' } })]
+		});
+		await page.goto('/');
+
+		await page.getByLabel('Settings for Acme').click();
+		await page.getByRole('tab', { name: /^Loader/ }).click();
+
+		await expect(page.getByRole('button', { name: 'Custom' })).toBeVisible();
+	});
 });
 
 /**
@@ -229,7 +256,8 @@ test('a body written against a loaded endpoint survives the endpoint vanishing',
 		method: 'POST',
 		path: '/users',
 		name: 'createUser',
-		description: ''
+		description: '',
+		body: ''
 	};
 
 	await install(page, {
@@ -258,4 +286,42 @@ test('a body written against a loaded endpoint survives the endpoint vanishing',
 
 	// And the work is still there.
 	await expect(page.locator('.cm-content').first()).toContainText('keep-me');
+});
+
+test('Done runs the loader, so a filter just edited takes effect', async ({ page }) => {
+	await install(page, { sections: [section({ loader })], loaded: [] });
+	await page.goto('/');
+
+	await page.getByLabel('Settings for Acme').click();
+
+	const ran = () => page.evaluate(() => window.__FIBER_TEST__.calls.some((c) => c.cmd === 'run_loader'));
+	expect(await ran(), 'nothing should have run just from opening settings').toBe(false);
+
+	await page.getByRole('button', { name: 'Done' }).click();
+	await expect.poll(ran, { message: 'Done should refresh the endpoints' }).toBe(true);
+});
+
+/**
+ * The reported gap: endpoints discovered by a loader arrived with an empty
+ * editor, because a jq filter maps shape to shape and knows nothing about JSON
+ * Schema. The body is derived in Rust now; this covers the wiring that carries
+ * it to the editor.
+ */
+test('a loaded endpoint arrives with the body its manifest declared', async ({ page }) => {
+	await install(page, {
+		sections: [section({ loader })],
+		loaded: [
+			{
+				method: 'POST',
+				path: '/activity/backfill-activity',
+				name: 'activity_backfill_activity',
+				description: '',
+				body: '{\n  "offset": 0,\n  "dryRun": false\n}'
+			}
+		]
+	});
+	await page.goto('/');
+
+	await page.getByText('activity_backfill_activity').click();
+	await expect(page.locator('.cm-content').first()).toContainText('"dryRun"');
 });

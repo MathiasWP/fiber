@@ -106,6 +106,11 @@ pub struct LoadedEndpoint {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// A JSON body to start from. Derived from the manifest when it is an
+    /// OpenAPI document; `default` so a cache written before this existed, and
+    /// a filter that says nothing about bodies, both still read.
+    #[serde(default)]
+    pub body: String,
 }
 
 impl LoadedEndpoint {
@@ -320,7 +325,9 @@ pub async fn run(
 
         loop {
             let document = fetch_json(&fetcher, &url, &method).await?;
-            endpoints.extend(to_endpoints(&apply(&config.query, &document)?)?);
+            let mut mapped = to_endpoints(&apply(&config.query, &document)?)?;
+            fill_bodies(&document, &mut mapped);
+            endpoints.extend(mapped);
             pages += 1;
 
             if config.next.trim().is_empty() || pages >= MAX_PAGES {
@@ -355,6 +362,38 @@ async fn fetch_json(
         return Err(LoaderError::Status(response.status));
     }
     serde_json::from_str(&response.body).map_err(|err| LoaderError::NotJson(err.to_string()))
+}
+
+/// Fills in request bodies, when the manifest turns out to be OpenAPI.
+///
+/// A jq filter maps a document to endpoints, and that is all it should do:
+/// walking a JSON Schema into an example is not something anyone should have to
+/// write in jq. So the body comes from here instead, off the same document the
+/// filter just read, through the importer's own schema walk — which means a
+/// collection filled by a loader and one filled by importing the file end up
+/// with the same bodies.
+///
+/// Anything else — a routes array, a bespoke manifest — has no `paths`, so this
+/// does nothing and every endpoint keeps the empty body it arrived with.
+fn fill_bodies(document: &serde_json::Value, endpoints: &mut [LoadedEndpoint]) {
+    let Some(paths) = document.get("paths").and_then(|paths| paths.as_object()) else {
+        return;
+    };
+
+    for endpoint in endpoints {
+        // A filter that supplies its own body outranks anything derived.
+        if !endpoint.body.is_empty() {
+            continue;
+        }
+        let operation = paths
+            .get(&endpoint.path)
+            .and_then(|item| item.get(endpoint.method.to_ascii_lowercase()))
+            .and_then(|operation| operation.as_object());
+
+        if let Some(operation) = operation {
+            endpoint.body = crate::openapi::request_body(document, operation);
+        }
+    }
 }
 
 /// `<app data>/loaders`
@@ -570,6 +609,69 @@ mod tests {
         assert_eq!(endpoints.len(), MAX_PAGES);
     }
 
+
+    /// The reported gap: a loader pointed at an OpenAPI document listed the
+    /// endpoints but left every body empty, because a jq filter maps shape to
+    /// shape and knows nothing about JSON Schema.
+    #[tokio::test]
+    async fn an_openapi_manifest_fills_in_bodies() {
+        let manifest = r##"{
+            "openapi": "3.1.1",
+            "paths": {
+                "/activity/backfill-activity": {
+                    "post": {
+                        "operationId": "activity_backfill_activity",
+                        "requestBody": {
+                            "required": true,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "offset": { "type": "number" },
+                                            "messageIndex": { "type": "number" },
+                                            "dryRun": { "type": "boolean" }
+                                        },
+                                        "additionalProperties": false
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "get": { "operationId": "activity_status" }
+                }
+            }
+        }"##;
+
+        let openapi = TEMPLATES.iter().find(|(name, _)| *name == "OpenAPI").unwrap().1;
+        let (endpoints, _) = run(&config(openapi), answering(manifest)).await.unwrap();
+
+        let post = endpoints.iter().find(|e| e.method == "POST").unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&post.body).unwrap(),
+            json!({ "offset": 0, "messageIndex": 0, "dryRun": false })
+        );
+
+        // A GET declares no body, and gets none.
+        let get = endpoints.iter().find(|e| e.method == "GET").unwrap();
+        assert_eq!(get.body, "");
+    }
+
+    /// A manifest that is not OpenAPI has no `paths`, so nothing is derived and
+    /// nothing breaks.
+    #[tokio::test]
+    async fn a_routes_manifest_is_left_alone() {
+        let routes = TEMPLATES.iter().find(|(name, _)| *name == "Array of routes").unwrap().1;
+        let (endpoints, _) = run(
+            &config(routes),
+            answering(r#"{"routes":[{"verb":"post","url":"/user","handler":"createUser"}]}"#),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(endpoints[0].body, "");
+    }
+
     #[tokio::test]
     async fn reports_a_failed_or_rejected_manifest_request() {
         let failing: Fetcher = Arc::new(|_| Box::pin(async { Err("could not connect".into()) }));
@@ -679,12 +781,14 @@ mod tests {
                 path: "/a".into(),
                 name: "a".into(),
                 description: String::new(),
+                body: String::new(),
             },
             LoadedEndpoint {
                 method: "GET".into(),
                 path: "/gone".into(),
                 name: "gone".into(),
                 description: String::new(),
+                body: String::new(),
             },
         ];
         let after = vec![
@@ -694,12 +798,14 @@ mod tests {
                 path: "/a".into(),
                 name: "renamed".into(),
                 description: String::new(),
+                body: String::new(),
             },
             LoadedEndpoint {
                 method: "POST".into(),
                 path: "/new".into(),
                 name: "new".into(),
                 description: String::new(),
+                body: String::new(),
             },
         ];
 

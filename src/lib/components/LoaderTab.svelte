@@ -31,6 +31,11 @@
 	let templates = $state<[string, string][]>([]);
 	let runSummary = $state<string | null>(null);
 
+	/** The template the filter still matches, or nothing once it is edited. */
+	const current = $derived(
+		templates.find(([, query]) => query === section.loader?.query)?.[0] ?? null
+	);
+
 	const running = $derived(collections.loading[section.id] === true);
 	const cached = $derived(collections.loaderCaches[section.id]);
 
@@ -187,15 +192,18 @@
 		{#if templates.length}
 			<Select.Root
 				type="single"
-				value=""
+				value={section.loader.query}
 				onValueChange={(next) => {
 					if (next && section.loader) section.loader.query = next;
 				}}
 			>
 				<!-- The chevron is the point: without it a Select trigger reads as a
-				     button that does something, rather than one that offers a list. -->
+				     button that does something, rather than one that offers a list.
+				     The name matters too — the filter below is the truth, but it is
+				     a line of jq, and "OpenAPI" answers "what is this" at a glance.
+				     Edit it and the name goes honest rather than stale. -->
 				<Select.Trigger class="btn-ghost text-xs ml-auto">
-					Templates
+					{current ?? 'Custom'}
 					<span class="i-lucide-chevron-down text-3"></span>
 				</Select.Trigger>
 				<Select.Portal>
@@ -203,7 +211,14 @@
 						<Select.Viewport>
 							{#each templates as [name, query] (name)}
 								<Select.Item value={query} label={name} class="menu-item">
-									{name}
+									{#snippet children({ selected })}
+										<!-- Held rather than hidden, so the names stay in one
+										     column whether or not one is ticked. -->
+										<span
+											class="i-lucide-check text-3 shrink-0 {selected ? '' : 'opacity-0'}"
+										></span>
+										{name}
+									{/snippet}
 								</Select.Item>
 							{/each}
 						</Select.Viewport>

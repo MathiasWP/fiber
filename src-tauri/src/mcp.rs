@@ -706,6 +706,7 @@ mod tests {
                     path: "/orders".into(),
                     name: "createOrder".into(),
                     description: String::new(),
+                    body: String::new(),
                 }],
             },
         )

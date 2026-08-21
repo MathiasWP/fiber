@@ -143,7 +143,7 @@ const MAX_DEPTH: usize = 6;
 ///
 /// JSON only. A form-encoded or binary body has no honest JSON skeleton, so
 /// those are left empty rather than guessed at.
-fn request_body(
+pub(crate) fn request_body(
     document: &serde_json::Value,
     operation: &serde_json::Map<String, serde_json::Value>,
 ) -> String {
@@ -485,6 +485,7 @@ paths:
                 path: "/users".into(),
                 name: String::new(),
                 description: String::new(),
+                body: String::new(),
             }
             .key()
         );
