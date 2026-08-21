@@ -287,3 +287,16 @@ test('a body written against a loaded endpoint survives the endpoint vanishing',
 	// And the work is still there.
 	await expect(page.locator('.cm-content').first()).toContainText('keep-me');
 });
+
+test('Done runs the loader, so a filter just edited takes effect', async ({ page }) => {
+	await install(page, { sections: [section({ loader })], loaded: [] });
+	await page.goto('/');
+
+	await page.getByLabel('Settings for Acme').click();
+
+	const ran = () => page.evaluate(() => window.__FIBER_TEST__.calls.some((c) => c.cmd === 'run_loader'));
+	expect(await ran(), 'nothing should have run just from opening settings').toBe(false);
+
+	await page.getByRole('button', { name: 'Done' }).click();
+	await expect.poll(ran, { message: 'Done should refresh the endpoints' }).toBe(true);
+});

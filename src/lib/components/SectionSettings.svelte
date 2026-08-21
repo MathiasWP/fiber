@@ -188,6 +188,22 @@
 		}
 	}
 
+	/**
+	 * Done, as opposed to dismissing.
+	 *
+	 * A loader configured in here is worth nothing until it has run, and the
+	 * alternative was closing this and then going to find Refresh. Deliberately
+	 * not in `close()`: Escape and the scrim go through there too, and neither
+	 * of those should fire a request at someone's API.
+	 *
+	 * Not awaited — the drawer shuts straight away and the sidebar shows the
+	 * refresh running, which is where the result is going to appear anyway.
+	 */
+	function done() {
+		if (section?.loader?.enabled) void collections.refresh(section);
+		close();
+	}
+
 	function close() {
 		if (section) {
 			collections.refreshCredential(section);
@@ -537,7 +553,7 @@
 				</Tabs.Root>
 
 				<div class="flex justify-end gap-2 p-4 pt-0">
-					<button class="btn-primary text-xs" onclick={close}>Done</button>
+					<button class="btn-primary text-xs" onclick={done}>Done</button>
 				</div>
 			{/if}
 	</Dialog.Content>
