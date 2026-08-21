@@ -1,5 +1,19 @@
 # fiber
 
+## 0.10.0
+
+### Minor Changes
+
+- [#43](https://github.com/MathiasWP/fiber/pull/43) [`337f6e1`](https://github.com/MathiasWP/fiber/commit/337f6e16964de41d5f58533691d3c88f32e4322d) Thanks [@MathiasWP](https://github.com/MathiasWP)! - A request body built from an OpenAPI schema now shows the name of each type where a value goes — `"offset": number` rather than `"offset": 0` — marked in the editor as a field to fill. Tab and Shift-Tab move between the ones still empty and select them so typing replaces them, and a comma carries you on to the next. The body stays invalid until every one is filled, which is the point.
+
+- [#42](https://github.com/MathiasWP/fiber/pull/42) [`89fd771`](https://github.com/MathiasWP/fiber/commit/89fd77132a4d7c025cd2325533644b0c51a036ca) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Endpoints refresh themselves when you come back to the window, not only at startup — so a loader left open all day no longer shows yesterday's routes. A collection spins a small icon while it is refreshing, so an automatic refresh is something you can see rather than endpoints changing on their own. New loaders default to a five minute TTL; 0 still means "only when asked".
+
+### Patch Changes
+
+- [#44](https://github.com/MathiasWP/fiber/pull/44) [`0e0bb99`](https://github.com/MathiasWP/fiber/commit/0e0bb99be025031330c4c042553a7aec75b559f6) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Searching the endpoints no longer buries what you meant. A term that appears whole in a path now ranks above one whose letters merely appear in order, and when anything matches properly the near-misses are dropped rather than listed alongside — so `/list` stops returning every path containing those five letters somewhere. A typo, which has no proper match to lose to, still guesses as it did before.
+
+- [#42](https://github.com/MathiasWP/fiber/pull/42) [`d01691d`](https://github.com/MathiasWP/fiber/commit/d01691d74211f1e2a3666260f1110bc0205d2cb3) Thanks [@MathiasWP](https://github.com/MathiasWP)! - The sidebar does much less work per render with a large collection: the loaded-endpoint rows were rebuilt five times over on every update, and matching them against your saved bodies was quadratic. Opening several endpoints in a row now writes the collection once rather than once each.
+
 ## 0.9.1
 
 ### Patch Changes
