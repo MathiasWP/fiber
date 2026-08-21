@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { Dialog } from 'bits-ui';
 	import { methodColor, type Section } from '$lib/api';
-	import { allRequests, collections, fuzzyScore, type Selection } from '$lib/collections.svelte';
+	import { allRequests, collections, type Selection } from '$lib/collections.svelte';
+	import { fuzzyScore, hasRun, order, type Scored } from '$lib/search';
 
 	interface Props {
 		open?: boolean;
@@ -18,18 +19,20 @@
 		const needle = query.trim();
 		if (!needle) return entries.slice(0, 50);
 
-		return entries
-			.map((entry) => ({
-				entry,
+		const scored = entries
+			.map((item) => ({
+				item,
 				score: fuzzyScore(
-					`${entry.section.name} ${entry.request.name} ${entry.request.method} ${entry.request.path}`,
+					`${item.section.name} ${item.request.name} ${item.request.method} ${item.request.path}`,
 					needle
 				)
 			}))
-			.filter((match) => match.score !== null)
-			.sort((a, b) => a.score! - b.score!)
-			.slice(0, 50)
-			.map((match) => match.entry);
+			.filter((match): match is Scored<Selection> => match.score !== null);
+
+		// Scattered matches only when nothing matched properly — otherwise a
+		// search for "/list" buries the real ones under every path that happens
+		// to contain those letters somewhere.
+		return order(scored, hasRun(scored)).slice(0, 50);
 	});
 
 	interface Group {
@@ -43,22 +46,22 @@
 	// appears where its best-scoring match does, and its items keep that ranking.
 	const groups = $derived.by<Group[]>(() => {
 		const byId = new Map<string, Group>();
-		const order: Group[] = [];
+		const ordered: Group[] = [];
 		for (const match of matches) {
 			let group = byId.get(match.section.id);
 			if (!group) {
 				group = { section: match.section, items: [], offset: 0 };
 				byId.set(match.section.id, group);
-				order.push(group);
+				ordered.push(group);
 			}
 			group.items.push(match);
 		}
 		let offset = 0;
-		for (const group of order) {
+		for (const group of ordered) {
 			group.offset = offset;
 			offset += group.items.length;
 		}
-		return order;
+		return ordered;
 	});
 
 	/** Every match in render order, so arrow keys move through them as one list. */

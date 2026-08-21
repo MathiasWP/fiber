@@ -8,12 +8,8 @@
 		type SavedRequest,
 		type Section
 	} from '$lib/api';
-	import {
-		collections,
-		fuzzyScore,
-		NEW_REQUEST_NAME,
-		type LoadedRow
-	} from '$lib/collections.svelte';
+	import { collections, NEW_REQUEST_NAME, type LoadedRow } from '$lib/collections.svelte';
+	import { fuzzyScore, hasRun, order, type Scored } from '$lib/search';
 	import {
 		requestRow as dragRequest,
 		sectionHeader,
@@ -68,45 +64,74 @@
 		total: number;
 	}
 
-	/** Fuzzy-filtered and ordered by score, best first. */
-	function rank<T>(items: T[], text: (item: T) => string, needle: string): T[] {
-		return items
-			.map((item) => ({ item, score: fuzzyScore(text(item), needle) }))
-			.filter((match) => match.score !== null)
-			.sort((a, b) => a.score! - b.score!)
-			.map((match) => match.item);
-	}
-
 	const label = (request: SavedRequest) => `${request.name} ${request.method} ${request.path}`;
 
 	// A search hides the collapsed state — matches are no use if you can't see them.
 	const searching = $derived(query.trim().length > 0);
 
 	/**
-	 * Every collection, with its rows and counts worked out once.
+	 * Everything the sidebar shows, worked out in one pass.
 	 *
 	 * `rowsFor` walks the whole loader cache and builds a row per endpoint, so
 	 * it is called exactly once per collection here rather than the five times
 	 * it used to be across the derives and the template. Against a manifest of
 	 * several hundred endpoints that was thousands of objects rebuilt on every
 	 * render — which is to say, on every click.
+	 *
+	 * The search runs here too, and in two phases: score everything, then decide
+	 * whether the scattered matches are worth showing. That decision spans the
+	 * whole sidebar, which is why it cannot live inside a per-collection helper.
 	 */
-	const scanned = $derived.by<VisibleSection[]>(() => {
+	const found = $derived.by(() => {
 		const needle = query.trim();
+		const loose = collections.looseSection?.requests ?? [];
+		const walked = collections.collectionSections.map((section) => ({
+			section,
+			all: collections.rowsFor(section)
+		}));
 
-		return collections.collectionSections.map((section) => {
-			const rows = collections.rowsFor(section);
-			const total = section.requests.length + rows.length;
-
-			if (!needle) return { section, requests: section.requests, rows, total };
+		if (!needle) {
 			return {
-				section,
-				requests: rank(section.requests, label, needle),
-				rows: rank(rows, (row) => label(row.request), needle),
-				total
+				sections: walked.map(({ section, all }) => ({
+					section,
+					requests: section.requests,
+					rows: all,
+					total: section.requests.length + all.length
+				})),
+				loose
 			};
-		});
+		}
+
+		const score = <T,>(items: T[], text: (item: T) => string): Scored<T>[] =>
+			items
+				.map((item) => ({ item, score: fuzzyScore(text(item), needle) }))
+				.filter((match): match is Scored<T> => match.score !== null);
+
+		const scored = walked.map(({ section, all }) => ({
+			section,
+			total: section.requests.length + all.length,
+			requests: score(section.requests, label),
+			rows: score(all, (row) => label(row.request))
+		}));
+		const looseScored = score(loose, label);
+
+		const runsOnly =
+			hasRun(looseScored) ||
+			scored.some((entry) => hasRun(entry.requests) || hasRun(entry.rows));
+
+		return {
+			sections: scored.map((entry) => ({
+				section: entry.section,
+				total: entry.total,
+				requests: order(entry.requests, runsOnly),
+				rows: order(entry.rows, runsOnly)
+			})),
+			loose: order(looseScored, runsOnly)
+		};
 	});
+
+	const scanned = $derived(found.sections);
+	const looseRequests = $derived(found.loose);
 
 	const visible = $derived(
 		searching ? scanned.filter((entry) => entry.requests.length > 0 || entry.rows.length > 0) : scanned
@@ -156,14 +181,6 @@
 		history.stopViewing();
 		collections.selectLoaded(section, row);
 	}
-
-	const looseRequests = $derived.by(() => {
-		const section = collections.looseSection;
-		if (!section) return [];
-		const needle = query.trim();
-		if (!needle) return section.requests;
-		return rank(section.requests, label, needle);
-	});
 
 	async function addLooseRequest() {
 		history.stopViewing();

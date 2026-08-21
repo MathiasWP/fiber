@@ -529,3 +529,55 @@ test.describe('filling in a generated body', () => {
 		await expect(page.locator('.cm-slot')).toHaveCount(0);
 	});
 });
+
+test.describe('what a search matches', () => {
+	const paths = [
+		'/activity/backfill-activity',
+		'/plugins/installation/invoke',
+		'/portfolio/asset/move',
+		'/users/list'
+	];
+
+	const withPaths = async (page: import('@playwright/test').Page) => {
+		await install(page, {
+			sections: [
+				section({
+					requests: paths.map((path, i) => ({
+						id: `r${i}`,
+						// The OpenAPI template names endpoints by path, so that is what
+						// the sidebar shows and what a search is matched against.
+						name: path,
+						method: 'POST',
+						path,
+						body: '',
+						headers: []
+					}))
+				})
+			]
+		});
+		await page.goto('/');
+		return page.getByPlaceholder('Search endpoints…');
+	};
+
+	/**
+	 * The reported case. Every one of those paths contains a `/`, an `l`, an
+	 * `i`, an `s` and a `t` somewhere, so a subsequence match returns all of
+	 * them — and scoring on gaps alone ranked the real hit no better.
+	 */
+	test('a term that matches properly hides the near-misses', async ({ page }) => {
+		const search = await withPaths(page);
+		await search.fill('/list');
+
+		await expect(page.getByText('/users/list')).toBeVisible();
+		await expect(page.getByText('/plugins/installation/invoke')).toBeHidden();
+		await expect(page.getByText('/portfolio/asset/move')).toBeHidden();
+	});
+
+	/** But a typo has no proper match to lose to, so guessing is still useful. */
+	test('a typo still finds what you meant', async ({ page }) => {
+		const search = await withPaths(page);
+		await search.fill('bacfkill-activ');
+
+		await expect(page.getByText('/activity/backfill-activity')).toBeVisible();
+	});
+});
