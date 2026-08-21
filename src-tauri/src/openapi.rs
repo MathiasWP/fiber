@@ -328,13 +328,19 @@ fn skeleton(
         }
         return serde_json::Value::Object(merged);
     }
+    // A branch that only says `null` is the nullable half of the choice, not
+    // the interesting one — `anyOf: [{"type": "null"}, {"type": "string"}]` is
+    // a nullable string, and answering `null` hides the string. Same reasoning
+    // as `type_of` below, for the other spelling of the same idea.
     for key in ["oneOf", "anyOf"] {
-        if let Some(first) = object
-            .get(key)
-            .and_then(|it| it.as_array())
-            .and_then(|it| it.first())
-        {
-            return skeleton(document, first, depth, trail);
+        if let Some(branches) = object.get(key).and_then(|it| it.as_array()) {
+            let pick = branches
+                .iter()
+                .find(|branch| !only_null(branch))
+                .or_else(|| branches.first());
+            if let Some(branch) = pick {
+                return skeleton(document, branch, depth, trail);
+            }
         }
     }
 
@@ -380,6 +386,14 @@ fn skeleton(
         // to have.
         _ => type_name("unknown"),
     }
+}
+
+/// Whether a branch of a choice says nothing but "or null".
+fn only_null(branch: &serde_json::Value) -> bool {
+    branch
+        .get("type")
+        .and_then(|it| it.as_str())
+        .is_some_and(|kind| kind == "null")
 }
 
 /// A schema's type, tolerating JSON Schema's two spellings of it.
@@ -669,6 +683,55 @@ paths:
         // A schema with nothing in it is a gap too, and says so rather than
         // claiming the API wants null.
         assert!(body.contains("\"anything\": unknown"), "{body}");
+    }
+
+    /// The other spelling of nullable, and the one real specs in the wild use:
+    /// a choice with a `null` branch in it. Which side it sits on is arbitrary,
+    /// so the branch that says something wins either way.
+    #[test]
+    fn a_nullable_choice_names_the_half_that_says_something() {
+        let spec = r##"{
+            "openapi": "3.1.0",
+            "info": { "title": "Acme", "version": "1" },
+            "paths": {
+                "/users": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "after": {
+                                                "anyOf": [{ "type": "string" }, { "type": "null" }]
+                                            },
+                                            "before": {
+                                                "anyOf": [{ "type": "null" }, { "type": "string" }]
+                                            },
+                                            "either": {
+                                                "oneOf": [{ "type": "null" }, { "type": "integer" }]
+                                            },
+                                            "open": {
+                                                "anyOf": [{}, { "type": "null" }]
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let import = parse(spec).unwrap();
+        let body = &import.endpoints[0].body;
+
+        assert!(body.contains("\"after\": string"), "{body}");
+        assert!(body.contains("\"before\": string"), "{body}");
+        assert!(body.contains("\"either\": integer"), "{body}");
+        // Nothing to say on either side, so it is a gap rather than a `null`.
+        assert!(body.contains("\"open\": unknown"), "{body}");
     }
 
     /// An example the author wrote beats one derived from the schema.

@@ -79,14 +79,21 @@ test('the caret lands at the front of the field, not after it', async ({ page })
 	await openBody(page, '{\n  "a": string\n}');
 	await page.keyboard.press('Tab');
 
-	const where = await page.evaluate(() => {
-		const slot = document.querySelector('.cm-slot')!.getBoundingClientRect();
-		const caret = document.querySelector('.cm-cursor-primary')!.getBoundingClientRect();
-		return { slotLeft: Math.round(slot.left), slotRight: Math.round(slot.right), caret: Math.round(caret.left) };
-	});
+	// Which side of the field, not which pixel: the runners disagree about font
+	// metrics, and an exact left edge is a test about Chromium's text layout.
+	// Polled because the caret element is positioned a frame after the
+	// selection changes.
+	await expect
+		.poll(() =>
+			page.evaluate(() => {
+				const slot = document.querySelector('.cm-slot')!.getBoundingClientRect();
+				const caret = document.querySelector('.cm-cursor-primary')!.getBoundingClientRect();
+				const middle = (slot.left + slot.right) / 2;
+				return caret.left < middle ? 'front' : 'back';
+			})
+		)
+		.toBe('front');
 
-	expect(where.caret).toBe(where.slotLeft);
-	expect(where.caret).not.toBe(where.slotRight);
 	// Still the whole field, so typing replaces it.
 	expect(await selected(page)).toBe('string');
 });
