@@ -142,7 +142,7 @@
 	 * Each row carries interactive machinery (a context menu and, for saved
 	 * requests, a drag target), so mounting all of them when a header opens
 	 * makes that click noticeably slow. Keep the initial mount to a useful first
-	 * page and let the person reveal the rest in the same order.
+	 * page, then mount the next page as the sidebar reaches its end.
 	 */
 	const ENDPOINT_PAGE_SIZE = 100;
 	let endpointLimits = $state<Record<string, number>>({});
@@ -167,12 +167,40 @@
 		return Math.max(0, requests.length + rows.length - endpointLimit(section));
 	}
 
-	function showMoreEndpoints(section: Section): void {
+	function loadMoreEndpoints(section: Section): void {
 		endpointLimits[section.id] = endpointLimit(section) + ENDPOINT_PAGE_SIZE;
 	}
 
-	function showAllEndpoints(section: Section, total: number): void {
-		endpointLimits[section.id] = total;
+	/**
+	 * Extends a long collection just before its current final row scrolls into
+	 * view. The observer sees through the sidebar's scroll container, so this
+	 * works without handling or measuring every scroll event ourselves.
+	 */
+	function loadWhenVisible(node: HTMLElement, callback: () => void) {
+		let current = callback;
+		let loading = false;
+		const observer = new IntersectionObserver(
+			([entry]) => {
+				if (!entry.isIntersecting || loading) return;
+				loading = true;
+				current();
+				// Svelte applies the new rows before the next frame. The marker moves
+				// below the viewport then, and can trigger another page on a later
+				// scroll without one intersection producing several pages at once.
+				requestAnimationFrame(() => (loading = false));
+			},
+			{ rootMargin: '300px 0px' }
+		);
+		observer.observe(node);
+
+		return {
+			update(next: () => void) {
+				current = next;
+			},
+			destroy() {
+				observer.disconnect();
+			}
+		};
 	}
 
 	/**
@@ -984,20 +1012,13 @@
 							{/each}
 
 							{#if remaining > 0}
-								<div class="flex items-center gap-2 pl-8 pr-4 py-1.5 text-2.5 text-muted">
-									<button
-										class="hover:text-text transition-colors"
-										onclick={() => showMoreEndpoints(section)}
-									>
-										Show {Math.min(ENDPOINT_PAGE_SIZE, remaining)} more
-									</button>
-									<button
-										class="ml-auto hover:text-text transition-colors"
-										onclick={() => showAllEndpoints(section, total)}
-									>
-										Show all {remaining.toLocaleString()} remaining
-									</button>
-								</div>
+								<!-- An invisible marker, not a "load more" control: scrolling
+								     stays continuous while only a bounded number of interactive
+								     rows are mounted at each step. -->
+								<div
+									use:loadWhenVisible={() => loadMoreEndpoints(section)}
+									aria-hidden="true"
+								></div>
 							{/if}
 
 							{#if requests.length === 0 && rows.length === 0}

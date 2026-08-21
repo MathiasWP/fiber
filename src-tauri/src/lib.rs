@@ -54,6 +54,16 @@ mod gui {
         loaders: PathBuf,
     }
 
+    /// The cache data the sidebar needs at startup. Schemas stay on disk until
+    /// their endpoint is selected, rather than making every large collection's
+    /// initial IPC payload carry hundreds of duplicated OpenAPI components.
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LoaderCacheView {
+        loaded_at: i64,
+        endpoints: Vec<loader::LoadedEndpoint>,
+    }
+
     /// Sends, and records the outcome. History is written here rather than by the
     /// frontend so the body never has to travel back down the IPC bridge, and so
     /// an entry exists even if the window dies mid-flight.
@@ -269,7 +279,7 @@ mod gui {
         let config = section.loader.clone().ok_or(LoaderError::NoUrl)?;
         let fetcher = loader_fetcher(&app, http_state.inner(), auth_state.inner(), &section);
 
-        let (endpoints, pages) = loader::run(&config, fetcher).await?;
+        let (endpoints, schemas, pages) = loader::run(&config, fetcher).await?;
 
         let previous = loader::read_cache(&paths.loaders, &section_id).unwrap_or_default();
         let (added, removed) = loader::diff(&previous.endpoints, &endpoints);
@@ -281,6 +291,7 @@ mod gui {
             &loader::LoaderCache {
                 loaded_at,
                 endpoints: endpoints.clone(),
+                schemas,
             },
         ) {
             ::log::warn!("could not cache loader output: {err}");
@@ -353,8 +364,24 @@ mod gui {
     async fn loader_cache(
         paths: State<'_, Paths>,
         section_id: String,
-    ) -> Result<loader::LoaderCache, LoaderError> {
-        Ok(loader::read_cache(&paths.loaders, &section_id).unwrap_or_default())
+    ) -> Result<LoaderCacheView, LoaderError> {
+        let cache = loader::read_cache(&paths.loaders, &section_id).unwrap_or_default();
+        Ok(LoaderCacheView {
+            loaded_at: cache.loaded_at,
+            endpoints: cache.endpoints,
+        })
+    }
+
+    /// Retrieves one request-body schema only when its endpoint is opened.
+    #[tauri::command]
+    async fn loader_schema(
+        paths: State<'_, Paths>,
+        section_id: String,
+        endpoint_id: String,
+    ) -> Result<Option<serde_json::Value>, LoaderError> {
+        Ok(loader::read_cache(&paths.loaders, &section_id)
+            .and_then(|cache| cache.schemas.get(&endpoint_id).cloned())
+        )
     }
 
     /// Parses an OpenAPI or Swagger document. Pure — the frontend decides what to
@@ -498,6 +525,7 @@ mod gui {
                 loader_probe,
                 loader_preview,
                 loader_cache,
+                loader_schema,
                 default_loader,
                 parse_openapi,
                 loader_templates,

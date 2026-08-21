@@ -178,6 +178,55 @@ pub(crate) fn request_body(
     if derived { unwrap_types(&text) } else { text }
 }
 
+/// The JSON Schema that governs an operation's JSON request body.
+///
+/// Local references are expanded before the schema leaves Rust. The editor gets
+/// this only for the endpoint being edited, and has no copy of the full OpenAPI
+/// document with which to resolve `#/components/...` itself.
+pub(crate) fn request_schema(
+    document: &serde_json::Value,
+    operation: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let schema = json_media(document, operation)?.get("schema")?;
+    Some(resolve_schema(document, schema, &mut Vec::new()))
+}
+
+/// Resolves local schema references recursively. A circular reference remains
+/// as-is at its second occurrence; that preserves the useful outer constraints
+/// without making either the cache or the browser representation infinite.
+fn resolve_schema(
+    document: &serde_json::Value,
+    schema: &serde_json::Value,
+    trail: &mut Vec<String>,
+) -> serde_json::Value {
+    if let Some(reference) = schema.get("$ref").and_then(|value| value.as_str()) {
+        if reference.starts_with("#/") && !trail.iter().any(|seen| seen == reference) {
+            trail.push(reference.to_string());
+            let resolved = resolve(document, schema);
+            let expanded = resolve_schema(document, resolved, trail);
+            trail.pop();
+            return expanded;
+        }
+        return schema.clone();
+    }
+
+    match schema {
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|item| resolve_schema(document, item, trail))
+                .collect(),
+        ),
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| (key.clone(), resolve_schema(document, value, trail)))
+                .collect(),
+        ),
+        _ => schema.clone(),
+    }
+}
+
 /// Marks a leaf as the name of a type rather than a value.
 ///
 /// A bare `number` is not valid JSON, so it cannot be carried through

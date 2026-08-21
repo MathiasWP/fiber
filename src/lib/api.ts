@@ -307,6 +307,11 @@ export function loaderCache(sectionId: string): Promise<LoaderCache> {
 	return invoke<LoaderCache>('loader_cache', { sectionId });
 }
 
+/** The OpenAPI request-body schema for one loaded endpoint, if it has one. */
+export function loaderSchema(sectionId: string, endpointId: string): Promise<unknown | null> {
+	return invoke<unknown | null>('loader_schema', { sectionId, endpointId });
+}
+
 /** Fetches the manifest untouched, for the filter editor to preview against. */
 export function loaderProbe(sectionId: string): Promise<unknown> {
 	return invoke<unknown>('loader_probe', { sectionId });

@@ -481,7 +481,7 @@ impl FiberMcp {
             McpError::invalid_params("That section has no loader.".to_string(), None)
         })?;
 
-        let (endpoints, pages) = loader::run(&config, self.fetcher(&section))
+        let (endpoints, schemas, pages) = loader::run(&config, self.fetcher(&section))
             .await
             .map_err(|err| McpError::internal_error(err.to_string(), None))?;
 
@@ -493,6 +493,7 @@ impl FiberMcp {
             &loader::LoaderCache {
                 loaded_at: crate::history::now_millis(),
                 endpoints: endpoints.clone(),
+                schemas,
             },
         );
 
@@ -846,6 +847,7 @@ mod tests {
                     description: String::new(),
                     body: String::new(),
                 }],
+                schemas: Default::default(),
             },
         )
         .unwrap();

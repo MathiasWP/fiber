@@ -20,6 +20,7 @@
 //! Free of Tauri and of the HTTP stack — the fetcher is injected — so the MCP
 //! server can run a loader headlessly.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -141,6 +142,11 @@ pub struct LoaderCache {
     /// Epoch millis of the last successful run.
     pub loaded_at: i64,
     pub endpoints: Vec<LoadedEndpoint>,
+    /// Request-body schemas keyed by endpoint id. Kept out of the normal cache
+    /// response: a large OpenAPI document can share the same component schema
+    /// hundreds of times, and the editor only needs one schema at a time.
+    #[serde(default)]
+    pub schemas: BTreeMap<String, serde_json::Value>,
 }
 
 /// What a run produced, including what changed since last time.
@@ -312,7 +318,7 @@ fn kind_of(value: &serde_json::Value) -> &'static str {
 pub async fn run(
     config: &LoaderConfig,
     fetcher: Fetcher,
-) -> Result<(Vec<LoadedEndpoint>, usize), LoaderError> {
+) -> Result<(Vec<LoadedEndpoint>, BTreeMap<String, serde_json::Value>, usize), LoaderError> {
     if config.url.trim().is_empty() {
         return Err(LoaderError::NoUrl);
     }
@@ -328,12 +334,13 @@ pub async fn run(
 
         let mut url = config.url.trim().to_string();
         let mut endpoints = Vec::new();
+        let mut schemas = BTreeMap::new();
         let mut pages = 0;
 
         loop {
             let document = fetch_json(&fetcher, &url, &method).await?;
             let mut mapped = to_endpoints(&apply(&config.query, &document)?)?;
-            fill_bodies(&document, &mut mapped);
+            schemas.extend(fill_bodies(&document, &mut mapped));
             endpoints.extend(mapped);
             pages += 1;
 
@@ -347,7 +354,7 @@ pub async fn run(
             }
         }
 
-        Ok((endpoints, pages))
+        Ok((endpoints, schemas, pages))
     })
     .await
     .map_err(|_| LoaderError::Timeout)?
@@ -382,10 +389,15 @@ async fn fetch_json(
 ///
 /// Anything else — a routes array, a bespoke manifest — has no `paths`, so this
 /// does nothing and every endpoint keeps the empty body it arrived with.
-fn fill_bodies(document: &serde_json::Value, endpoints: &mut [LoadedEndpoint]) {
+fn fill_bodies(
+    document: &serde_json::Value,
+    endpoints: &mut [LoadedEndpoint],
+) -> BTreeMap<String, serde_json::Value> {
     let Some(paths) = document.get("paths").and_then(|paths| paths.as_object()) else {
-        return;
+        return BTreeMap::new();
     };
+
+    let mut schemas = BTreeMap::new();
 
     for endpoint in endpoints {
         // A filter that supplies its own body outranks anything derived.
@@ -399,8 +411,13 @@ fn fill_bodies(document: &serde_json::Value, endpoints: &mut [LoadedEndpoint]) {
 
         if let Some(operation) = operation {
             endpoint.body = crate::openapi::request_body(document, operation);
+            if let Some(schema) = crate::openapi::request_schema(document, operation) {
+                schemas.insert(endpoint.key(), schema);
+            }
         }
     }
+
+    schemas
 }
 
 /// `<app data>/loaders`
@@ -499,7 +516,7 @@ mod tests {
     #[tokio::test]
     async fn maps_a_route_manifest() {
         let routes = TEMPLATES.iter().find(|(name, _)| *name == "Array of routes").unwrap().1;
-        let (endpoints, pages) = run(
+        let (endpoints, _schemas, pages) = run(
             &config(routes),
             answering(
                 r#"{"routes":[
@@ -591,7 +608,7 @@ mod tests {
         let mut settings = config(".routes | map({method: .verb, path: .url})");
         settings.next = ".links.next".to_string();
 
-        let (endpoints, pages) = run(&settings, fetcher).await.unwrap();
+        let (endpoints, _schemas, pages) = run(&settings, fetcher).await.unwrap();
         assert_eq!(pages, 2);
         assert_eq!(
             endpoints.iter().map(LoadedEndpoint::key).collect::<Vec<_>>(),
@@ -615,7 +632,7 @@ mod tests {
         let mut settings = config(".routes | map({method: .verb, path: .url})");
         settings.next = ".links.next".to_string();
 
-        let (endpoints, pages) = run(&settings, fetcher).await.unwrap();
+        let (endpoints, _schemas, pages) = run(&settings, fetcher).await.unwrap();
         assert_eq!(pages, MAX_PAGES);
         assert_eq!(endpoints.len(), MAX_PAGES);
     }
@@ -668,7 +685,7 @@ mod tests {
         }"##;
 
         let openapi = TEMPLATES.iter().find(|(name, _)| *name == "OpenAPI").unwrap().1;
-        let (endpoints, _) = run(&config(openapi), answering(manifest)).await.unwrap();
+        let (endpoints, schemas, _) = run(&config(openapi), answering(manifest)).await.unwrap();
 
         let post = endpoints.iter().find(|e| e.method == "POST").unwrap();
         // Type names rather than empty values — the editor turns these into
@@ -676,6 +693,13 @@ mod tests {
         assert!(post.body.contains("\"offset\": number"), "{}", post.body);
         assert!(post.body.contains("\"messageIndex\": number"), "{}", post.body);
         assert!(post.body.contains("\"dryRun\": boolean"), "{}", post.body);
+        assert_eq!(
+            schemas
+                .get("POST /activity/backfill-activity")
+                .and_then(|schema| schema.pointer("/properties/dryRun/type"))
+                .and_then(|kind| kind.as_str()),
+            Some("boolean")
+        );
 
         // A GET declares no body, and gets none.
         let get = endpoints.iter().find(|e| e.method == "GET").unwrap();
@@ -687,7 +711,7 @@ mod tests {
     #[tokio::test]
     async fn a_routes_manifest_is_left_alone() {
         let routes = TEMPLATES.iter().find(|(name, _)| *name == "Array of routes").unwrap().1;
-        let (endpoints, _) = run(
+        let (endpoints, _schemas, _) = run(
             &config(routes),
             answering(r#"{"routes":[{"verb":"post","url":"/user","handler":"createUser"}]}"#),
         )

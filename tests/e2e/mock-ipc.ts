@@ -61,6 +61,8 @@ export interface MockOptions {
 	sectionErrors?: SectionFileError[];
 	/** What the loader has already reported, i.e. `loader_cache`. */
 	loaded?: LoadedEndpoint[];
+	/** OpenAPI request-body schemas, keyed by endpoint id such as `POST /users`. */
+	schemas?: Record<string, unknown>;
 	/** What a refresh reports instead. Defaults to `loaded` — no change. */
 	refreshed?: LoadedEndpoint[];
 	templates?: [string, string][];
@@ -158,6 +160,8 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 
 				case 'loader_cache':
 					return Promise.resolve({ loadedAt: 1, endpoints: opts.loaded ?? [] });
+				case 'loader_schema':
+					return Promise.resolve(opts.schemas?.[String(args.endpointId)] ?? null);
 
 				case 'run_loader': {
 					const endpoints = opts.refreshed ?? opts.loaded ?? [];
