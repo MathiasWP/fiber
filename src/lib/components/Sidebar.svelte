@@ -24,6 +24,7 @@
 	import { theme } from '$lib/theme.svelte';
 	import DotLoader from '$lib/components/DotLoader.svelte';
 	import { getVersion } from '@tauri-apps/api/app';
+	import { urlField } from '$lib/urlfield';
 
 	interface Props {
 		onOpenSettings: (section: Section) => void;
@@ -443,6 +444,7 @@
 					<span class="text-xs text-muted">Base URL</span>
 					<input
 						bind:value={newBaseUrl}
+						use:urlField
 						spellcheck="false"
 						placeholder="https://api.example.com"
 						class="input-base text-xs font-mono"
@@ -649,6 +651,25 @@
 											: `Auth: ${section.auth.kind} — no credential stored yet`}
 									></span>
 								{/if}
+
+								<!--
+									The same drawer the context menu opens, one click away. Static like the
+									count beside it — a cog that faded in on hover would shove the count
+									sideways whenever the pointer crossed a row — and the negative margin
+									buys a hit area without making the row any taller.
+								-->
+								<button
+									type="button"
+									class="flex shrink-0 items-center rounded p-1 -my-1 text-muted hover:(bg-raised text-text) transition-colors"
+									title="Section settings"
+									aria-label="Settings for {section.name}"
+									onclick={(event) => {
+										event.stopPropagation();
+										onOpenSettings(section);
+									}}
+								>
+									<span class="i-lucide-settings text-3"></span>
+								</button>
 
 								<!-- Static: nothing appears or disappears on hover, so nothing shifts. -->
 								<span class="text-2.5 text-muted shrink-0 tabular-nums">

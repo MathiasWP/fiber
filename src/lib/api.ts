@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 
 export interface Header {
 	name: string;
@@ -327,6 +327,8 @@ export interface ImportedEndpoint {
 	path: string;
 	name: string;
 	description: string;
+	/** A JSON body to start from, or empty when the operation takes none. */
+	body: string;
 }
 
 export interface Import {
@@ -346,8 +348,8 @@ export function parseOpenApi(text: string): Promise<Import> {
 }
 
 /** Worked filters for the manifest shapes people actually hit. */
-export function loaderExamples(): Promise<[string, string][]> {
-	return invoke<[string, string][]>('loader_examples');
+export function loaderTemplates(): Promise<[string, string][]> {
+	return invoke<[string, string][]>('loader_templates');
 }
 
 /** Write-only by design: there is no command to read a secret back out. */
@@ -405,8 +407,30 @@ export const METHODS = [
 export type Method = (typeof METHODS)[number];
 
 /** Requests are sent from Rust — see `src-tauri/src/http.rs` for why. */
-export function sendRequest(spec: RequestSpec): Promise<ResponseData> {
-	return invoke<ResponseData>('send_request', { spec });
+/**
+ * A response body arriving in pieces.
+ *
+ * `start` means a body is beginning — clear whatever is shown. It arrives once
+ * per attempt, so a 401 that is refreshed and retried sends a second one and
+ * the retry's body replaces the first rather than continuing it.
+ */
+export type BodyEvent = { event: 'start' } | { event: 'chunk'; data: { text: string } };
+
+/**
+ * Sends, streaming the body to `onBody` as it arrives.
+ *
+ * The resolved `ResponseData` is still the authoritative copy — it is the one
+ * that knows about truncation and binary bodies — so what streams is a preview
+ * of it, replaced wholesale when the request finishes. Only text streams; a
+ * binary body arrives once, at the end.
+ */
+export function sendRequest(
+	spec: RequestSpec,
+	onBody?: (event: BodyEvent) => void
+): Promise<ResponseData> {
+	const channel = new Channel<BodyEvent>();
+	if (onBody) channel.onmessage = onBody;
+	return invoke<ResponseData>('send_request', { spec, onBody: channel });
 }
 
 export function cancelRequest(id: string): Promise<boolean> {

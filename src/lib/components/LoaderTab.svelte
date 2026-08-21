@@ -2,7 +2,7 @@
 	import { Select } from 'bits-ui';
 	import {
 		defaultLoader,
-		loaderExamples,
+		loaderTemplates,
 		loaderPreview,
 		loaderProbe,
 		methodColor,
@@ -12,6 +12,7 @@
 	import { collections } from '$lib/collections.svelte';
 	import Editor from './Editor.svelte';
 	import DotLoader from '$lib/components/DotLoader.svelte';
+	import { urlField } from '$lib/urlfield';
 
 	interface Props {
 		section: Section;
@@ -27,14 +28,14 @@
 	let preview = $state<LoadedEndpoint[]>([]);
 	let previewError = $state<string | null>(null);
 
-	let examples = $state<[string, string][]>([]);
+	let templates = $state<[string, string][]>([]);
 	let runSummary = $state<string | null>(null);
 
 	const running = $derived(collections.loading[section.id] === true);
 	const cached = $derived(collections.loaderCaches[section.id]);
 
 	$effect(() => {
-		loaderExamples().then((found) => (examples = found));
+		loaderTemplates().then((found) => (templates = found));
 	});
 
 	async function addLoader() {
@@ -162,8 +163,9 @@
 			<span class="text-xs text-muted">Manifest URL</span>
 			<input
 				bind:value={section.loader.url}
+				use:urlField
 				spellcheck="false"
-				placeholder="/internal/endpoints"
+				placeholder="/openapi.json"
 				class="input-base text-xs font-mono selectable"
 			/>
 		</label>
@@ -182,7 +184,7 @@
 				: 'Filter runs as you type — nothing is refetched.'}
 		</span>
 
-		{#if examples.length}
+		{#if templates.length}
 			<Select.Root
 				type="single"
 				value=""
@@ -190,11 +192,16 @@
 					if (next && section.loader) section.loader.query = next;
 				}}
 			>
-				<Select.Trigger class="btn-ghost text-xs ml-auto">Examples</Select.Trigger>
+				<!-- The chevron is the point: without it a Select trigger reads as a
+				     button that does something, rather than one that offers a list. -->
+				<Select.Trigger class="btn-ghost text-xs ml-auto">
+					Templates
+					<span class="i-lucide-chevron-down text-3"></span>
+				</Select.Trigger>
 				<Select.Portal>
 					<Select.Content class="menu-content w-72">
 						<Select.Viewport>
-							{#each examples as [name, query] (name)}
+							{#each templates as [name, query] (name)}
 								<Select.Item value={query} label={name} class="menu-item">
 									{name}
 								</Select.Item>

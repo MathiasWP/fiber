@@ -13,7 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::auth::{self, AuthConfig, AuthState};
-use crate::http::{self, HttpError, HttpState, RequestSpec, ResponseData};
+use crate::http::{self, ChunkSink, HttpError, HttpState, RequestSpec, ResponseData};
 use crate::store::Section;
 
 /// Lifts a fresh browser-captured credential, for the one auth kind a replayed
@@ -44,12 +44,42 @@ pub(crate) async fn send_authenticated<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
+    send_authenticated_streaming(
+        http_state,
+        auth_state,
+        section,
+        spec,
+        lookup,
+        recapture,
+        None,
+    )
+    .await
+}
+
+/// As above, but forwarding body chunks as they arrive.
+///
+/// Only the window passes a sink. Note where it lands relative to the retry:
+/// every attempt streams, so a 401 that is refreshed and retried sends a second
+/// `Start`, and the pane shows the retry's body rather than the two run
+/// together.
+pub(crate) async fn send_authenticated_streaming<F>(
+    http_state: &HttpState,
+    auth_state: &AuthState,
+    section: Option<&Section>,
+    spec: RequestSpec,
+    lookup: &F,
+    recapture: Option<&dyn Recapturer>,
+    sink: Option<&ChunkSink>,
+) -> Result<ResponseData, HttpError>
+where
+    F: Fn(&str) -> Option<String>,
+{
     let Some(section) = section else {
-        return http::send(http_state, spec).await;
+        return http::send_streaming(http_state, spec, sink).await;
     };
 
     let prepared = apply_auth(http_state, auth_state, section, spec.clone(), lookup).await?;
-    let first = http::send(http_state, prepared).await;
+    let first = http::send_streaming(http_state, prepared, sink).await;
 
     let should_retry = matches!(&first, Ok(response) if response.status == 401)
         && section.auth.can_refresh();
@@ -92,7 +122,7 @@ where
     }
 
     match apply_auth(http_state, auth_state, section, spec, lookup).await {
-        Ok(retry) => http::send(http_state, retry).await,
+        Ok(retry) => http::send_streaming(http_state, retry, sink).await,
         // Re-authentication failed, so the original 401 is the honest answer.
         Err(_) => first,
     }

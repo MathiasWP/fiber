@@ -17,6 +17,7 @@
 	import CapturePicker from './CapturePicker.svelte';
 	import ImportSpec from './ImportSpec.svelte';
 	import LoaderTab from './LoaderTab.svelte';
+	import { urlField } from '$lib/urlfield';
 
 	interface Props {
 		/** The section being edited, or null when closed. */
@@ -268,6 +269,7 @@
 							     you are still typing past isn't snatched away. -->
 							<input
 								bind:value={section.baseUrl}
+								use:urlField
 								spellcheck="false"
 								placeholder="https://api.example.com"
 								class="input-base text-xs font-mono selectable"
@@ -360,6 +362,7 @@
 									<span class="text-xs text-muted">Login URL</span>
 									<input
 										bind:value={section.auth.url}
+										use:urlField
 										spellcheck="false"
 										placeholder="/login"
 										class="input-base text-xs font-mono selectable"
@@ -418,6 +421,7 @@
 								<span class="text-xs text-muted">Sign-in page</span>
 								<input
 									bind:value={section.auth.loginUrl}
+									use:urlField
 									spellcheck="false"
 									placeholder="https://app.example.com/login"
 									class="input-base text-xs font-mono selectable"

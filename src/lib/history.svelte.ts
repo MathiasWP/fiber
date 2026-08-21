@@ -122,6 +122,26 @@ class History {
 		this.select(entry.requestId, entry.id);
 	}
 
+	/**
+	 * Body text arriving while the request is still in flight.
+	 *
+	 * It goes on the entry rather than into a field of its own because the pane
+	 * already renders the entry's body — so a growing body shows up with nothing
+	 * else having to know that streaming exists.
+	 */
+	stream(id: string, text: string): void {
+		const entry = this.entries.find((candidate) => candidate.id === id);
+		if (!entry?.pending) return;
+		entry.body = (entry.body ?? '') + text;
+	}
+
+	/** A fresh attempt is starting, so whatever streamed before it is void. */
+	restartBody(id: string): void {
+		const entry = this.entries.find((candidate) => candidate.id === id);
+		if (!entry?.pending) return;
+		entry.body = '';
+	}
+
 	/** The response is already in hand here, so its body needs no round trip. */
 	settle(id: string, result: { response?: ResponseData; error?: string }): void {
 		const entry = this.entries.find((candidate) => candidate.id === id);

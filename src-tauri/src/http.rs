@@ -7,7 +7,7 @@
 //! MCP server can call it headlessly.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -181,7 +181,31 @@ impl HttpState {
     }
 }
 
+/// A body arriving in pieces, for the pane that shows it.
+///
+/// `Start` is what clears that pane. A 401 is retried, and the second attempt's
+/// body replaces the first rather than continuing it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "event", content = "data", rename_all = "camelCase")]
+pub enum BodyEvent {
+    Start,
+    Chunk { text: String },
+}
+
+/// Where body chunks go as they arrive. The window forwards them to the
+/// response pane; the MCP server, the loader and the tests pass nothing and get
+/// the body in one piece at the end, exactly as before.
+pub type ChunkSink = Arc<dyn Fn(BodyEvent) + Send + Sync>;
+
 pub async fn send(state: &HttpState, spec: RequestSpec) -> Result<ResponseData, HttpError> {
+    send_streaming(state, spec, None).await
+}
+
+pub async fn send_streaming(
+    state: &HttpState,
+    spec: RequestSpec,
+    sink: Option<&ChunkSink>,
+) -> Result<ResponseData, HttpError> {
     let method = reqwest::Method::from_bytes(spec.method.trim().as_bytes())
         .map_err(|_| HttpError::Method(spec.method.clone()))?;
     let url = reqwest::Url::parse(spec.url.trim()).map_err(|e| HttpError::Url(e.to_string()))?;
@@ -218,7 +242,7 @@ pub async fn send(state: &HttpState, spec: RequestSpec) -> Result<ResponseData, 
         .unwrap()
         .insert(spec.id.clone(), cancel_tx);
 
-    let outcome = run(request, cancel_rx).await;
+    let outcome = run(request, cancel_rx, sink).await;
     state.inflight.lock().unwrap().remove(&spec.id);
     outcome
 }
@@ -226,6 +250,7 @@ pub async fn send(state: &HttpState, spec: RequestSpec) -> Result<ResponseData, 
 async fn run(
     request: reqwest::RequestBuilder,
     mut cancel: oneshot::Receiver<()>,
+    sink: Option<&ChunkSink>,
 ) -> Result<ResponseData, HttpError> {
     let started = Instant::now();
 
@@ -255,8 +280,21 @@ async fn run(
     // Read the body as a stream so cancellation stays responsive on slow or
     // very large responses. Step 5 pushes these chunks to the UI over an
     // `ipc::Channel`; the shape here is already right for that.
+    // Only text is streamed. Part of a binary body is not a string, and base64
+    // of a fragment is not a prefix of base64 of the whole, so those still
+    // arrive once at the end.
+    let streaming = sink.filter(|_| {
+        looks_textual(content_type.as_deref()) || content_type.is_none()
+    });
+    if let Some(sink) = streaming {
+        sink(BodyEvent::Start);
+    }
+
     let mut stream = response.bytes_stream();
     let mut buffer: Vec<u8> = Vec::new();
+    // Bytes held back because they are the start of a character whose rest has
+    // not arrived yet.
+    let mut partial: Vec<u8> = Vec::new();
     let mut size_bytes: u64 = 0;
     let mut truncated = false;
 
@@ -277,6 +315,14 @@ async fn run(
                     let take = room.min(bytes.len());
                     buffer.extend_from_slice(&bytes[..take]);
                     truncated |= take < bytes.len();
+
+                    if let Some(sink) = streaming {
+                        partial.extend_from_slice(&bytes[..take]);
+                        let text = take_utf8(&mut partial);
+                        if !text.is_empty() {
+                            sink(BodyEvent::Chunk { text });
+                        }
+                    }
                 }
             }
             Some(Err(err)) => return Err(classify(err)),
@@ -312,6 +358,30 @@ async fn run(
         size_bytes,
         timing: Timing { ttfb_ms, total_ms },
     })
+}
+
+/// The longest run of whole characters at the front of `pending`, taken out of
+/// it. A character split across two chunks waits for the rest of itself.
+fn take_utf8(pending: &mut Vec<u8>) -> String {
+    match std::str::from_utf8(pending) {
+        Ok(text) => {
+            let text = text.to_string();
+            pending.clear();
+            text
+        }
+        Err(error) => {
+            let valid = error.valid_up_to();
+            // Guaranteed valid, so nothing is actually replaced here.
+            let text = String::from_utf8_lossy(&pending[..valid]).into_owned();
+            match error.error_len() {
+                // Genuinely malformed rather than merely incomplete. Drop it,
+                // or it sits at the front and stalls everything behind it.
+                Some(len) => pending.drain(..valid + len),
+                None => pending.drain(..valid),
+            };
+            text
+        }
+    }
 }
 
 fn looks_textual(content_type: Option<&str>) -> bool {
@@ -509,6 +579,37 @@ mod tests {
         let outcome = sending.await.unwrap();
         assert!(matches!(outcome, Err(HttpError::Cancelled)), "{outcome:?}");
         assert!(!state.cancel("test-3"), "handle should be cleaned up");
+    }
+
+
+    /// A character can straddle two chunks. The half that has arrived is held
+    /// back rather than shown as a replacement character.
+    #[test]
+    fn holds_back_a_character_split_across_chunks() {
+        // "é" is two bytes; give it one at a time.
+        let mut pending = vec![b'a', 0xC3];
+        assert_eq!(take_utf8(&mut pending), "a");
+        assert_eq!(pending, vec![0xC3], "the lone lead byte waits");
+
+        pending.push(0xA9);
+        assert_eq!(take_utf8(&mut pending), "é");
+        assert!(pending.is_empty());
+    }
+
+    /// Truncation can leave a byte that will never become a character. It has
+    /// to be dropped, or it sits at the front and stalls everything behind it.
+    #[test]
+    fn a_malformed_byte_does_not_stall_the_stream() {
+        let mut pending = vec![b'a', 0xFF, b'b'];
+        assert_eq!(take_utf8(&mut pending), "a");
+        assert_eq!(take_utf8(&mut pending), "b");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn takes_nothing_from_nothing() {
+        let mut pending = Vec::new();
+        assert_eq!(take_utf8(&mut pending), "");
     }
 
     #[test]

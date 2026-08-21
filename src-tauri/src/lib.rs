@@ -35,13 +35,14 @@ mod gui {
     use crate::auth::AuthState;
     use crate::browser::{BrowserError, BrowserRecapture, Snapshot};
     use crate::history::{self, HistoryError, HistoryRecord, HistoryStore};
-    use crate::http::{HttpError, HttpState, RequestSpec, ResponseData};
+    use crate::http::{BodyEvent, ChunkSink, HttpError, HttpState, RequestSpec, ResponseData};
     use crate::loader::{self, LoaderError, LoaderRun};
     use crate::migrate;
     use crate::openapi;
     use crate::secrets::{self, SecretError};
-    use crate::send::send_authenticated;
+    use crate::send::{send_authenticated, send_authenticated_streaming};
     use crate::store::{self, Section, StoreError};
+    use tauri::ipc::Channel;
     use tauri::{AppHandle, Manager, State};
 
     /// How many history entries the UI gets on startup.
@@ -64,6 +65,7 @@ mod gui {
         paths: State<'_, Paths>,
         auth_state: State<'_, Arc<AuthState>>,
         spec: RequestSpec,
+        on_body: Channel<BodyEvent>,
     ) -> Result<ResponseData, HttpError> {
         let section = spec
             .section_id
@@ -73,13 +75,23 @@ mod gui {
         let at = history::now_millis();
         let url = spec.url.clone();
         let recapture = BrowserRecapture::new(app.clone());
-        let outcome = send_authenticated(
+
+        // The channel is the only reason the body is on the bridge at all
+        // mid-flight. A send that fails means the window has gone; the request
+        // itself carries on, because history is written here and is worth
+        // finishing either way.
+        let sink: ChunkSink = Arc::new(move |event| {
+            let _ = on_body.send(event);
+        });
+
+        let outcome = send_authenticated_streaming(
             state.inner().as_ref(),
             auth_state.inner().as_ref(),
             section.as_ref(),
             spec.clone(),
             &secrets::get,
             Some(&recapture),
+            Some(&sink),
         )
         .await;
 
@@ -348,8 +360,8 @@ mod gui {
 
     /// Worked filters for the manifest shapes people actually hit.
     #[tauri::command]
-    fn loader_examples() -> Vec<(String, String)> {
-        loader::EXAMPLES
+    fn loader_templates() -> Vec<(String, String)> {
+        loader::TEMPLATES
             .iter()
             .map(|(name, query)| (name.to_string(), query.to_string()))
             .collect()
@@ -462,7 +474,7 @@ mod gui {
                 loader_cache,
                 default_loader,
                 parse_openapi,
-                loader_examples
+                loader_templates
             ])
             .plugin(tauri_plugin_opener::init())
             .plugin(tauri_plugin_updater::Builder::new().build())

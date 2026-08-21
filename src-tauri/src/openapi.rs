@@ -26,6 +26,8 @@ pub struct ImportedEndpoint {
     pub path: String,
     pub name: String,
     pub description: String,
+    /// A JSON body to start from, or empty when the operation takes none.
+    pub body: String,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -98,11 +100,16 @@ pub fn parse(text: &str) -> Result<Import, ImportError> {
                 .unwrap_or_default()
                 .to_string();
 
+            let body = operation
+                .map(|operation| request_body(&document, operation))
+                .unwrap_or_default();
+
             endpoints.push(ImportedEndpoint {
                 method: method.to_ascii_uppercase(),
                 path: path.clone(),
                 name,
                 description,
+                body,
             });
         }
     }
@@ -120,6 +127,199 @@ pub fn parse(text: &str) -> Result<Import, ImportError> {
         base_url: base_url(&document),
         endpoints,
     })
+}
+
+/// How deep a schema is expanded before giving up. Specs self-reference — a
+/// comment carrying replies of its own type — so this and the `$ref` trail are
+/// what keep a skeleton finite.
+const MAX_DEPTH: usize = 6;
+
+/// A JSON body to start from, built from the operation's request schema.
+///
+/// An `example` written into the document always wins: it is what the author
+/// chose to show. Failing that the schema is walked into a skeleton with one
+/// placeholder per field, which is quicker to correct than an empty editor is
+/// to fill.
+///
+/// JSON only. A form-encoded or binary body has no honest JSON skeleton, so
+/// those are left empty rather than guessed at.
+fn request_body(
+    document: &serde_json::Value,
+    operation: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let Some(media) = json_media(document, operation) else {
+        return String::new();
+    };
+
+    let given = media.get("example").cloned().or_else(|| {
+        media
+            .get("examples")
+            .and_then(|examples| examples.as_object())
+            .and_then(|examples| examples.values().next())
+            .and_then(|first| resolve(document, first).get("value").cloned())
+    });
+
+    let value = match given {
+        Some(value) => value,
+        None => match media.get("schema") {
+            Some(schema) => skeleton(document, schema, 0, &mut Vec::new()),
+            None => return String::new(),
+        },
+    };
+
+    if value.is_null() {
+        return String::new();
+    }
+    serde_json::to_string_pretty(&value).unwrap_or_default()
+}
+
+/// The JSON media object for a request body, from either spec version. Both
+/// versions end up exposing the schema under `schema`, which is all the caller
+/// needs to know.
+fn json_media<'a>(
+    document: &'a serde_json::Value,
+    operation: &'a serde_json::Map<String, serde_json::Value>,
+) -> Option<&'a serde_json::Value> {
+    // OpenAPI 3: `requestBody.content`, keyed by media type.
+    if let Some(body) = operation.get("requestBody") {
+        let content = resolve(document, body).get("content")?.as_object()?;
+        return content.get("application/json").or_else(|| {
+            content
+                .iter()
+                .find(|(kind, _)| kind.contains("json"))
+                .map(|(_, value)| value)
+        });
+    }
+
+    // Swagger 2: a parameter with `in: body`, holding the schema directly.
+    operation
+        .get("parameters")
+        .and_then(|parameters| parameters.as_array())
+        .and_then(|parameters| {
+            parameters
+                .iter()
+                .map(|parameter| resolve(document, parameter))
+                .find(|parameter| {
+                    parameter.get("in").and_then(|value| value.as_str()) == Some("body")
+                })
+        })
+}
+
+/// Follows a local `$ref` to what it points at. Anything else — including a
+/// `$ref` to another file, which we have no way to fetch — is returned as-is.
+fn resolve<'a>(
+    document: &'a serde_json::Value,
+    value: &'a serde_json::Value,
+) -> &'a serde_json::Value {
+    let Some(pointer) = value.get("$ref").and_then(|it| it.as_str()) else {
+        return value;
+    };
+    let Some(rest) = pointer.strip_prefix("#/") else {
+        return value;
+    };
+
+    let mut current = document;
+    for segment in rest.split('/') {
+        // JSON Pointer escapes, in the order the spec requires: `~1` first.
+        let key = segment.replace("~1", "/").replace("~0", "~");
+        match current.get(&key) {
+            Some(next) => current = next,
+            None => return value,
+        }
+    }
+    current
+}
+
+/// One placeholder value per field, following `$ref`s but never in a circle.
+fn skeleton(
+    document: &serde_json::Value,
+    schema: &serde_json::Value,
+    depth: usize,
+    trail: &mut Vec<String>,
+) -> serde_json::Value {
+    if depth > MAX_DEPTH {
+        return serde_json::Value::Null;
+    }
+
+    // A `$ref` already on the trail is a cycle — stop rather than follow it.
+    if let Some(pointer) = schema.get("$ref").and_then(|it| it.as_str()) {
+        if trail.iter().any(|seen| seen == pointer) {
+            return serde_json::Value::Null;
+        }
+        trail.push(pointer.to_string());
+        let value = skeleton(document, resolve(document, schema), depth, trail);
+        trail.pop();
+        return value;
+    }
+
+    let Some(object) = schema.as_object() else {
+        return serde_json::Value::Null;
+    };
+
+    // Anything the document states outright beats anything we invent.
+    for key in ["example", "default"] {
+        if let Some(value) = object.get(key) {
+            return value.clone();
+        }
+    }
+    if let Some(first) = object
+        .get("enum")
+        .and_then(|it| it.as_array())
+        .and_then(|it| it.first())
+    {
+        return first.clone();
+    }
+
+    // `allOf` is a merge; `oneOf` and `anyOf` are a choice, and the first
+    // branch is as good a guess as any.
+    if let Some(parts) = object.get("allOf").and_then(|it| it.as_array()) {
+        let mut merged = serde_json::Map::new();
+        for part in parts {
+            if let serde_json::Value::Object(fields) = skeleton(document, part, depth, trail) {
+                merged.extend(fields);
+            }
+        }
+        return serde_json::Value::Object(merged);
+    }
+    for key in ["oneOf", "anyOf"] {
+        if let Some(first) = object
+            .get(key)
+            .and_then(|it| it.as_array())
+            .and_then(|it| it.first())
+        {
+            return skeleton(document, first, depth, trail);
+        }
+    }
+
+    let kind = object.get("type").and_then(|it| it.as_str());
+
+    if kind == Some("object") || (kind.is_none() && object.contains_key("properties")) {
+        let mut fields = serde_json::Map::new();
+        if let Some(properties) = object.get("properties").and_then(|it| it.as_object()) {
+            for (name, property) in properties {
+                fields.insert(
+                    name.clone(),
+                    skeleton(document, property, depth + 1, trail),
+                );
+            }
+        }
+        return serde_json::Value::Object(fields);
+    }
+
+    if kind == Some("array") {
+        let item = object
+            .get("items")
+            .map(|items| skeleton(document, items, depth + 1, trail))
+            .unwrap_or(serde_json::Value::Null);
+        return serde_json::Value::Array(if item.is_null() { vec![] } else { vec![item] });
+    }
+
+    match kind {
+        Some("string") => serde_json::Value::String(String::new()),
+        Some("integer") | Some("number") => serde_json::json!(0),
+        Some("boolean") => serde_json::Value::Bool(false),
+        _ => serde_json::Value::Null,
+    }
 }
 
 fn string_at(document: &serde_json::Value, path: &[&str]) -> String {
@@ -166,6 +366,7 @@ fn base_url(document: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn reads_an_openapi_3_document() {
@@ -287,6 +488,195 @@ paths:
             }
             .key()
         );
+    }
+    #[test]
+    fn fills_a_body_from_the_request_schema() {
+        let spec = r##"{
+            "openapi": "3.0.0",
+            "paths": {
+                "/users": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/NewUser" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "components": {
+                "schemas": {
+                    "NewUser": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" },
+                            "age": { "type": "integer" },
+                            "admin": { "type": "boolean" },
+                            "tags": { "type": "array", "items": { "type": "string" } },
+                            "role": { "type": "string", "enum": ["owner", "guest"] },
+                            "address": {
+                                "type": "object",
+                                "properties": { "city": { "type": "string" } }
+                            }
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let import = parse(spec).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(&import.endpoints[0].body).expect("the body should be JSON");
+
+        assert_eq!(
+            body,
+            json!({
+                "name": "",
+                "age": 0,
+                "admin": false,
+                "tags": [""],
+                "role": "owner",
+                "address": { "city": "" }
+            })
+        );
+    }
+
+    /// An example the author wrote beats one derived from the schema.
+    #[test]
+    fn an_example_in_the_document_wins() {
+        let spec = r##"{
+            "openapi": "3.0.0",
+            "paths": {
+                "/users": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "example": { "name": "Ada" },
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": { "name": { "type": "string" } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let import = parse(spec).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&import.endpoints[0].body).unwrap(),
+            json!({ "name": "Ada" })
+        );
+    }
+
+    /// A schema that contains itself is ordinary — a comment with replies. The
+    /// trail has to stop it rather than recurse until the stack gives out.
+    #[test]
+    fn a_self_referencing_schema_terminates() {
+        let spec = r##"{
+            "openapi": "3.0.0",
+            "paths": {
+                "/comments": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": { "$ref": "#/components/schemas/Comment" }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "components": {
+                "schemas": {
+                    "Comment": {
+                        "type": "object",
+                        "properties": {
+                            "text": { "type": "string" },
+                            "replies": {
+                                "type": "array",
+                                "items": { "$ref": "#/components/schemas/Comment" }
+                            }
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let import = parse(spec).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(&import.endpoints[0].body).unwrap();
+        assert_eq!(body["text"], json!(""));
+        // The cycle is cut, so `replies` is present but empty rather than
+        // nested forever.
+        assert_eq!(body["replies"], json!([]));
+    }
+
+    /// Swagger 2 has no `requestBody` — the schema rides on a parameter.
+    #[test]
+    fn reads_a_swagger_2_body_parameter() {
+        let spec = r##"{
+            "swagger": "2.0",
+            "paths": {
+                "/users": {
+                    "post": {
+                        "parameters": [
+                            { "in": "query", "name": "dry" },
+                            {
+                                "in": "body",
+                                "name": "user",
+                                "schema": {
+                                    "type": "object",
+                                    "properties": { "name": { "type": "string" } }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        }"##;
+
+        let import = parse(spec).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&import.endpoints[0].body).unwrap(),
+            json!({ "name": "" })
+        );
+    }
+
+    /// A GET takes no body, and a form-encoded one has no honest JSON skeleton.
+    #[test]
+    fn leaves_the_body_empty_when_there_is_nothing_to_build() {
+        let spec = r##"{
+            "openapi": "3.0.0",
+            "paths": {
+                "/users": { "get": { "operationId": "listUsers" } },
+                "/upload": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/x-www-form-urlencoded": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": { "file": { "type": "string" } }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let import = parse(spec).unwrap();
+        for endpoint in &import.endpoints {
+            assert_eq!(endpoint.body, "", "{} should carry no body", endpoint.path);
+        }
     }
 }
 

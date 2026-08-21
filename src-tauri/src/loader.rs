@@ -59,7 +59,7 @@ impl Default for LoaderConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            url: "/internal/endpoints".to_string(),
+            url: "/openapi.json".to_string(),
             method: "GET".to_string(),
             query: DEFAULT_QUERY.to_string(),
             next: String::new(),
@@ -68,11 +68,15 @@ impl Default for LoaderConfig {
     }
 }
 
-pub const DEFAULT_QUERY: &str =
-    ".routes | map({method: .verb, path: .url, name: .handler})";
-
 /// Starting points for common manifest shapes, offered in the editor.
-pub const EXAMPLES: &[(&str, &str)] = &[
+///
+/// OpenAPI leads because it is the one an API is most likely to already
+/// publish, and it is what a new loader starts with.
+pub const TEMPLATES: &[(&str, &str)] = &[
+    (
+        "OpenAPI",
+        ".paths | to_entries | map(.key as $path | .value | to_entries | map({method: .key, path: $path, name: $path})) | flatten",
+    ),
     (
         "Array of routes",
         ".routes | map({method: .verb, path: .url, name: .handler})",
@@ -82,14 +86,14 @@ pub const EXAMPLES: &[(&str, &str)] = &[
         "map({method: .method, path: .path, name: .name})",
     ),
     (
-        "OpenAPI",
-        ".paths | to_entries | map(.key as $path | .value | to_entries | map({method: .key, path: $path, name: .value.operationId})) | flatten",
-    ),
-    (
         "Skip deprecated",
         ".routes | map(select(.deprecated | not) | {method: .verb, path: .url, name: .handler})",
     ),
 ];
+
+/// Taken from the list rather than written out again, so the filter a new
+/// loader starts with and the one the editor offers first cannot drift apart.
+pub const DEFAULT_QUERY: &str = TEMPLATES[0].1;
 
 /// One endpoint as reported by a loader. Never persisted as the section's
 /// endpoint list — see the overlay model in §6.
@@ -444,8 +448,9 @@ mod tests {
 
     #[tokio::test]
     async fn maps_a_route_manifest() {
+        let routes = TEMPLATES.iter().find(|(name, _)| *name == "Array of routes").unwrap().1;
         let (endpoints, pages) = run(
-            &config(DEFAULT_QUERY),
+            &config(routes),
             answering(
                 r#"{"routes":[
                     {"verb":"get","url":"/user/42","handler":"getUser"},
@@ -481,7 +486,7 @@ mod tests {
             }
         });
 
-        let query = EXAMPLES.iter().find(|(name, _)| *name == "OpenAPI").unwrap().1;
+        let query = TEMPLATES.iter().find(|(name, _)| *name == "OpenAPI").unwrap().1;
         let mut endpoints = to_endpoints(&apply(query, &document).unwrap()).unwrap();
         endpoints.sort_by_key(|endpoint| endpoint.key());
 
@@ -490,7 +495,7 @@ mod tests {
             keys,
             vec!["GET /users", "GET /users/{id}", "POST /users"]
         );
-        assert_eq!(endpoints[0].name, "listUsers");
+        assert_eq!(endpoints[0].name, "/users");
     }
 
     #[test]
@@ -502,7 +507,7 @@ mod tests {
             ]
         });
 
-        let query = EXAMPLES.iter().find(|(name, _)| *name == "Skip deprecated").unwrap().1;
+        let query = TEMPLATES.iter().find(|(name, _)| *name == "Skip deprecated").unwrap().1;
         let endpoints = to_endpoints(&apply(query, &document).unwrap()).unwrap();
         assert_eq!(endpoints.len(), 1);
         assert_eq!(endpoints[0].path, "/live");
