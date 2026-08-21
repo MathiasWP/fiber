@@ -46,12 +46,22 @@ export function response(over: Partial<ResponseData> = {}): ResponseData {
 	};
 }
 
+/** What `loader_templates` offers. Shared so a test can name one exactly. */
+export const TEMPLATES: [string, string][] = [
+	[
+		'OpenAPI',
+		'.paths | to_entries | map(.key as $path | .value | to_entries | map({method: .key, path: $path, name: $path})) | flatten'
+	],
+	['Array of routes', '.routes | map({method: .verb, path: .url, name: .handler})']
+];
+
 export interface MockOptions {
 	sections?: Section[];
 	/** What the loader has already reported, i.e. `loader_cache`. */
 	loaded?: LoadedEndpoint[];
 	/** What a refresh reports instead. Defaults to `loaded` — no change. */
 	refreshed?: LoadedEndpoint[];
+	templates?: [string, string][];
 	/** Held open so a test can drive the stream itself. See `chunk` below. */
 	deferSend?: boolean;
 }
@@ -139,13 +149,7 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					});
 				}
 				case 'loader_templates':
-					return Promise.resolve([
-						[
-							'OpenAPI',
-							'.paths | to_entries | map(.key as $path | .value | to_entries | map({method: .key, path: $path, name: $path})) | flatten'
-						],
-						['Array of routes', '.routes | map({method: .verb, path: .url, name: .handler})']
-					]);
+					return Promise.resolve(opts.templates ?? []);
 				case 'default_loader':
 					return Promise.resolve({
 						enabled: true,
@@ -228,5 +232,5 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 				settleSend = null;
 			}
 		};
-	}, options);
+	}, { templates: TEMPLATES, ...options });
 }
