@@ -596,7 +596,7 @@
 			<Tooltip.Provider delayDuration={200}>
 				<Tooltip.Root>
 					<Tooltip.Trigger
-						class="ml-auto h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
+						class="ml-auto h-6 w-6 grid place-items-center rounded text-muted transition-colors hover:(bg-border text-text)"
 						onclick={addLooseRequest}
 					>
 						<span class="i-lucide-square-plus text-4"></span>
@@ -610,7 +610,7 @@
 
 				<Tooltip.Root>
 					<Tooltip.Trigger
-						class="h-6 w-6 grid place-items-center rounded text-muted hover:(bg-raised text-text) transition-colors"
+						class="h-6 w-6 grid place-items-center rounded text-muted transition-colors hover:(bg-border text-text)"
 						onclick={() => (creating = true)}
 					>
 						<span class="i-lucide-folder-plus text-4"></span>
@@ -646,6 +646,9 @@
 			defaultPrevented, and a row's own menu prevents it on the way up — so
 			right-clicking a request opens that request's menu and not this one.
 		-->
+		<!-- One provider for the whole list: it renders no element of its own, so
+		     it can sit outside the scroller without disturbing the layout. -->
+		<Tooltip.Provider delayDuration={200}>
 		<ContextMenu.Root>
 			<ContextMenu.Trigger class="flex-1 overflow-y-auto min-h-0">
 				{#if collections.looseSection && looseRequests.length}
@@ -702,14 +705,31 @@
 								-->
 								{#if section.auth.kind !== 'none'}
 									{@const held = collections.credential[section.id] === true}
-									<span
-										class="shrink-0 text-3 {held
-											? 'i-lucide-shield-check text-muted'
-											: 'i-lucide-shield-alert text-warn'}"
-										title={held
-											? `Auth: ${section.auth.kind} — a credential is stored`
-											: `Auth: ${section.auth.kind} — no credential stored yet`}
-									></span>
+									<Tooltip.Root>
+										<Tooltip.Trigger>
+											{#snippet child({ props })}
+												<!-- A span, not the default button: this reports, it does
+												     not do anything. -->
+												<span
+													{...props}
+													role="img"
+													aria-label={held
+														? `Auth: ${section.auth.kind} — a credential is stored`
+														: `Auth: ${section.auth.kind} — no credential stored yet`}
+													class="shrink-0 text-3 {held
+														? 'i-lucide-shield-check text-muted'
+														: 'i-lucide-shield-alert text-warn'}"
+												></span>
+											{/snippet}
+										</Tooltip.Trigger>
+										<Tooltip.Portal>
+											<Tooltip.Content class="tooltip" sideOffset={6}>
+												{held
+													? `Auth: ${section.auth.kind} — a credential is stored`
+													: `Auth: ${section.auth.kind} — no credential stored yet`}
+											</Tooltip.Content>
+										</Tooltip.Portal>
+									</Tooltip.Root>
 								{/if}
 
 								<!--
@@ -718,18 +738,28 @@
 									sideways whenever the pointer crossed a row — and the negative margin
 									buys a hit area without making the row any taller.
 								-->
-								<button
-									type="button"
-									class="flex shrink-0 items-center rounded p-1 -my-1 text-muted hover:(bg-raised text-text) transition-colors"
-									title="Section settings"
-									aria-label="Settings for {section.name}"
-									onclick={(event) => {
-										event.stopPropagation();
-										onOpenSettings(section);
-									}}
-								>
-									<span class="i-lucide-settings text-3"></span>
-								</button>
+								<Tooltip.Root>
+									<Tooltip.Trigger>
+										{#snippet child({ props })}
+											<button
+												{...props}
+												type="button"
+												aria-label="Settings for {section.name}"
+												onclick={(event) => {
+													event.stopPropagation();
+													onOpenSettings(section);
+												}}
+												class="flex shrink-0 items-center rounded p-1 -my-1 text-muted
+													transition-colors hover:(bg-border text-text)"
+											>
+												<span class="i-lucide-settings text-3"></span>
+											</button>
+										{/snippet}
+									</Tooltip.Trigger>
+									<Tooltip.Portal>
+										<Tooltip.Content class="tooltip" sideOffset={6}>Section settings</Tooltip.Content>
+									</Tooltip.Portal>
+								</Tooltip.Root>
 
 								<!--
 									Refreshes happen on their own now — at startup and on focus — so
@@ -737,16 +767,47 @@
 									by themselves. Same spinning icon the Refresh menu item uses.
 								-->
 								{#if collections.loading[section.id]}
-									<span
-										class="i-lucide-refresh-cw text-3 text-muted shrink-0 animate-spin"
-										title="Refreshing endpoints…"
-									></span>
+									<Tooltip.Root>
+										<Tooltip.Trigger>
+											{#snippet child({ props })}
+												<span
+													{...props}
+													role="img"
+													aria-label="Refreshing endpoints"
+													class="i-lucide-refresh-cw text-3 text-muted shrink-0 animate-spin"
+												></span>
+											{/snippet}
+										</Tooltip.Trigger>
+										<Tooltip.Portal>
+											<Tooltip.Content class="tooltip" sideOffset={6}>
+												Refreshing endpoints…
+											</Tooltip.Content>
+										</Tooltip.Portal>
+									</Tooltip.Root>
 								{/if}
 
 								<!-- Static: nothing appears or disappears on hover, so nothing shifts. -->
-								<span class="text-2.5 text-muted shrink-0 tabular-nums">
-									{total}
-								</span>
+								<Tooltip.Root>
+									<Tooltip.Trigger>
+										{#snippet child({ props })}
+											<span
+												{...props}
+												role="img"
+												aria-label="{total} {total === 1 ? 'endpoint' : 'endpoints'}"
+												class="text-2.5 text-muted shrink-0 tabular-nums"
+											>
+												{total}
+											</span>
+										{/snippet}
+									</Tooltip.Trigger>
+									<Tooltip.Portal>
+										<Tooltip.Content class="tooltip" sideOffset={6}>
+											{total}
+											{total === 1 ? 'endpoint' : 'endpoints'}
+											{#if section.loader}— loaded and hand-written{/if}
+										</Tooltip.Content>
+									</Tooltip.Portal>
+								</Tooltip.Root>
 							</ContextMenu.Trigger>
 
 							<ContextMenu.Portal>
@@ -902,6 +963,7 @@
 				</ContextMenu.Content>
 			</ContextMenu.Portal>
 		</ContextMenu.Root>
+		</Tooltip.Provider>
 
 		{#if collections.error}
 			<p class="px-4 py-2 text-2.5 text-bad border-t border-border shrink-0">
