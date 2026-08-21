@@ -159,10 +159,13 @@ pub(crate) fn request_body(
             .and_then(|first| resolve(document, first).get("value").cloned())
     });
 
-    let value = match given {
-        Some(value) => value,
+    // An example is real data and goes out as written. A skeleton is not: its
+    // leaves are the *names of types*, which the editor turns into fields you
+    // tab through. Only the second kind gets unwrapped below.
+    let (value, derived) = match given {
+        Some(value) => (value, false),
         None => match media.get("schema") {
-            Some(schema) => skeleton(document, schema, 0, &mut Vec::new()),
+            Some(schema) => (skeleton(document, schema, 0, &mut Vec::new()), true),
             None => return String::new(),
         },
     };
@@ -170,7 +173,51 @@ pub(crate) fn request_body(
     if value.is_null() {
         return String::new();
     }
-    serde_json::to_string_pretty(&value).unwrap_or_default()
+
+    let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+    if derived { unwrap_types(&text) } else { text }
+}
+
+/// Marks a leaf as the name of a type rather than a value.
+///
+/// A bare `number` is not valid JSON, so it cannot be carried through
+/// `serde_json`. It travels as a string wearing this sentinel and is unquoted
+/// on the way out, which keeps the whole skeleton one ordinary serialisation
+/// rather than a second pretty-printer written by hand.
+const TYPE_MARK: &str = "\u{1}type:";
+
+fn type_name(name: &str) -> serde_json::Value {
+    serde_json::Value::String(format!("{TYPE_MARK}{name}"))
+}
+
+/// Turns `"\u{1}type:number"` back into a bare `number`.
+///
+/// The mark is a control character, which `serde_json` escapes as `\u0001` on
+/// the way out — so what appears in the text is the escape, and that is what
+/// this matches. Nothing a person could type collides with it.
+fn unwrap_types(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let opening = "\"\\u0001type:";
+
+    while let Some(start) = rest.find(opening) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + opening.len()..];
+        match after.find('"') {
+            Some(end) => {
+                out.push_str(&after[..end]);
+                rest = &after[end + 1..];
+            }
+            // Unterminated is impossible from our own serialisation, but
+            // truncating the body would be a poor way to find that out.
+            None => {
+                out.push_str(&rest[start..]);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The JSON media object for a request body, from either spec version. Both
@@ -314,10 +361,16 @@ fn skeleton(
         return serde_json::Value::Array(if item.is_null() { vec![] } else { vec![item] });
     }
 
+    // The name of the type rather than an empty value of it: "" tells you
+    // nothing, `string` tells you what belongs there — and leaves the body
+    // invalid until you have replaced it, which is the point.
     match kind {
-        Some("string") => serde_json::Value::String(String::new()),
-        Some("integer") | Some("number") => serde_json::json!(0),
-        Some("boolean") => serde_json::Value::Bool(false),
+        Some("string") => type_name("string"),
+        Some("integer") => type_name("integer"),
+        Some("number") => type_name("number"),
+        Some("boolean") => type_name("boolean"),
+        // `null` is a value, not a gap: a schema that says null means null.
+        Some("null") => serde_json::Value::Null,
         _ => serde_json::Value::Null,
     }
 }
@@ -490,6 +543,7 @@ paths:
             .key()
         );
     }
+
     #[test]
     fn fills_a_body_from_the_request_schema() {
         let spec = r##"{
@@ -528,20 +582,18 @@ paths:
         }"##;
 
         let import = parse(spec).unwrap();
-        let body: serde_json::Value =
-            serde_json::from_str(&import.endpoints[0].body).expect("the body should be JSON");
+        let body = &import.endpoints[0].body;
 
-        assert_eq!(
-            body,
-            json!({
-                "name": "",
-                "age": 0,
-                "admin": false,
-                "tags": [""],
-                "role": "owner",
-                "address": { "city": "" }
-            })
-        );
+        // Type names, not empty values: `""` says nothing about what belongs
+        // there, and a body that is still full of them is visibly unfinished.
+        assert!(body.contains("\"name\": string"), "{body}");
+        assert!(body.contains("\"age\": integer"), "{body}");
+        assert!(body.contains("\"admin\": boolean"), "{body}");
+        assert!(body.contains("\"city\": string"), "{body}");
+        // An array shows what one element looks like.
+        assert!(body.contains("\"tags\": [\n    string\n  ]"), "{body}");
+        // An enum has real values, so it names one rather than its type.
+        assert!(body.contains("\"role\": \"owner\""), "{body}");
     }
 
     /// An example the author wrote beats one derived from the schema.
@@ -611,12 +663,11 @@ paths:
         }"##;
 
         let import = parse(spec).unwrap();
-        let body: serde_json::Value =
-            serde_json::from_str(&import.endpoints[0].body).unwrap();
-        assert_eq!(body["text"], json!(""));
+        let body = &import.endpoints[0].body;
+        assert!(body.contains("\"text\": string"), "{body}");
         // The cycle is cut, so `replies` is present but empty rather than
         // nested forever.
-        assert_eq!(body["replies"], json!([]));
+        assert!(body.contains("\"replies\": []"), "{body}");
     }
 
     /// Swagger 2 has no `requestBody` — the schema rides on a parameter.
@@ -644,10 +695,7 @@ paths:
         }"##;
 
         let import = parse(spec).unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&import.endpoints[0].body).unwrap(),
-            json!({ "name": "" })
-        );
+        assert!(import.endpoints[0].body.contains("\"name\": string"));
     }
 
     /// A GET takes no body, and a form-encoded one has no honest JSON skeleton.

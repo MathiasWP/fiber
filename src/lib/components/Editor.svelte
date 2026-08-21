@@ -5,6 +5,7 @@
 	import { Compartment, EditorState, Prec } from '@codemirror/state';
 	import { oneDark } from '@codemirror/theme-one-dark';
 	import { EditorView, placeholder as placeholderExt } from '@codemirror/view';
+	import { placeholders } from '$lib/placeholders';
 	import { basicSetup } from 'codemirror';
 	import { untrack } from 'svelte';
 	import { editorFont, type EditorScope } from '$lib/editor.svelte';
@@ -76,6 +77,9 @@
 					EditorState.readOnly.of(untrack(() => readonly)),
 					EditorView.lineWrapping,
 					placeholderExt(untrack(() => placeholder)),
+					// Only where something can be filled in. A response has no gaps
+					// to tab between, and its Tab should stay Tab.
+					untrack(() => readonly) ? [] : placeholders,
 					// Prec.high because oneDark styles `.cm-panels` too, and which of two
 					// themes wins otherwise depends on extension order — a detail that
 					// would quietly break the day someone reorders this array.

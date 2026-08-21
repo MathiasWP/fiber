@@ -664,10 +664,11 @@ mod tests {
         let (endpoints, _) = run(&config(openapi), answering(manifest)).await.unwrap();
 
         let post = endpoints.iter().find(|e| e.method == "POST").unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&post.body).unwrap(),
-            json!({ "offset": 0, "messageIndex": 0, "dryRun": false })
-        );
+        // Type names rather than empty values — the editor turns these into
+        // fields you tab through.
+        assert!(post.body.contains("\"offset\": number"), "{}", post.body);
+        assert!(post.body.contains("\"messageIndex\": number"), "{}", post.body);
+        assert!(post.body.contains("\"dryRun\": boolean"), "{}", post.body);
 
         // A GET declares no body, and gets none.
         let get = endpoints.iter().find(|e| e.method == "GET").unwrap();
