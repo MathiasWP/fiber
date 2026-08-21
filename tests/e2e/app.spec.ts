@@ -406,7 +406,7 @@ test.describe('keeping endpoints current', () => {
 		});
 		await page.goto('/');
 
-		const spinner = page.getByTitle('Refreshing endpoints…');
+		const spinner = page.getByLabel('Refreshing endpoints');
 		await expect(spinner).toBeVisible();
 
 		await page.evaluate(() => window.__FIBER_TEST__.finishRefresh());
@@ -722,4 +722,55 @@ test('a body you have written survives a manifest that offers another', async ({
 	const editor = page.locator('.cm-content').first();
 	await expect(editor).toContainText('"mine"');
 	await expect(editor).not.toContainText('"label": string');
+});
+
+test.describe('what the collection header tells you', () => {
+	test('the count says what it counts', async ({ page }) => {
+		await install(page, {
+			sections: [
+				section({
+					requests: [
+						{ id: 'r1', name: 'one', method: 'GET', path: '/one', body: '', headers: [] }
+					]
+				})
+			]
+		});
+		await page.goto('/');
+
+		await page.getByLabel('1 endpoint').hover();
+		await expect(page.locator('.tooltip')).toContainText('1 endpoint');
+	});
+
+	test('the shield says whether a credential is stored', async ({ page }) => {
+		await install(page, {
+			sections: [
+				section({
+					auth: {
+						kind: 'browser',
+						loginUrl: 'https://acme.com/login',
+						capture: 'cookie',
+						captureKey: 'session',
+						capturePath: '',
+						header: 'Cookie',
+						prefix: '',
+						ttlSeconds: 0,
+						secretRef: 'sec-1:auth'
+					}
+				})
+			]
+		});
+		await page.goto('/');
+
+		// `has_secret` answers false in the mock, so this is the unset case.
+		await page.getByLabel(/no credential stored yet/).hover();
+		await expect(page.locator('.tooltip')).toContainText('no credential stored yet');
+	});
+
+	test('the cog says where it goes', async ({ page }) => {
+		await install(page, { sections: [section()] });
+		await page.goto('/');
+
+		await page.getByLabel('Settings for Acme').hover();
+		await expect(page.locator('.tooltip')).toContainText('Section settings');
+	});
 });
