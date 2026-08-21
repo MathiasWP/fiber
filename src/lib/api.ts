@@ -194,6 +194,8 @@ export interface LoadedEndpoint {
 	path: string;
 	name: string;
 	description: string;
+	/** A JSON body to start from, when the manifest was an OpenAPI document. */
+	body: string;
 }
 
 export interface LoaderCache {

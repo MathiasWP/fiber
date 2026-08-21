@@ -300,3 +300,28 @@ test('Done runs the loader, so a filter just edited takes effect', async ({ page
 	await page.getByRole('button', { name: 'Done' }).click();
 	await expect.poll(ran, { message: 'Done should refresh the endpoints' }).toBe(true);
 });
+
+/**
+ * The reported gap: endpoints discovered by a loader arrived with an empty
+ * editor, because a jq filter maps shape to shape and knows nothing about JSON
+ * Schema. The body is derived in Rust now; this covers the wiring that carries
+ * it to the editor.
+ */
+test('a loaded endpoint arrives with the body its manifest declared', async ({ page }) => {
+	await install(page, {
+		sections: [section({ loader })],
+		loaded: [
+			{
+				method: 'POST',
+				path: '/activity/backfill-activity',
+				name: 'activity_backfill_activity',
+				description: '',
+				body: '{\n  "offset": 0,\n  "dryRun": false\n}'
+			}
+		]
+	});
+	await page.goto('/');
+
+	await page.getByText('activity_backfill_activity').click();
+	await expect(page.locator('.cm-content').first()).toContainText('"dryRun"');
+});

@@ -138,7 +138,10 @@ class Collections {
 					name: endpoint.name || endpoint.path,
 					method: endpoint.method,
 					path: endpoint.path,
-					body: saved?.body ?? '',
+					// The loader's body is a starting point, not an override: `??`
+					// rather than `||`, so a body you deliberately emptied stays
+					// empty instead of being refilled on every refresh.
+					body: saved?.body ?? endpoint.body ?? '',
 					headers: saved?.headers ?? []
 				},
 				missing: false
