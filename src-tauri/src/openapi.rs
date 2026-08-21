@@ -328,17 +328,24 @@ fn skeleton(
         }
         return serde_json::Value::Object(merged);
     }
+    // A branch that only says `null` is the nullable half of the choice, not
+    // the interesting one — `anyOf: [{"type": "null"}, {"type": "string"}]` is
+    // a nullable string, and answering `null` hides the string. Same reasoning
+    // as `type_of` below, for the other spelling of the same idea.
     for key in ["oneOf", "anyOf"] {
-        if let Some(first) = object
-            .get(key)
-            .and_then(|it| it.as_array())
-            .and_then(|it| it.first())
-        {
-            return skeleton(document, first, depth, trail);
+        if let Some(branches) = object.get(key).and_then(|it| it.as_array()) {
+            let pick = branches
+                .iter()
+                .find(|branch| !only_null(branch))
+                .or_else(|| branches.first());
+            if let Some(branch) = pick {
+                return skeleton(document, branch, depth, trail);
+            }
         }
     }
 
-    let kind = object.get("type").and_then(|it| it.as_str());
+    let kind = type_of(object);
+    let kind = kind.as_deref();
 
     if kind == Some("object") || (kind.is_none() && object.contains_key("properties")) {
         let mut fields = serde_json::Map::new();
@@ -371,7 +378,44 @@ fn skeleton(
         Some("boolean") => type_name("boolean"),
         // `null` is a value, not a gap: a schema that says null means null.
         Some("null") => serde_json::Value::Null,
-        _ => serde_json::Value::Null,
+        // Anything else is a schema this cannot read — no type at all, a
+        // vocabulary we do not implement, a `$ref` that went in a circle.
+        // `null` was the old answer and it was a lie: it reads as "the API
+        // wants null here" and looks filled in, so it was neither replaced nor
+        // noticed. A gap that says it is a gap is worse to look at and better
+        // to have.
+        _ => type_name("unknown"),
+    }
+}
+
+/// Whether a branch of a choice says nothing but "or null".
+fn only_null(branch: &serde_json::Value) -> bool {
+    branch
+        .get("type")
+        .and_then(|it| it.as_str())
+        .is_some_and(|kind| kind == "null")
+}
+
+/// A schema's type, tolerating JSON Schema's two spellings of it.
+///
+/// OpenAPI 3.0 writes `"type": "string"` and marks nullability separately.
+/// 3.1 dropped that and writes `"type": ["string", "null"]` instead — which is
+/// what most generators now emit, and which read as no type at all here. Every
+/// nullable field in a 3.1 document came out as `null`.
+///
+/// A union is reported as its first member that is not `null`, since the point
+/// is to show what to type, and `null` is what you leave it as instead.
+fn type_of(object: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    match object.get("type") {
+        Some(serde_json::Value::String(name)) => Some(name.clone()),
+        Some(serde_json::Value::Array(names)) => names
+            .iter()
+            .filter_map(|name| name.as_str())
+            .find(|name| *name != "null")
+            .map(str::to_string)
+            // `"type": ["null"]` means exactly one thing.
+            .or_else(|| names.first().and_then(|it| it.as_str()).map(str::to_string)),
+        _ => None,
     }
 }
 
@@ -594,6 +638,100 @@ paths:
         assert!(body.contains("\"tags\": [\n    string\n  ]"), "{body}");
         // An enum has real values, so it names one rather than its type.
         assert!(body.contains("\"role\": \"owner\""), "{body}");
+    }
+
+    /// OpenAPI 3.1 spells "nullable string" as a union of types, and that is
+    /// what most generators now emit. Reading only the string form meant every
+    /// such field came out as `null` — which looks like a filled-in value, so
+    /// it was neither replaced nor noticed.
+    #[test]
+    fn a_nullable_field_still_names_its_type() {
+        let spec = r##"{
+            "openapi": "3.1.0",
+            "info": { "title": "Acme", "version": "1" },
+            "paths": {
+                "/users": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": { "type": ["string", "null"] },
+                                            "age": { "type": ["null", "integer"] },
+                                            "nothing": { "type": ["null"] },
+                                            "anything": {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let import = parse(spec).unwrap();
+        let body = &import.endpoints[0].body;
+
+        assert!(body.contains("\"name\": string"), "{body}");
+        // Order in the union says nothing: `null` is never the interesting half.
+        assert!(body.contains("\"age\": integer"), "{body}");
+        // Except when it is the only half.
+        assert!(body.contains("\"nothing\": null"), "{body}");
+        // A schema with nothing in it is a gap too, and says so rather than
+        // claiming the API wants null.
+        assert!(body.contains("\"anything\": unknown"), "{body}");
+    }
+
+    /// The other spelling of nullable, and the one real specs in the wild use:
+    /// a choice with a `null` branch in it. Which side it sits on is arbitrary,
+    /// so the branch that says something wins either way.
+    #[test]
+    fn a_nullable_choice_names_the_half_that_says_something() {
+        let spec = r##"{
+            "openapi": "3.1.0",
+            "info": { "title": "Acme", "version": "1" },
+            "paths": {
+                "/users": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "after": {
+                                                "anyOf": [{ "type": "string" }, { "type": "null" }]
+                                            },
+                                            "before": {
+                                                "anyOf": [{ "type": "null" }, { "type": "string" }]
+                                            },
+                                            "either": {
+                                                "oneOf": [{ "type": "null" }, { "type": "integer" }]
+                                            },
+                                            "open": {
+                                                "anyOf": [{}, { "type": "null" }]
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let import = parse(spec).unwrap();
+        let body = &import.endpoints[0].body;
+
+        assert!(body.contains("\"after\": string"), "{body}");
+        assert!(body.contains("\"before\": string"), "{body}");
+        assert!(body.contains("\"either\": integer"), "{body}");
+        // Nothing to say on either side, so it is a gap rather than a `null`.
+        assert!(body.contains("\"open\": unknown"), "{body}");
     }
 
     /// An example the author wrote beats one derived from the schema.
