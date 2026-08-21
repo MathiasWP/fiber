@@ -64,6 +64,8 @@ export interface MockOptions {
 	templates?: [string, string][];
 	/** Held open so a test can drive the stream itself. See `chunk` below. */
 	deferSend?: boolean;
+	/** Held open so a test can observe the refresh while it is still running. */
+	deferRefresh?: boolean;
 }
 
 /** What the page exposes back to the test, once `install` has run. */
@@ -78,6 +80,8 @@ declare global {
 			chunk(text: string): void;
 			/** Resolves the held-open `send_request`. */
 			settle(data: ResponseData): void;
+			/** Resolves the held-open `run_loader`. */
+			finishRefresh(): void;
 		};
 	}
 }
@@ -93,6 +97,7 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 		let channelId: number | null = null;
 		let messageIndex = 0;
 		let settleSend: ((data: unknown) => void) | null = null;
+		let settleRefresh: (() => void) | null = null;
 
 		const internals = {
 			callbacks,
@@ -140,12 +145,17 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					const endpoints = opts.refreshed ?? opts.loaded ?? [];
 					const before = (opts.loaded ?? []).map((e) => `${e.method} ${e.path}`);
 					const after = endpoints.map((e) => `${e.method} ${e.path}`);
-					return Promise.resolve({
+					const run = {
 						loadedAt: 2,
 						endpoints,
 						added: after.filter((key) => !before.includes(key)),
 						removed: before.filter((key) => !after.includes(key)),
 						pages: 1
+					};
+					if (!opts.deferRefresh) return Promise.resolve(run);
+					// Held open, so a test can look at the app mid-refresh.
+					return new Promise((resolve) => {
+						settleRefresh = () => resolve(run);
 					});
 				}
 				case 'loader_templates':
@@ -230,6 +240,10 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 			settle(data: unknown) {
 				settleSend?.(data);
 				settleSend = null;
+			},
+			finishRefresh() {
+				settleRefresh?.();
+				settleRefresh = null;
 			}
 		};
 	}, { templates: TEMPLATES, ...options });

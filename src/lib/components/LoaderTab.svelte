@@ -301,8 +301,8 @@
 				class="input-base text-xs font-mono"
 			/>
 			<span class="text-2.5 text-muted">
-				0 only when asked. Otherwise refreshed in the background at startup once the cache is
-				older than this.
+				0 only when asked. Otherwise refreshed in the background — at startup, and whenever
+				you come back to the window — once the cache is older than this.
 			</span>
 		</label>
 	</div>

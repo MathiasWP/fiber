@@ -696,6 +696,18 @@
 									<span class="i-lucide-settings text-3"></span>
 								</button>
 
+								<!--
+									Refreshes happen on their own now — at startup and on focus — so
+									without this they happen invisibly and endpoints appear to change
+									by themselves. Same spinning icon the Refresh menu item uses.
+								-->
+								{#if collections.loading[section.id]}
+									<span
+										class="i-lucide-refresh-cw text-3 text-muted shrink-0 animate-spin"
+										title="Refreshing endpoints…"
+									></span>
+								{/if}
+
 								<!-- Static: nothing appears or disappears on hover, so nothing shifts. -->
 								<span class="text-2.5 text-muted shrink-0 tabular-nums">
 									{section.requests.length + collections.rowsFor(section).length}

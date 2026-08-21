@@ -303,11 +303,31 @@ class Collections {
 		for (const section of this.sections) {
 			const loader = section.loader;
 			if (!loader?.enabled || loader.ttlSeconds <= 0) continue;
+			// Already running: a second pass while the first is in flight would
+			// double the requests and race over the same cache.
+			if (this.loading[section.id]) continue;
 
 			const cache = this.loaderCaches[section.id];
 			const age = now - (cache?.loadedAt ?? 0);
 			if (age > loader.ttlSeconds * 1000) this.refresh(section);
 		}
+	}
+
+	/**
+	 * Re-checks staleness whenever the window comes back to the front.
+	 *
+	 * Startup was the only trigger before, which for an app you leave open for
+	 * days meant a TTL almost never came round — coming back to Fiber after an
+	 * afternoon of deploys showed yesterday's endpoints. Focus is the moment you
+	 * are about to look, so it is the moment worth being current.
+	 *
+	 * It reuses the staleness rule rather than refetching outright: a TTL of 0
+	 * still means "only when asked", which some APIs need it to.
+	 */
+	watchFocus(): () => void {
+		const onFocus = () => this.refreshStale();
+		window.addEventListener('focus', onFocus);
+		return () => window.removeEventListener('focus', onFocus);
 	}
 
 	/** Runs a section's loader and refreshes its cache. Never throws. */

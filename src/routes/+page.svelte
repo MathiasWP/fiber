@@ -69,7 +69,13 @@
 		collections.load().then(() => collections.refreshStale());
 		history.load();
 		editorFont.init();
-		return theme.init();
+
+		const stopTheme = theme.init();
+		const stopFocus = collections.watchFocus();
+		return () => {
+			stopTheme();
+			stopFocus();
+		};
 	});
 
 	// Bodies aren't loaded with the history list; pull one in when it's about

@@ -369,3 +369,47 @@ test.describe('searching the collections', () => {
 		await expect(page.getByText('6 more hidden by filters')).toBeVisible();
 	});
 });
+
+test.describe('keeping endpoints current', () => {
+	const withTtl = (ttlSeconds: number) => ({ ...loader, ttlSeconds });
+	const runs = (page: import('@playwright/test').Page) =>
+		page.evaluate(() => window.__FIBER_TEST__.calls.filter((c) => c.cmd === 'run_loader').length);
+
+	test('coming back to the window refreshes a stale loader', async ({ page }) => {
+		await install(page, { sections: [section({ loader: withTtl(60) })] });
+		await page.goto('/');
+
+		// The cached endpoints are ancient, so startup refreshes once.
+		await expect.poll(() => runs(page)).toBe(1);
+
+		await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+		await expect.poll(() => runs(page), { message: 'focus should refresh again' }).toBe(2);
+	});
+
+	/**
+	 * The TTL field promises that 0 means "only when asked", and some APIs need
+	 * it to. Focus must not quietly override that.
+	 */
+	test('a loader set to "only when asked" is left alone', async ({ page }) => {
+		await install(page, { sections: [section({ loader: withTtl(0) })] });
+		await page.goto('/');
+
+		await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+		await page.waitForTimeout(150);
+		expect(await runs(page)).toBe(0);
+	});
+
+	test('a collection shows it is refreshing while it happens', async ({ page }) => {
+		await install(page, {
+			sections: [section({ loader: withTtl(60) })],
+			deferRefresh: true
+		});
+		await page.goto('/');
+
+		const spinner = page.getByTitle('Refreshing endpoints…');
+		await expect(spinner).toBeVisible();
+
+		await page.evaluate(() => window.__FIBER_TEST__.finishRefresh());
+		await expect(spinner).toBeHidden();
+	});
+});
