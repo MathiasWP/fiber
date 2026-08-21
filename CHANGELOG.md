@@ -1,5 +1,17 @@
 # fiber
 
+## 0.10.1
+
+### Patch Changes
+
+- [#46](https://github.com/MathiasWP/fiber/pull/46) [`3a08ea4`](https://github.com/MathiasWP/fiber/commit/3a08ea42410dadc6cdef50ac81494dfe5676205c) Thanks [@MathiasWP](https://github.com/MathiasWP)! - A collection can be closed while you are searching. A search still opens everything, since a match you cannot see is no use, but closing one now keeps it closed for the rest of that search — and a fresh search opens them again. Closing one this way is about the search rather than the collection, so it is not saved.
+
+- [#47](https://github.com/MathiasWP/fiber/pull/47) [`87a6881`](https://github.com/MathiasWP/fiber/commit/87a68813ba0a0ed08f521f231390c2f98f01258c) Thanks [@MathiasWP](https://github.com/MathiasWP)! - An endpoint you had opened before its manifest carried a request body now picks that body up. Previously the empty one saved against it won, so the schema's body never appeared on exactly the endpoints you had used most. A body you have written is still left alone.
+
+- [#48](https://github.com/MathiasWP/fiber/pull/48) [`2c64519`](https://github.com/MathiasWP/fiber/commit/2c64519df447210f76d6af4d4b341176b56d0071) Thanks [@MathiasWP](https://github.com/MathiasWP)! - The MCP server is easier to reach. The README now names the binary's real path on each OS instead of `/path/to/fiber`, so installing it is one `claude mcp add`. For the containerised server, `scripts/toolhive.sh` sets ToolHive up in a single command, and a new `fiber mcp export-secrets` pipes the credentials for your shared collections into ToolHive's secret store rather than having you copy each one out by hand. The container image itself now builds — it had not, since the Linux keychain backend needs a D-Bus library no container has — and is published for amd64 and arm64 on every release.
+
+- [#49](https://github.com/MathiasWP/fiber/pull/49) [`c4c0638`](https://github.com/MathiasWP/fiber/commit/c4c0638d5ed1f18f16a235fd944bba7253feabf2) Thanks [@MathiasWP](https://github.com/MathiasWP)! - The shield, cog, refresh spinner and endpoint count on a collection now carry proper tooltips saying what they are, and each has an accessible name rather than being an unlabelled icon. The cog and the two buttons in the sidebar header light up more clearly on hover, so it is obvious they can be clicked.
+
 ## 0.10.0
 
 ### Minor Changes
