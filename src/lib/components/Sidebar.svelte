@@ -650,6 +650,25 @@
 									></span>
 								{/if}
 
+								<!--
+									The same drawer the context menu opens, one click away. Static like the
+									count beside it — a cog that faded in on hover would shove the count
+									sideways whenever the pointer crossed a row — and the negative margin
+									buys a hit area without making the row any taller.
+								-->
+								<button
+									type="button"
+									class="flex shrink-0 items-center rounded p-1 -my-1 text-muted hover:(bg-raised text-text) transition-colors"
+									title="Section settings"
+									aria-label="Settings for {section.name}"
+									onclick={(event) => {
+										event.stopPropagation();
+										onOpenSettings(section);
+									}}
+								>
+									<span class="i-lucide-settings text-3"></span>
+								</button>
+
 								<!-- Static: nothing appears or disappears on hover, so nothing shifts. -->
 								<span class="text-2.5 text-muted shrink-0 tabular-nums">
 									{section.requests.length + collections.rowsFor(section).length}
