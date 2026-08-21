@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import type { ResponseData, Section } from '../../src/lib/api';
+import type { LoadedEndpoint, ResponseData, Section } from '../../src/lib/api';
 
 /**
  * A fake Tauri backend, installed before the app's own scripts run.
@@ -48,7 +48,11 @@ export function response(over: Partial<ResponseData> = {}): ResponseData {
 
 export interface MockOptions {
 	sections?: Section[];
-	/** Held open so a test can drive the stream itself. See `stream` below. */
+	/** What the loader has already reported, i.e. `loader_cache`. */
+	loaded?: LoadedEndpoint[];
+	/** What a refresh reports instead. Defaults to `loaded` — no change. */
+	refreshed?: LoadedEndpoint[];
+	/** Held open so a test can drive the stream itself. See `chunk` below. */
 	deferSend?: boolean;
 }
 
@@ -120,7 +124,20 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					return Promise.resolve(null);
 
 				case 'loader_cache':
-					return Promise.resolve({ loadedAt: 0, endpoints: [] });
+					return Promise.resolve({ loadedAt: 1, endpoints: opts.loaded ?? [] });
+
+				case 'run_loader': {
+					const endpoints = opts.refreshed ?? opts.loaded ?? [];
+					const before = (opts.loaded ?? []).map((e) => `${e.method} ${e.path}`);
+					const after = endpoints.map((e) => `${e.method} ${e.path}`);
+					return Promise.resolve({
+						loadedAt: 2,
+						endpoints,
+						added: after.filter((key) => !before.includes(key)),
+						removed: before.filter((key) => !after.includes(key)),
+						pages: 1
+					});
+				}
 				case 'loader_templates':
 					return Promise.resolve([
 						[

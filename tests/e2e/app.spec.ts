@@ -213,3 +213,49 @@ test('the loader offers templates, OpenAPI first', async ({ page }) => {
 	const options = page.getByRole('option');
 	await expect(options.first()).toHaveText('OpenAPI');
 });
+
+/**
+ * The guarantee the overlay model exists for, in the README's words: "Losing a
+ * body to a refresh is the one thing this design exists to prevent."
+ *
+ * Loaded endpoints are a cache, not the truth. What you type against one is
+ * yours, matched back by `METHOD /path`, and an endpoint the API stops
+ * reporting is marked rather than deleted.
+ */
+test('a body written against a loaded endpoint survives the endpoint vanishing', async ({
+	page
+}) => {
+	const created = {
+		method: 'POST',
+		path: '/users',
+		name: 'createUser',
+		description: ''
+	};
+
+	await install(page, {
+		sections: [section({ loader })],
+		loaded: [created],
+		// The refresh no longer reports it.
+		refreshed: []
+	});
+	await page.goto('/');
+
+	// Selecting is what promotes a loaded endpoint into the overlay, so this is
+	// the step that gives what follows somewhere to live.
+	await page.getByText('createUser').click();
+
+	const editor = page.locator('.cm-content').first();
+	await editor.click();
+	await page.keyboard.type('keep-me');
+	await expect(editor).toContainText('keep-me');
+
+	await page.getByText('Acme', { exact: true }).click({ button: 'right' });
+	await page.getByRole('menuitem', { name: 'Refresh endpoints' }).click();
+
+	// Still listed, and flagged rather than quietly dropped.
+	await expect(page.getByTitle('No longer reported by the loader').first()).toBeVisible();
+	await expect(page.getByText('createUser')).toBeVisible();
+
+	// And the work is still there.
+	await expect(page.locator('.cm-content').first()).toContainText('keep-me');
+});
