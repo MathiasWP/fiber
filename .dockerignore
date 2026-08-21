@@ -9,3 +9,6 @@ build
 static
 src
 *.md
+# Read by `-f`, never needed inside the context — and while it sat there, every
+# edit to it invalidated the COPY layer and rebuilt the world.
+Dockerfile*

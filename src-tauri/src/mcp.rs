@@ -554,6 +554,72 @@ pub fn app_data_dir() -> std::path::PathBuf {
         .join("dev.fiber.app")
 }
 
+/// Prints this machine's credentials as the JSON map the container reads from
+/// `FIBER_SECRETS`, so setting a containerised server up is a pipe rather than
+/// an afternoon of copying tokens by hand:
+///
+/// ```sh
+/// fiber mcp export-secrets | thv secret set fiber-secrets
+/// ```
+///
+/// This is the **one** thing the rest of the app refuses to do — read a secret
+/// back out of the keychain. It is here because the alternative was worse: a
+/// container cannot reach the keychain, so every one of these values had to be
+/// found and pasted somewhere by hand anyway, and a person doing that by hand
+/// leaves them in a shell history and a scratch file. Three things keep the
+/// blast radius small:
+///
+/// - only collections already shared over MCP are included, so this exports
+///   nothing that an agent could not already use;
+/// - the output goes to stdout and nowhere else — it is never written to a file;
+/// - it refuses to run into a terminal, so it cannot be dumped into scrollback
+///   by someone who only wanted a look. It has to be piped somewhere.
+pub fn export_secrets() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{IsTerminal, Write};
+
+    if std::io::stdout().is_terminal() {
+        return Err("This prints credentials, so it only writes to a pipe.\n\
+                    Try: fiber mcp export-secrets | thv secret set fiber-secrets"
+            .into());
+    }
+
+    let sections = store::load_all(&store::sections_dir(&app_data_dir()))?;
+    let exported = collect_secrets(&sections, crate::secrets::get);
+
+    // How many, not which: stderr is the only channel a person is watching here,
+    // and naming the collections would defeat the point of the terminal guard.
+    eprintln!(
+        "{} credential(s) from {} shared collection(s).",
+        exported.len(),
+        sections.iter().filter(|section| section.mcp.enabled).count()
+    );
+
+    let mut out = std::io::stdout();
+    serde_json::to_writer(&mut out, &serde_json::Value::Object(exported))?;
+    out.flush()?;
+    Ok(())
+}
+
+/// The selection rule, with the keychain passed in — the same shape auth.rs
+/// uses, and for the same reason: it is the part worth testing.
+fn collect_secrets(
+    sections: &[Section],
+    lookup: impl Fn(&str) -> Option<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut exported = serde_json::Map::new();
+    for section in sections.iter().filter(|section| section.mcp.enabled) {
+        let Some(reference) = section.auth.secret_ref() else {
+            continue;
+        };
+        // A shared collection whose credential was never filled in is a normal
+        // state, not an error — it is simply nothing to export.
+        if let Some(value) = lookup(reference) {
+            exported.insert(reference.to_string(), serde_json::Value::String(value));
+        }
+    }
+    exported
+}
+
 /// Serves MCP over stdio until the client disconnects.
 pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let data = app_data_dir();
@@ -581,6 +647,50 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     use crate::store::SavedRequest;
+
+    #[test]
+    fn only_shared_collections_have_their_credentials_exported() {
+        let mut shared = section(true, false);
+        shared.id = "shared".into();
+        shared.auth = crate::auth::AuthConfig::Bearer {
+            secret_ref: "shared:auth".into(),
+        };
+
+        // Hidden from MCP entirely, so the container could not use this even if
+        // it had the token. Exporting it would hand out a credential for
+        // something the user deliberately did not share.
+        let mut hidden = section(false, false);
+        hidden.id = "hidden".into();
+        hidden.auth = crate::auth::AuthConfig::Bearer {
+            secret_ref: "hidden:auth".into(),
+        };
+
+        // Shared, but no auth configured — nothing to export, and not an error.
+        let mut open = section(true, false);
+        open.id = "open".into();
+
+        let exported = collect_secrets(&[shared, hidden, open], |reference| {
+            Some(format!("value-for-{reference}"))
+        });
+
+        assert_eq!(exported.len(), 1);
+        assert_eq!(
+            exported.get("shared:auth").and_then(|value| value.as_str()),
+            Some("value-for-shared:auth")
+        );
+    }
+
+    #[test]
+    fn a_shared_collection_with_no_credential_yet_is_skipped() {
+        let mut waiting = section(true, false);
+        waiting.auth = crate::auth::AuthConfig::Bearer {
+            secret_ref: "sec-1:auth".into(),
+        };
+
+        // The keychain has nothing under that reference — the user set the auth
+        // up but never signed in.
+        assert!(collect_secrets(&[waiting], |_| None).is_empty());
+    }
 
     fn section(enabled: bool, allow_writes: bool) -> Section {
         Section {

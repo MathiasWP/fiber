@@ -18,6 +18,8 @@ on:
 
 permissions:
   contents: write
+  # The MCP image is published to this repository's GHCR namespace.
+  packages: write
 
 concurrency:
   group: release
@@ -191,8 +193,106 @@ jobs:
           fi
           echo "$sigs signed updater artifact(s)."
 
+  # The headless MCP server, as a container image — so nobody has to build one
+  # to run `thv run ghcr.io/mathiaswp/fiber-mcp`. Two native runners rather than
+  # one with QEMU: aws-lc-rs compiles assembly, and emulating that takes tens of
+  # minutes where a native runner takes a few.
+  #
+  # Each runner pushes an untagged blob and reports its digest; the manifest job
+  # below stitches the two into one multi-arch tag. That is the only way to get
+  # a single tag out of two separate machines.
+  image:
+    needs: draft
+    if: needs.draft.outputs.release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runs-on: ubuntu-latest
+          - platform: linux/arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # GHCR rejects an uppercase path, and the owner here is `MathiasWP`.
+      - name: Work out the image name
+        id: meta
+        run: echo "image=ghcr.io/$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')/fiber-mcp" >> "$GITHUB_OUTPUT"
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          # No tag: a tag pushed from two runners would leave whichever finished
+          # last as the whole image, dropping the other architecture.
+          outputs: type=image,name=${{ steps.meta.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      # Named by digest rather than written into a file, so the manifest job can
+      # reconstruct the references from the filenames alone.
+      - name: Hand the digest to the manifest job
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  image-manifest:
+    needs: [draft, image]
+    if: needs.draft.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # `latest` moves with every release, which is what the README's one-liner
+      # follows; the version tag is what anyone pinning should use.
+      - name: Stitch the two architectures into one tag
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          VERSION: ${{ needs.draft.outputs.version }}
+        run: |
+          digests=""
+          for file in /tmp/digests/*; do
+            digests="$digests $IMAGE@sha256:$(basename "$file")"
+          done
+          docker buildx imagetools create \
+            --tag "$IMAGE:$VERSION" \
+            --tag "$IMAGE:latest" \
+            $digests
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+
   publish:
-    needs: [draft, build]
+    needs: [draft, build, image-manifest]
     if: needs.draft.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:

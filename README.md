@@ -91,9 +91,15 @@ looks fine until the server says otherwise.
 In the OS keychain. The collection file holds only a reference to one, so the
 file stays safe to share or commit.
 
-There is no way to read a secret back out. The app can write one, and ask
-whether one exists. Nothing more. The keychain is read once per run and kept in
-memory from then on.
+The app can write a secret and ask whether one exists. It cannot show you one,
+and nothing in the UI reads one back. The keychain is read once per run and kept
+in memory from then on.
+
+The single exception is `fiber mcp export-secrets`, which exists so that a
+containerised copy can be given the credentials it cannot fetch itself — see
+[`deploy/toolhive.md`](deploy/toolhive.md). It covers only the collections you
+have shared over MCP, it writes to a pipe and refuses a terminal, and you have
+to run it deliberately.
 
 A header you type on a request beats the collection's auth — for "just this
 once, use a different token". `Cookie` is the exception, and has to be: cookies
@@ -134,12 +140,23 @@ body to a refresh is the one thing this design exists to prevent.
 
 ## MCP
 
-The same binary is an MCP server:
+The app you already installed *is* the MCP server — `fiber mcp` is the same
+binary with a different first argument. There is nothing else to install, and
+nothing to build.
+
+```sh
+# macOS, Claude Code
+claude mcp add fiber -- /Applications/Fiber.app/Contents/MacOS/fiber mcp
+```
+
+For any other client, that is the same two things in its own config file:
 
 ```jsonc
-// e.g. Claude Code's mcp config
-{ "fiber": { "command": "/path/to/fiber", "args": ["mcp"] } }
+{ "fiber": { "command": "/Applications/Fiber.app/Contents/MacOS/fiber", "args": ["mcp"] } }
 ```
+
+The binary lives at `/Applications/Fiber.app/Contents/MacOS/fiber` on macOS,
+`/usr/bin/fiber` on Linux, and `Fiber.exe` in the install directory on Windows.
 
 It reads the same files and needs no running app. A new collection is **shared
 read-only** — visible and callable with GET/HEAD/OPTIONS — with a second switch
@@ -151,8 +168,22 @@ Two tools exist for jq specifically: `loader_manifest` fetches your raw
 manifest, and `try_loader_filter` tests a filter against it. So you can ask an
 agent to write a loader filter instead of learning jq first.
 
-It also builds without the desktop app for containers — see
-[`deploy/toolhive.md`](deploy/toolhive.md).
+### Without the app
+
+It also builds without the desktop app at all, as a ~30MB static image for a
+container manager — for a collections repo on a server, or to put ToolHive's
+proxy and audit log in front of your agents. That install is one command too:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MathiasWP/fiber/main/scripts/toolhive.sh | bash
+```
+
+It finds your collections, copies the credentials for the collections you have
+shared straight from the keychain into ToolHive's encrypted store, and starts
+the server. Nothing is typed twice and nothing is pasted.
+
+See [`deploy/toolhive.md`](deploy/toolhive.md) for what each step does, and for
+running it by hand.
 
 ## History
 

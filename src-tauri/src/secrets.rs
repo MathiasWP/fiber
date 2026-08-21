@@ -3,9 +3,14 @@
 //! Section files hold a *reference* — never a value — so a collection is safe to
 //! share, safe to sync into a backup, and safe for the MCP server to read.
 //!
-//! There is deliberately no command to read a secret back out. The UI writes
-//! them and asks whether one exists; only Rust ever sees the value, on its way
-//! into an outgoing request.
+//! The UI writes them and asks whether one exists; only Rust ever sees the
+//! value, on its way into an outgoing request. There is deliberately no command
+//! that hands one back to the frontend.
+//!
+//! `fiber mcp export-secrets` is the single exception, and lives in mcp.rs
+//! rather than here so that it stays a deployment tool rather than an API: a
+//! container cannot reach the keychain, and the alternative was every user
+//! copying the same values out by hand. See mcp::export_secrets.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
