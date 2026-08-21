@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import type { LoadedEndpoint, ResponseData, Section } from '../../src/lib/api';
+import type { LoadedEndpoint, ResponseData, Section, SectionFileError } from '../../src/lib/api';
 
 /**
  * A fake Tauri backend, installed before the app's own scripts run.
@@ -57,6 +57,8 @@ export const TEMPLATES: [string, string][] = [
 
 export interface MockOptions {
 	sections?: Section[];
+	/** Files `list_sections` reports as unreadable, alongside the good sections. */
+	sectionErrors?: SectionFileError[];
 	/** What the loader has already reported, i.e. `loader_cache`. */
 	loaded?: LoadedEndpoint[];
 	/** What a refresh reports instead. Defaults to `loaded` — no change. */
@@ -129,9 +131,23 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 			switch (cmd) {
 				// Startup. Anything the app asks for before a test does anything.
 				case 'list_sections':
-					return Promise.resolve(opts.sections ?? []);
+					return Promise.resolve({
+						sections: opts.sections ?? [],
+						errors: opts.sectionErrors ?? []
+					});
 				case 'history_list':
 					return Promise.resolve([]);
+				case 'history_body':
+					return Promise.resolve(null);
+				// The quit-flush wiring listens for `flush-before-exit` and for the
+				// window's own close event; both go through the event plugin. The
+				// resolved number stands in for Tauri's event id.
+				case 'plugin:event|listen':
+					return Promise.resolve(0);
+				case 'plugin:event|unlisten':
+					return Promise.resolve(null);
+				case 'flush_complete':
+					return Promise.resolve(null);
 				case 'sections_path':
 					return Promise.resolve('/tmp/fiber/sections');
 				case 'plugin:app|version':

@@ -20,10 +20,45 @@ use tokio::sync::oneshot;
 /// memory. The full byte count is still reported as `size_bytes`.
 const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
+/// Applied when a spec names no timeout of its own. An API client that can
+/// hang forever because a server stopped answering mid-body helps nobody, and
+/// a minute is longer than any response worth waiting for.
+const DEFAULT_TIMEOUT_MS: u64 = 60_000;
+
+/// Ceiling on manually-followed redirects, matching the client-level policy.
+const MAX_REDIRECTS: usize = 10;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Header {
     pub name: String,
     pub value: String,
+}
+
+/// Headers that carry a credential. They must never travel back to a model
+/// (see `mcp`) and never land in the history database — a token in a response
+/// header outlives its request the moment either happens.
+pub fn is_credential(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "authorization" | "cookie" | "set-cookie" | "proxy-authorization" | "x-api-key"
+    )
+}
+
+/// The same headers with their credential values blanked. Names survive, so
+/// "the server did set a cookie" stays visible; the cookie itself does not.
+pub fn redact(headers: &[Header]) -> Vec<Header> {
+    headers
+        .iter()
+        .map(|header| Header {
+            name: header.name.clone(),
+            value: if is_credential(&header.name) {
+                "<redacted>".into()
+            } else {
+                header.value.clone()
+            },
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,6 +85,14 @@ pub struct RequestSpec {
     pub follow_redirects: bool,
     #[serde(default)]
     pub accept_invalid_certs: bool,
+    /// The name of the header `apply_auth` injected the section's credential
+    /// into, if it did. Never set by the frontend — `skip` keeps it off the
+    /// bridge — because it exists for one reason: reqwest strips
+    /// `Authorization` and `Cookie` when a redirect changes host, but knows
+    /// nothing about a custom credential header like `X-Api-Key`. Naming the
+    /// header here is what lets the redirect handling below shed it too.
+    #[serde(skip)]
+    pub sensitive_header: Option<String>,
 }
 
 fn yes() -> bool {
@@ -99,6 +142,10 @@ pub enum HttpError {
     Cancelled,
     #[error("authentication failed: {0}")]
     Auth(String),
+    // The section file could not be read at send time. Its own message names
+    // the file; wrapping it in more words would only bury that.
+    #[error("{0}")]
+    Section(String),
     #[error("could not connect: {0}")]
     Connect(String),
     #[error("{0}")]
@@ -150,7 +197,14 @@ pub struct HttpState {
 
 impl HttpState {
     fn client(&self, key: ClientKey) -> Result<reqwest::Client, HttpError> {
-        let mut clients = self.clients.lock().unwrap();
+        // A poisoned lock means some other request's thread panicked while
+        // holding it. The data here (a client cache, a cancel map) is still
+        // coherent; refusing every request from then on would turn one panic
+        // into a dead app. Same reasoning at every `into_inner` below.
+        let mut clients = self
+            .clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(client) = clients.get(&key) {
             return Ok(client.clone());
         }
@@ -177,7 +231,11 @@ impl HttpState {
     /// Drops the cancel handle for `id`, if any, which resolves the receiver
     /// held by the in-flight request.
     pub fn cancel(&self, id: &str) -> bool {
-        self.inflight.lock().unwrap().remove(id).is_some()
+        self.inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id)
+            .is_some()
     }
 }
 
@@ -201,6 +259,41 @@ pub async fn send(state: &HttpState, spec: RequestSpec) -> Result<ResponseData, 
     send_streaming(state, spec, None).await
 }
 
+/// The headers reqwest's own redirect policy already removes on a cross-host
+/// hop. A credential living in one of these can keep the fast path; anything
+/// else has to be walked by hand.
+fn reqwest_strips(name: &str) -> bool {
+    matches!(
+        name.trim().to_ascii_lowercase().as_str(),
+        "authorization" | "cookie" | "proxy-authorization" | "www-authenticate"
+    )
+}
+
+/// Scheme, host and port — the parts a credential is scoped to.
+fn origin_of(url: &reqwest::Url) -> (String, Option<String>, Option<u16>) {
+    (
+        url.scheme().to_string(),
+        url.host_str().map(str::to_owned),
+        url.port_or_known_default(),
+    )
+}
+
+/// Everything `run` needs to issue — and, on the manual-redirect path,
+/// re-issue — the request. Owned parts rather than a `RequestBuilder`, because
+/// following a redirect by hand means building the next hop from them.
+struct Outbound {
+    client: reqwest::Client,
+    method: reqwest::Method,
+    url: reqwest::Url,
+    headers: reqwest::header::HeaderMap,
+    body: Option<String>,
+    timeout: Duration,
+    /// Set only when redirects are followed here rather than by the client:
+    /// the auth-injected header to shed the moment a hop leaves the original
+    /// scheme+host+port.
+    sensitive: Option<HeaderName>,
+}
+
 pub async fn send_streaming(
     state: &HttpState,
     spec: RequestSpec,
@@ -210,12 +303,7 @@ pub async fn send_streaming(
         .map_err(|_| HttpError::Method(spec.method.clone()))?;
     let url = reqwest::Url::parse(spec.url.trim()).map_err(|e| HttpError::Url(e.to_string()))?;
 
-    let client = state.client(ClientKey {
-        follow_redirects: spec.follow_redirects,
-        accept_invalid_certs: spec.accept_invalid_certs,
-    })?;
-
-    let mut request = client.request(method, url);
+    let mut headers = reqwest::header::HeaderMap::new();
     for header in &spec.headers {
         // The UI's header table keeps blank rows around for editing.
         let name = header.name.trim();
@@ -226,38 +314,129 @@ pub async fn send_streaming(
             .map_err(|_| HttpError::HeaderName(header.name.clone()))?;
         let value = HeaderValue::from_str(&header.value)
             .map_err(|_| HttpError::HeaderValue(header.name.clone()))?;
-        request = request.header(name, value);
+        headers.append(name, value);
     }
-    if let Some(body) = spec.body.filter(|b| !b.is_empty()) {
-        request = request.body(body);
-    }
-    if let Some(ms) = spec.timeout_ms {
-        request = request.timeout(Duration::from_millis(ms));
-    }
+
+    // A credential in a custom header switches redirect handling to the manual
+    // path (see `Outbound::sensitive`); reqwest already sheds the standard
+    // ones itself, so those requests keep the client-level fast path.
+    let sensitive = spec
+        .sensitive_header
+        .as_deref()
+        .filter(|_| spec.follow_redirects)
+        .filter(|name| !reqwest_strips(name))
+        .and_then(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok());
+
+    let client = state.client(ClientKey {
+        follow_redirects: spec.follow_redirects && sensitive.is_none(),
+        accept_invalid_certs: spec.accept_invalid_certs,
+    })?;
+
+    let outbound = Outbound {
+        client,
+        method,
+        url,
+        headers,
+        body: spec.body.filter(|b| !b.is_empty()),
+        timeout: Duration::from_millis(spec.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
+        sensitive,
+    };
 
     let (cancel_tx, cancel_rx) = oneshot::channel();
     state
         .inflight
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(spec.id.clone(), cancel_tx);
 
-    let outcome = run(request, cancel_rx, sink).await;
-    state.inflight.lock().unwrap().remove(&spec.id);
+    let outcome = run(outbound, cancel_rx, sink).await;
+    state
+        .inflight
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&spec.id);
     outcome
 }
 
 async fn run(
-    request: reqwest::RequestBuilder,
+    outbound: Outbound,
     mut cancel: oneshot::Receiver<()>,
     sink: Option<&ChunkSink>,
 ) -> Result<ResponseData, HttpError> {
     let started = Instant::now();
+    let Outbound {
+        client,
+        mut method,
+        mut url,
+        mut headers,
+        mut body,
+        timeout,
+        sensitive,
+    } = outbound;
+    let origin = origin_of(&url);
+    let mut hops = 0;
 
-    let response = tokio::select! {
-        biased;
-        _ = &mut cancel => return Err(HttpError::Cancelled),
-        result = request.send() => result.map_err(classify)?,
+    let response = loop {
+        let mut request = client
+            .request(method.clone(), url.clone())
+            .headers(headers.clone())
+            .timeout(timeout);
+        if let Some(body) = &body {
+            request = request.body(body.clone());
+        }
+
+        let response = tokio::select! {
+            biased;
+            _ = &mut cancel => return Err(HttpError::Cancelled),
+            result = request.send() => result.map_err(classify)?,
+        };
+
+        // Only the manual path looks at redirects — on the fast path the
+        // client has already followed them and this is the final answer.
+        let Some(sensitive_name) = sensitive.as_ref() else {
+            break response;
+        };
+        if !response.status().is_redirection() {
+            break response;
+        }
+        let Some(next) = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|location| url.join(location).ok())
+        else {
+            // A redirect status with no usable Location is the final answer.
+            break response;
+        };
+        if hops >= MAX_REDIRECTS {
+            return Err(HttpError::Transport("too many redirects".into()));
+        }
+
+        // The same method rewrites reqwest's own policy performs: 303 (and,
+        // by long-standing convention, 301/302 for POST) replay as a bodyless
+        // GET; 307/308 replay exactly as sent.
+        let becomes_get = match response.status().as_u16() {
+            301 | 302 => method == reqwest::Method::POST,
+            303 => method != reqwest::Method::HEAD,
+            307 | 308 => false,
+            // 300, 304 and friends carry no follow semantics.
+            _ => break response,
+        };
+        if becomes_get {
+            method = reqwest::Method::GET;
+            body = None;
+            headers.remove(CONTENT_TYPE);
+            headers.remove(reqwest::header::CONTENT_LENGTH);
+        }
+        // The reason this loop exists: leaving the original origin takes the
+        // credential header out of the request — and it stays out, even if a
+        // later hop happens to lead back.
+        if origin_of(&next) != origin {
+            headers.remove(sensitive_name);
+        }
+
+        url = next;
+        hops += 1;
     };
     let ttfb_ms = started.elapsed().as_millis() as u64;
 
@@ -484,6 +663,7 @@ mod tests {
                 timeout_ms: Some(5_000),
                 follow_redirects: true,
                 accept_invalid_certs: false,
+                sensitive_header: None,
             },
         )
         .await
@@ -532,6 +712,7 @@ mod tests {
                 timeout_ms: Some(5_000),
                 follow_redirects: true,
                 accept_invalid_certs: false,
+                sensitive_header: None,
             },
         )
         .await
@@ -565,6 +746,7 @@ mod tests {
             timeout_ms: Some(30_000),
             follow_redirects: true,
             accept_invalid_certs: false,
+            sensitive_header: None,
         };
 
         let sending = tokio::spawn({
@@ -621,5 +803,138 @@ mod tests {
         assert!(!looks_textual(Some("image/png")));
         assert!(!looks_textual(Some("application/octet-stream")));
         assert!(!looks_textual(None));
+    }
+
+    /// Serves a scripted sequence of responses, one per connection, recording
+    /// each request — enough to walk a redirect chain and see what was sent at
+    /// every hop.
+    async fn scripted_server(
+        responses: Vec<String>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let requests = seen.clone();
+        tokio::spawn(async move {
+            for response in responses {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 4096];
+                let read = socket.read(&mut buf).await.unwrap_or(0);
+                requests
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf[..read]).to_string());
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        (format!("http://{addr}"), seen)
+    }
+
+    fn spec_with_api_key(url: String) -> RequestSpec {
+        RequestSpec {
+            id: "redirect-test".into(),
+            request_id: "req-test".into(),
+            section_id: None,
+            method: "GET".into(),
+            url,
+            headers: vec![Header {
+                name: "X-Api-Key".into(),
+                value: "sekret".into(),
+            }],
+            body: None,
+            timeout_ms: Some(5_000),
+            follow_redirects: true,
+            accept_invalid_certs: false,
+            sensitive_header: Some("X-Api-Key".into()),
+        }
+    }
+
+    /// A redirect that stays on the same scheme+host+port keeps the custom
+    /// credential header — moving within the API is the normal case, and
+    /// dropping the key there would break every redirecting endpoint.
+    #[tokio::test]
+    async fn a_same_host_redirect_keeps_a_custom_auth_header() {
+        let (url, seen) = scripted_server(vec![
+            "HTTP/1.1 302 Found\r\nLocation: /landing\r\nContent-Length: 0\r\n\r\n".into(),
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".into(),
+        ])
+        .await;
+
+        let state = HttpState::default();
+        let response = send(&state, spec_with_api_key(format!("{url}/start")))
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status, 200);
+        assert!(response.final_url.ends_with("/landing"), "{}", response.final_url);
+
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for request in requests.iter() {
+            assert!(
+                request.to_lowercase().contains("x-api-key: sekret"),
+                "the key should have travelled to both hops: {request}"
+            );
+        }
+    }
+
+    /// The gap reqwest leaves open: it sheds `Authorization` and `Cookie` on a
+    /// cross-host redirect, but a custom header like `X-Api-Key` would ride
+    /// along to whatever host the redirect named. It must not.
+    #[tokio::test]
+    async fn a_cross_host_redirect_drops_the_custom_auth_header() {
+        let (elsewhere, landed) = scripted_server(vec![
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".into(),
+        ])
+        .await;
+        // Same loopback address, different port — a different origin.
+        let (url, _) = scripted_server(vec![format!(
+            "HTTP/1.1 302 Found\r\nLocation: {elsewhere}/landed\r\nContent-Length: 0\r\n\r\n"
+        )])
+        .await;
+
+        let state = HttpState::default();
+        let response = send(&state, spec_with_api_key(format!("{url}/start")))
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status, 200);
+        let requests = landed.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            !requests[0].to_lowercase().contains("x-api-key"),
+            "the key crossed origins: {}",
+            requests[0]
+        );
+        assert!(requests[0].starts_with("GET /landed"), "{}", requests[0]);
+    }
+
+    /// A 303 answer to a POST replays as a bodyless GET — the semantics the
+    /// manual path has to reproduce because the client no longer does it.
+    #[tokio::test]
+    async fn a_see_other_redirect_becomes_a_get() {
+        let (url, seen) = scripted_server(vec![
+            "HTTP/1.1 303 See Other\r\nLocation: /result\r\nContent-Length: 0\r\n\r\n".into(),
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".into(),
+        ])
+        .await;
+
+        let state = HttpState::default();
+        let mut spec = spec_with_api_key(format!("{url}/submit"));
+        spec.method = "POST".into();
+        spec.body = Some("{\"a\":1}".into());
+
+        let response = send(&state, spec).await.expect("request should succeed");
+        assert_eq!(response.status, 200);
+
+        let requests = seen.lock().unwrap();
+        assert!(requests[0].starts_with("POST /submit"), "{}", requests[0]);
+        assert!(requests[1].starts_with("GET /result"), "{}", requests[1]);
+        assert!(!requests[1].contains("{\"a\":1}"), "the body should not replay");
     }
 }

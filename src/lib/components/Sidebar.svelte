@@ -275,6 +275,23 @@
 	}
 
 	/**
+	 * Every request's name by id, built once per collections change.
+	 *
+	 * The history tab needs a name per entry, per row and again per keystroke of
+	 * the filter — and `findRequest` walks every section to answer each one, so
+	 * a few hundred entries over a few collections was a scan-per-scan-per-scan.
+	 * One map answers all of them.
+	 */
+	const requestNames = $derived.by(() => {
+		const names = new Map<string, string>();
+		for (const section of collections.sections) {
+			for (const request of section.requests) names.set(request.id, request.name);
+			for (const entry of section.overlay) names.set(entry.id, entry.name);
+		}
+		return names;
+	});
+
+	/**
 	 * The name of the request an entry came from, when there still is one.
 	 *
 	 * Plenty of entries outlive their request: sent from scratch, sent by a
@@ -282,7 +299,7 @@
 	 * no name rather than an invented one — the URL underneath is their identity.
 	 */
 	function requestName(entry: HistoryEntry): string | null {
-		return collections.findRequest(entry.requestId)?.request.name ?? null;
+		return requestNames.get(entry.requestId) ?? null;
 	}
 
 	/**
@@ -298,6 +315,18 @@
 			return `${name} ${entry.method} ${entry.url} ${status}`.toLowerCase().includes(needle);
 		});
 	});
+
+	/**
+	 * How many history rows are rendered before asking. The list can hold 500
+	 * entries, each a two-line row with its own context menu — most sessions
+	 * never look past the first screenful, and the ones that do get the rest on
+	 * request rather than everyone paying for them up front.
+	 */
+	const HISTORY_PAGE = 100;
+	let showAllHistory = $state(false);
+	const shownHistory = $derived(
+		showAllHistory ? visibleHistory : visibleHistory.slice(0, HISTORY_PAGE)
+	);
 
 	let hint = $state<DragHint>(null);
 
@@ -986,7 +1015,7 @@
 		</div>
 
 		<div class="flex-1 overflow-y-auto min-h-0">
-			{#each visibleHistory as entry (entry.id)}
+			{#each shownHistory as entry (entry.id)}
 				<ContextMenu.Root>
 					<ContextMenu.Trigger
 						class="block w-full text-left px-4 py-2 border-b border-border/50 hover:bg-raised transition-colors cursor-default"
@@ -1066,7 +1095,22 @@
 					{/if}
 				</p>
 			{/each}
+
+			{#if !showAllHistory && visibleHistory.length > HISTORY_PAGE}
+				<button
+					class="w-full px-4 py-2 text-2.5 text-muted text-left hover:(bg-raised text-text) transition-colors"
+					onclick={() => (showAllHistory = true)}
+				>
+					Show all {visibleHistory.length.toLocaleString()} entries
+				</button>
+			{/if}
 		</div>
+
+		{#if history.error}
+			<p class="px-4 py-2 text-2.5 text-bad border-t border-border shrink-0">
+				{history.error}
+			</p>
+		{/if}
 	{/if}
 
 	<footer class="flex items-center gap-2 px-2 h-8 border-t border-border shrink-0">

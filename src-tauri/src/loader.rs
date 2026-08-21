@@ -198,6 +198,9 @@ pub enum LoaderError {
     BadShape(String),
     #[error("loader took longer than {}s", RUN_TIMEOUT.as_secs())]
     Timeout,
+    // The section file could not be read; its message already names the file.
+    #[error("{0}")]
+    Section(String),
 }
 
 impl Serialize for LoaderError {
@@ -407,12 +410,7 @@ pub fn loaders_dir(app_data_dir: &std::path::Path) -> std::path::PathBuf {
 
 fn cache_path(dir: &std::path::Path, section_id: &str) -> Option<std::path::PathBuf> {
     // Same guard as section files: an id becomes a file name.
-    let safe = !section_id.is_empty()
-        && section_id.len() <= 128
-        && section_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    safe.then(|| dir.join(format!("{section_id}.json")))
+    crate::store::is_safe_id(section_id).then(|| dir.join(format!("{section_id}.json")))
 }
 
 /// The last successful run. Loader output is a cache, never the source of
@@ -434,7 +432,16 @@ pub fn write_cache(
     std::fs::create_dir_all(dir)?;
     let encoded = serde_json::to_string_pretty(cache)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-    std::fs::write(path, encoded)
+
+    // Same write discipline as section files — temp, sync, rename — and the
+    // same per-process temp name, because the app and a headless `fiber mcp`
+    // can both refresh the same loader.
+    let temp = dir.join(format!("{section_id}.json.tmp-{}", std::process::id()));
+    let mut file = std::fs::File::create(&temp)?;
+    std::io::Write::write_all(&mut file, encoded.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temp, &path)
 }
 
 pub fn forget_cache(dir: &std::path::Path, section_id: &str) {

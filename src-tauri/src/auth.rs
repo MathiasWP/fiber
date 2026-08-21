@@ -134,11 +134,19 @@ pub struct AuthState {
 impl AuthState {
     /// Drops a section's token so the next send fetches a new one.
     pub fn invalidate(&self, section_id: &str) {
-        self.tokens.lock().unwrap().remove(section_id);
+        // A poisoned lock is another thread's panic, not this cache's problem:
+        // the map is still coherent, and at worst a token gets re-fetched.
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(section_id);
     }
 
     fn cached(&self, section_id: &str) -> Option<String> {
-        let tokens = self.tokens.lock().unwrap();
+        let tokens = self
+            .tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         tokens
             .get(section_id)
             .filter(|token| token.valid())
@@ -147,10 +155,10 @@ impl AuthState {
 
     pub(crate) fn store(&self, section_id: &str, value: String, ttl_seconds: u64) {
         let expires_at = (ttl_seconds > 0).then(|| Instant::now() + Duration::from_secs(ttl_seconds));
-        self.tokens.lock().unwrap().insert(
-            section_id.to_string(),
-            CachedToken { value, expires_at },
-        );
+        self.tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(section_id.to_string(), CachedToken { value, expires_at });
     }
 }
 
@@ -170,7 +178,7 @@ pub async fn header_for<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
-    let fetch = || section.auth.secret_ref().and_then(|reference| lookup(reference));
+    let fetch = || section.auth.secret_ref().and_then(lookup);
 
     match &section.auth {
         AuthConfig::None => Ok(None),
@@ -271,6 +279,7 @@ async fn log_in(
         timeout_ms: Some(30_000),
         follow_redirects: true,
         accept_invalid_certs: false,
+        sensitive_header: None,
     };
 
     let response = crate::http::send(http, spec)

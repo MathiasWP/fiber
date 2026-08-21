@@ -108,7 +108,12 @@ class History {
 		// Set first so concurrent calls for the same entry don't both fetch.
 		entry.bodyLoaded = true;
 		try {
-			entry.body = (await historyBody(entry.id)) ?? '';
+			const body = (await historyBody(entry.id)) ?? '';
+			// A `release` may have landed while the fetch was in flight — clicking
+			// through requests faster than their bodies load. The flag it cleared
+			// says this body is no longer wanted; attaching it anyway would park a
+			// possibly-huge string on an entry nobody is looking at.
+			if (entry.bodyLoaded) entry.body = body;
 		} catch (error) {
 			entry.bodyLoaded = false;
 			this.error = String(error);
@@ -160,31 +165,66 @@ class History {
 		}
 	}
 
+	/**
+	 * A body no longer on screen has no business staying in memory.
+	 *
+	 * `settle` keeps the full body on the entry so the pane can show it without
+	 * a round trip — but bodies run to 32 MB, and an afternoon of requests held
+	 * that way is a leak with a delay on it. The body is already persisted on
+	 * the Rust side, so dropping it here costs one `historyBody` fetch if the
+	 * entry is ever looked at again — the same lazy path the History tab uses.
+	 */
+	release(id: string): void {
+		const entry = this.entries.find((candidate) => candidate.id === id);
+		// Never a pending entry: its body is still being streamed onto it.
+		if (!entry || entry.pending) return;
+		entry.body = undefined;
+		entry.bodyLoaded = false;
+	}
+
+	/**
+	 * Deletes are optimistic — the row vanishes on click — so a failed delete
+	 * has to put back what it took, or the UI claims an entry is gone that the
+	 * database still holds and will cheerfully show again after a restart.
+	 */
 	async remove(id: string): Promise<void> {
-		this.entries = this.entries.filter((entry) => entry.id !== id);
+		const index = this.entries.findIndex((entry) => entry.id === id);
+		if (index < 0) return;
+		const [removed] = this.entries.splice(index, 1);
 		try {
 			await historyDelete(id);
 		} catch (error) {
+			this.entries.splice(Math.min(index, this.entries.length), 0, removed);
 			this.error = String(error);
 		}
 	}
 
 	async clearFor(requestId: string): Promise<void> {
+		const removed = this.entries.filter((entry) => entry.requestId === requestId);
+		const picked = this.#selected[requestId];
 		this.entries = this.entries.filter((entry) => entry.requestId !== requestId);
 		delete this.#selected[requestId];
 		try {
 			await historyClearRequest(requestId);
 		} catch (error) {
+			// Newest-first order survives: the survivors kept theirs, and the
+			// removed slice kept its own, so a merge by timestamp restores both.
+			this.entries = [...this.entries, ...removed].sort((a, b) => b.at - a.at);
+			if (picked !== undefined) this.#selected[requestId] = picked;
 			this.error = String(error);
 		}
 	}
 
 	async clear(): Promise<void> {
+		const entries = this.entries;
+		const selected = this.#selected;
 		this.entries = [];
 		this.#selected = {};
 		try {
 			await historyClearAll();
 		} catch (error) {
+			this.entries = entries;
+			this.#selected = selected;
 			this.error = String(error);
 		}
 	}

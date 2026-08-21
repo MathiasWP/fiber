@@ -160,16 +160,22 @@ where
             Some(existing) if header.name.eq_ignore_ascii_case("cookie") => {
                 let already = existing.value.trim().trim_end_matches(';').trim();
                 existing.value = if already.is_empty() {
-                    header.value
+                    header.value.clone()
                 } else {
                     format!("{already}; {}", header.value.trim())
                 };
+                spec.sensitive_header = Some(header.name);
             }
             // Everything else is single-valued: a header typed on the request
             // wins, which is the escape hatch for "just this once, use a
-            // different token".
+            // different token" — and being the user's own header, it is not
+            // marked sensitive; only a credential *we* injected is ours to
+            // shed on a cross-origin redirect.
             Some(_) => {}
-            None => spec.headers.push(header),
+            None => {
+                spec.sensitive_header = Some(header.name.clone());
+                spec.headers.push(header);
+            }
         }
     }
 
@@ -274,6 +280,7 @@ mod tests {
             timeout_ms: Some(5_000),
             follow_redirects: true,
             accept_invalid_certs: false,
+            sensitive_header: None,
         }
     }
 
@@ -376,6 +383,24 @@ mod tests {
             .collect();
         assert_eq!(auth_headers.len(), 1);
         assert_eq!(auth_headers[0].value, "Bearer mine");
+        // Their token, their responsibility: a header the user typed is not
+        // ours to shed on a redirect.
+        assert_eq!(prepared.sensitive_header, None);
+    }
+
+    /// The header the section's credential went into is named on the spec, so
+    /// the HTTP layer knows which one to shed if a redirect leaves the host.
+    #[tokio::test]
+    async fn the_injected_header_is_marked_sensitive() {
+        let (base, _) = stale_token_api(false).await;
+        let http_state = HttpState::default();
+        let auth_state = AuthState::default();
+        let section = section_with_login(&base);
+
+        let prepared = apply_auth(&http_state, &auth_state, &section, spec_for(&base), &secret)
+            .await
+            .unwrap();
+        assert_eq!(prepared.sensitive_header.as_deref(), Some("Authorization"));
     }
 
     /// Cookies are a list: one typed on the request and one the section holds

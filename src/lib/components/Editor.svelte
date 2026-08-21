@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { javascript } from '@codemirror/lang-javascript';
 	import { json, jsonParseLinter } from '@codemirror/lang-json';
 	import { linter, lintGutter } from '@codemirror/lint';
-	import { Compartment, EditorState, Prec } from '@codemirror/state';
+	import { Annotation, Compartment, EditorState, Prec } from '@codemirror/state';
 	import { oneDark } from '@codemirror/theme-one-dark';
 	import { EditorView, placeholder as placeholderExt } from '@codemirror/view';
+	import { JSON_TOOLING_LIMIT } from '$lib/api';
 	import { placeholders } from '$lib/placeholders';
 	import { basicSetup } from 'codemirror';
 	import { untrack } from 'svelte';
@@ -15,7 +15,7 @@
 		value?: string;
 		readonly?: boolean;
 		/** JSON gets highlighting, folding and inline parse errors. */
-		language?: 'json' | 'text' | 'typescript';
+		language?: 'json' | 'text';
 		placeholder?: string;
 		/** Which of the two text sizes this editor follows. */
 		scope?: EditorScope;
@@ -32,6 +32,20 @@
 	let host = $state<HTMLDivElement>();
 	let view: EditorView | undefined;
 
+	/** Marks a transaction this component dispatched itself, from the `value` prop. */
+	const fromProp = Annotation.define<boolean>();
+
+	/**
+	 * The document's current text, as a string this component already holds.
+	 *
+	 * Every path that changes the doc keeps it current — the update listener for
+	 * typing and `format`, the sync effect for prop changes — so the effect can
+	 * ask "did `value` merely grow?" against a plain string instead of calling
+	 * `doc.toString()`, which for a streaming 32 MB body was a fresh full copy
+	 * per animation frame.
+	 */
+	let synced = '';
+
 	const editable = new Compartment();
 	const languageConf = new Compartment();
 	const themeConf = new Compartment();
@@ -39,15 +53,21 @@
 
 	const parseJson = jsonParseLinter();
 
-	function languageExtensions(lang: 'json' | 'text' | 'typescript') {
-		if (lang === 'typescript') return [javascript({ typescript: true })];
+	function languageExtensions(lang: 'json' | 'text') {
 		if (lang !== 'json') return [];
 		return [
 			json(),
 			// An empty document is not a JSON error — it's a body you haven't
 			// written yet, or a response with no content. Reporting "Unexpected
-			// EOF" there is just noise.
-			linter((target) => (target.state.doc.length === 0 ? [] : parseJson(target))),
+			// EOF" there is just noise. And an oversized one gets no lint pass at
+			// all: the linter is a whole JSON.parse of the document, run on top
+			// of the parse the language mode already did, which for a body of
+			// tens of megabytes is seconds of frozen UI to underline nothing.
+			linter((target) =>
+				target.state.doc.length === 0 || target.state.doc.length > JSON_TOOLING_LIMIT
+					? []
+					: parseJson(target)
+			),
 			lintGutter()
 		];
 	}
@@ -161,27 +181,66 @@
 					fontConf.of(fontTheme(untrack(() => editorFont.size(scope)))),
 					EditorView.updateListener.of((update) => {
 						if (!update.docChanged) return;
-						value = update.state.doc.toString();
+						// A change this component dispatched from the prop: `value`
+						// already says exactly this, so echoing it back would only
+						// materialize the whole document — per frame, when streaming.
+						if (update.transactions.some((tr) => tr.annotation(fromProp))) return;
+						synced = update.state.doc.toString();
+						value = synced;
 					})
 				]
 			})
 		});
 
 		view = instance;
+		synced = untrack(() => value);
 		return () => {
 			instance.destroy();
 			view = undefined;
 		};
 	});
 
+	/**
+	 * Whether `next` merely extends `prior` — the streaming case, where each
+	 * frame's value is the last one plus a chunk.
+	 *
+	 * Exact for anything small. Past a quarter megabyte the prefix compare is
+	 * itself a full walk of the old value every frame — the O(n²) this exists to
+	 * remove — so it samples instead: the head, and the stretch just before the
+	 * append point. A wholesale replacement that keeps the length growing *and*
+	 * matches both samples could fool it, but `prior` here is always the exact
+	 * string this component last put in the doc, and streams only ever append.
+	 */
+	function extendsPrior(next: string, prior: string): boolean {
+		if (next.length <= prior.length || prior.length === 0) return false;
+		if (prior.length <= 256 * 1024) return next.startsWith(prior);
+		const probe = 64;
+		return (
+			next.slice(0, probe) === prior.slice(0, probe) &&
+			next.slice(prior.length - probe, prior.length) === prior.slice(-probe)
+		);
+	}
+
 	// Push external changes in without clobbering what the user is typing — the
-	// equality check is what stops this ping-ponging with the update listener.
+	// `synced` check is what stops this ping-ponging with the update listener.
+	// When the new value strictly extends the old one, only the new tail is
+	// dispatched: CodeMirror then treats it as an append rather than tearing
+	// down and re-inserting the whole document on every streamed chunk.
 	$effect(() => {
 		const next = value;
-		if (!view || next === view.state.doc.toString()) return;
-		view.dispatch({
-			changes: { from: 0, to: view.state.doc.length, insert: next }
-		});
+		if (!view || next === synced) return;
+		if (extendsPrior(next, synced)) {
+			view.dispatch({
+				changes: { from: synced.length, insert: next.slice(synced.length) },
+				annotations: fromProp.of(true)
+			});
+		} else {
+			view.dispatch({
+				changes: { from: 0, to: view.state.doc.length, insert: next },
+				annotations: fromProp.of(true)
+			});
+		}
+		synced = next;
 	});
 
 	$effect(() => {

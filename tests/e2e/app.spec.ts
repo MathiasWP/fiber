@@ -10,6 +10,27 @@ const loader = {
 	ttlSeconds: 0
 };
 
+/**
+ * One corrupt TOML file must not take the rest of the collections down — but
+ * skipping it silently reads as data loss. The file is named, the parse error
+ * quoted, and the good sections load around it.
+ */
+test('a collection file that cannot be read is reported, not swallowed', async ({ page }) => {
+	await install(page, {
+		sections: [section()],
+		sectionErrors: [{ file: 'books.toml', message: 'expected `=` at line 3' }]
+	});
+	await page.goto('/');
+
+	// The good section still loads…
+	await expect(page.getByText('Acme', { exact: true })).toBeVisible();
+	// …and the bad file is named, with the reassurance that it is still on disk.
+	const notice = page.getByText(/Skipped 1 collection file/);
+	await expect(notice).toBeVisible();
+	await expect(notice).toContainText('books.toml');
+	await expect(notice).toContainText('untouched on disk');
+});
+
 test.describe('the collection header', () => {
 	test('the cog opens section settings', async ({ page }) => {
 		await install(page, { sections: [section()] });
@@ -324,6 +345,46 @@ test('a loaded endpoint arrives with the body its manifest declared', async ({ p
 
 	await page.getByText('activity_backfill_activity').click();
 	await expect(page.locator('.cm-content').first()).toContainText('"dryRun"');
+});
+
+/**
+ * Filling a generated body in is destructive to the placeholders that guided
+ * it. Reset is the way back: the manifest still holds the skeleton, so one
+ * click restores it — and with it the tabbable gaps.
+ */
+test('Reset restores the generated body after it has been edited', async ({ page }) => {
+	const skeleton = '{\n  "offset": number,\n  "dryRun": boolean\n}';
+	await install(page, {
+		sections: [section({ loader })],
+		loaded: [
+			{
+				method: 'POST',
+				path: '/activity/backfill-activity',
+				name: 'activity_backfill_activity',
+				description: '',
+				body: skeleton
+			}
+		]
+	});
+	await page.goto('/');
+
+	await page.getByText('activity_backfill_activity').click();
+	const editor = page.locator('.cm-content').first();
+	await expect(editor).toContainText('"dryRun"');
+
+	// Pristine body: nothing to reset yet.
+	const reset = page.getByRole('button', { name: 'Reset' });
+	await expect(reset).toBeDisabled();
+
+	// Type the offset in — the placeholder is gone, and Reset wakes up.
+	await editor.click();
+	await page.keyboard.press('ControlOrMeta+a');
+	await page.keyboard.type('{ "offset": 42 }');
+	await expect(reset).toBeEnabled();
+
+	await reset.click();
+	await expect(editor).toContainText('"dryRun"');
+	await expect(reset).toBeDisabled();
 });
 
 test.describe('searching the collections', () => {
