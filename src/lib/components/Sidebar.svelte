@@ -138,6 +138,44 @@
 	);
 
 	/**
+	 * A collection can have hundreds of imported or loader-provided endpoints.
+	 * Each row carries interactive machinery (a context menu and, for saved
+	 * requests, a drag target), so mounting all of them when a header opens
+	 * makes that click noticeably slow. Keep the initial mount to a useful first
+	 * page and let the person reveal the rest in the same order.
+	 */
+	const ENDPOINT_PAGE_SIZE = 100;
+	let endpointLimits = $state<Record<string, number>>({});
+
+	function endpointLimit(section: Section): number {
+		return endpointLimits[section.id] ?? ENDPOINT_PAGE_SIZE;
+	}
+
+	function shownRequests(section: Section, requests: SavedRequest[]): SavedRequest[] {
+		return requests.slice(0, endpointLimit(section));
+	}
+
+	function shownLoadedRows(
+		section: Section,
+		requests: SavedRequest[],
+		rows: LoadedRow[]
+	): LoadedRow[] {
+		return rows.slice(0, Math.max(0, endpointLimit(section) - requests.length));
+	}
+
+	function remainingEndpoints(section: Section, requests: SavedRequest[], rows: LoadedRow[]): number {
+		return Math.max(0, requests.length + rows.length - endpointLimit(section));
+	}
+
+	function showMoreEndpoints(section: Section): void {
+		endpointLimits[section.id] = endpointLimit(section) + ENDPOINT_PAGE_SIZE;
+	}
+
+	function showAllEndpoints(section: Section, total: number): void {
+		endpointLimits[section.id] = total;
+	}
+
+	/**
 	 * How much the search is keeping out of sight.
 	 *
 	 * Counted across every collection rather than the visible ones, because a
@@ -230,6 +268,9 @@
 			closedWhileSearching[section.id] = !closedWhileSearching[section.id];
 			return;
 		}
+		// Closing tears down the currently visible page. Start from the quick
+		// initial page when it is next opened, even if "Show all" was used.
+		if (!section.collapsed) delete endpointLimits[section.id];
 		section.collapsed = !section.collapsed;
 		collections.touch(section);
 	}
@@ -694,6 +735,9 @@
 					{@const open = searching
 						? !closedWhileSearching[section.id]
 						: !section.collapsed}
+					{@const displayedRequests = shownRequests(section, requests)}
+					{@const displayedRows = shownLoadedRows(section, requests, rows)}
+					{@const remaining = remainingEndpoints(section, requests, rows)}
 					<div class="border-b border-border/50">
 						<div
 							use:sectionHeader={{ sectionId: section.id }}
@@ -880,13 +924,13 @@
 						</div>
 
 						{#if open}
-							{#each requests as request, index (request.id)}
-								{@render requestRow(section, request, 'pl-8', requests, index)}
+							{#each displayedRequests as request, index (request.id)}
+								{@render requestRow(section, request, 'pl-8', displayedRequests, index)}
 							{/each}
 
 							<!-- Loader output. Regenerated on every refresh; the user's
 							     bodies live in the section's overlay and survive it. -->
-							{#each rows as row (row.request.id)}
+							{#each displayedRows as row (row.request.id)}
 								<ContextMenu.Root>
 									<ContextMenu.Trigger
 										class="flex items-center gap-2 pl-8 pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
@@ -938,6 +982,23 @@
 									</ContextMenu.Portal>
 								</ContextMenu.Root>
 							{/each}
+
+							{#if remaining > 0}
+								<div class="flex items-center gap-2 pl-8 pr-4 py-1.5 text-2.5 text-muted">
+									<button
+										class="hover:text-text transition-colors"
+										onclick={() => showMoreEndpoints(section)}
+									>
+										Show {Math.min(ENDPOINT_PAGE_SIZE, remaining)} more
+									</button>
+									<button
+										class="ml-auto hover:text-text transition-colors"
+										onclick={() => showAllEndpoints(section, total)}
+									>
+										Show all {remaining.toLocaleString()} remaining
+									</button>
+								</div>
+							{/if}
 
 							{#if requests.length === 0 && rows.length === 0}
 								<p class="pl-8 pr-4 py-1 text-2.5 text-muted">

@@ -32,6 +32,24 @@ test('a collection file that cannot be read is reported, not swallowed', async (
 });
 
 test.describe('the collection header', () => {
+	test('opens large collections a page at a time', async ({ page }) => {
+		const requests = Array.from({ length: 102 }, (_, index) => ({
+			id: `r-${index}`,
+			name: `Request ${index + 1}`,
+			method: 'GET',
+			path: `/requests/${index + 1}`,
+			body: '',
+			headers: []
+		}));
+		await install(page, { sections: [section({ requests })] });
+		await page.goto('/');
+
+		await expect(page.getByText('Request 100', { exact: true })).toBeVisible();
+		await expect(page.getByText('Request 101', { exact: true })).toBeHidden();
+		await page.getByRole('button', { name: 'Show 2 more' }).click();
+		await expect(page.getByText('Request 102', { exact: true })).toBeVisible();
+	});
+
 	test('the cog opens section settings', async ({ page }) => {
 		await install(page, { sections: [section()] });
 		await page.goto('/');
