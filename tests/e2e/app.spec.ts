@@ -647,3 +647,79 @@ test.describe('collapsing while searching', () => {
 		await expect(page.getByText('/users/list')).toBeVisible();
 	});
 });
+
+/**
+ * An endpoint you had already opened before bodies existed has an overlay entry
+ * holding an empty one, and an empty string is not nullish — so it won the
+ * `??` and the schema's body never appeared. Which hit exactly the endpoints
+ * you use most.
+ */
+test('a body from the manifest shows even if the endpoint was opened before', async ({ page }) => {
+	await install(page, {
+		sections: [
+			section({
+				loader,
+				// Opened at some point in the past, when there was no body to save.
+				overlay: [
+					{
+						id: 'POST /things',
+						name: '/things',
+						method: 'POST',
+						path: '/things',
+						body: '',
+						headers: []
+					}
+				]
+			})
+		],
+		loaded: [
+			{
+				method: 'POST',
+				path: '/things',
+				name: '/things',
+				description: '',
+				body: '{\n  "label": string\n}'
+			}
+		]
+	});
+	await page.goto('/');
+
+	await page.getByText('/things').click();
+	await expect(page.locator('.cm-content').first()).toContainText('"label": string');
+});
+
+/** Adopting a body must never overwrite one you wrote. */
+test('a body you have written survives a manifest that offers another', async ({ page }) => {
+	await install(page, {
+		sections: [
+			section({
+				loader,
+				overlay: [
+					{
+						id: 'POST /things',
+						name: '/things',
+						method: 'POST',
+						path: '/things',
+						body: '{"mine": true}',
+						headers: []
+					}
+				]
+			})
+		],
+		loaded: [
+			{
+				method: 'POST',
+				path: '/things',
+				name: '/things',
+				description: '',
+				body: '{\n  "label": string\n}'
+			}
+		]
+	});
+	await page.goto('/');
+
+	await page.getByText('/things').click();
+	const editor = page.locator('.cm-content').first();
+	await expect(editor).toContainText('"mine"');
+	await expect(editor).not.toContainText('"label": string');
+});
