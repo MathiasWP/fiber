@@ -325,3 +325,47 @@ test('a loaded endpoint arrives with the body its manifest declared', async ({ p
 	await page.getByText('activity_backfill_activity').click();
 	await expect(page.locator('.cm-content').first()).toContainText('"dryRun"');
 });
+
+test.describe('searching the collections', () => {
+	const many = (count: number) =>
+		Array.from({ length: count }, (_, i) => ({
+			id: `r${i}`,
+			name: i === 0 ? 'backfill-activity' : `other-${i}`,
+			method: 'POST',
+			path: i === 0 ? '/activity/backfill-activity' : `/other/${i}`,
+			body: '',
+			headers: []
+		}));
+
+	test('says how much is hidden, and clears the filter', async ({ page }) => {
+		await install(page, { sections: [section({ requests: many(20) })] });
+		await page.goto('/');
+
+		await expect(page.getByText('more hidden by filters')).toBeHidden();
+
+		await page.getByPlaceholder('Search endpoints…').fill('backfill');
+
+		// One of the twenty matches, so nineteen are out of sight.
+		await expect(page.getByText('19 more hidden by filters')).toBeVisible();
+
+		await page.getByRole('button', { name: 'Clear filters' }).click();
+		await expect(page.getByPlaceholder('Search endpoints…')).toHaveValue('');
+		await expect(page.getByText('more hidden by filters')).toBeHidden();
+	});
+
+	/** A collection with no match disappears whole — its endpoints still count. */
+	test('counts collections the search removed entirely', async ({ page }) => {
+		await install(page, {
+			sections: [
+				section({ requests: many(3) }),
+				section({ id: 'sec-2', name: 'Other', order: 1, requests: many(5).slice(1) })
+			]
+		});
+		await page.goto('/');
+
+		await page.getByPlaceholder('Search endpoints…').fill('backfill');
+		await expect(page.getByText('Other')).toBeHidden();
+		// 3 + 4 endpoints, one match.
+		await expect(page.getByText('6 more hidden by filters')).toBeVisible();
+	});
+});

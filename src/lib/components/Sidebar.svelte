@@ -92,6 +92,31 @@
 	// A search hides the collapsed state — matches are no use if you can't see them.
 	const searching = $derived(query.trim().length > 0);
 
+	/**
+	 * How much the search is keeping out of sight.
+	 *
+	 * Counted across every collection rather than the visible ones, because a
+	 * collection with no match at all disappears entirely — and those endpoints
+	 * are exactly the ones you would otherwise think you had lost.
+	 */
+	const hidden = $derived.by(() => {
+		if (!searching) return 0;
+
+		const total =
+			collections.collectionSections.reduce(
+				(sum, section) => sum + section.requests.length + collections.rowsFor(section).length,
+				0
+			) + (collections.looseSection?.requests.length ?? 0);
+
+		const shown =
+			visible.reduce(
+				(sum, entry) => sum + entry.requests.length + loadedRows(entry.section).length,
+				0
+			) + looseRequests.length;
+
+		return Math.max(0, total - shown);
+	});
+
 	const themeIcon = $derived(theme.resolved === 'dark' ? 'i-lucide-moon' : 'i-lucide-sun');
 
 	function loadedRows(section: Section): LoadedRow[] {
@@ -794,6 +819,27 @@
 						{/if}
 					</p>
 				{/each}
+
+				{#if hidden > 0}
+					<!--
+						Sticky rather than simply last: the count is what tells you the
+						list isn't everything, and that is no use parked at the far end
+						of a scroll. Bottom-sticky sits under short results and pins
+						itself once they outgrow the pane.
+					-->
+					<div
+						class="sticky bottom-0 flex items-center gap-2 border-t border-border bg-panel px-3 py-1.5 text-2.5 text-muted"
+					>
+						<span>{hidden.toLocaleString()} more hidden by filters</span>
+						<button
+							class="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 -mr-1 hover:(bg-raised text-text) transition-colors"
+							onclick={() => (query = '')}
+						>
+							<span class="i-lucide-x text-3"></span>
+							Clear filters
+						</button>
+					</div>
+				{/if}
 			</ContextMenu.Trigger>
 
 			<ContextMenu.Portal>
