@@ -327,6 +327,8 @@ export interface ImportedEndpoint {
 	path: string;
 	name: string;
 	description: string;
+	/** A JSON body to start from, or empty when the operation takes none. */
+	body: string;
 }
 
 export interface Import {

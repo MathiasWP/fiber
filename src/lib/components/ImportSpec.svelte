@@ -51,7 +51,7 @@
 				name: endpoint.name || endpoint.path,
 				method: endpoint.method,
 				path: endpoint.path,
-				body: '',
+				body: endpoint.body,
 				headers: []
 			});
 		}
