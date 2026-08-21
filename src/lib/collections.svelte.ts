@@ -549,21 +549,5 @@ export function allRequests(sections: Section[]): Selection[] {
  * Subsequence match, the way command palettes behave: "ugt" finds "user get".
  * Returns null when it doesn't match, otherwise a score where lower is better.
  */
-export function fuzzyScore(haystack: string, needle: string): number | null {
-	if (!needle) return 0;
 
-	const target = haystack.toLowerCase();
-	const query = needle.toLowerCase();
 
-	let score = 0;
-	let from = 0;
-	for (const char of query) {
-		const at = target.indexOf(char, from);
-		if (at === -1) return null;
-		// Gaps between matched characters make a result less relevant.
-		score += at - from;
-		from = at + 1;
-	}
-	// Prefer shorter targets when scores are otherwise equal.
-	return score * 100 + target.length;
-}
