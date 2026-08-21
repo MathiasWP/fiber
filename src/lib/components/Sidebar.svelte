@@ -417,9 +417,9 @@
 	}}
 >
 	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 bg-black/50" />
+		<Dialog.Overlay class="dialog-scrim" />
 		<Dialog.Content
-			class="fixed left-1/2 top-1/2 w-[min(420px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-panel p-4 shadow-2xl"
+			class="fixed left-1/2 top-1/2 z-60 w-[min(420px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-panel p-4 shadow-2xl"
 		>
 			<Dialog.Title class="text-sm font-semibold">New collection</Dialog.Title>
 			<Dialog.Description class="mt-1 text-xs text-muted">
@@ -467,9 +467,9 @@
 	}}
 >
 	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 bg-black/50" />
+		<Dialog.Overlay class="dialog-scrim" />
 		<Dialog.Content
-			class="fixed left-1/2 top-1/2 w-[min(420px,90vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-panel p-4 shadow-2xl"
+			class="fixed left-1/2 top-1/2 z-60 w-[min(420px,90vw)] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-panel p-4 shadow-2xl"
 		>
 			<Dialog.Title class="text-sm font-semibold">Delete section</Dialog.Title>
 			<Dialog.Description class="mt-2 text-xs text-muted leading-relaxed">

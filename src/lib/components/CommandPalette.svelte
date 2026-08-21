@@ -98,9 +98,9 @@
 
 <Dialog.Root bind:open>
 	<Dialog.Portal>
-		<Dialog.Overlay class="fixed inset-0 bg-black/50" />
+		<Dialog.Overlay class="dialog-scrim" />
 		<Dialog.Content
-			class="fixed left-1/2 top-[18%] w-[min(620px,90vw)] -translate-x-1/2 rounded-lg border border-border bg-panel shadow-2xl overflow-hidden"
+			class="fixed left-1/2 top-[18%] z-60 w-[min(620px,90vw)] -translate-x-1/2 rounded-lg border border-border bg-panel shadow-2xl overflow-hidden"
 		>
 			<Dialog.Title class="sr-only">Search endpoints</Dialog.Title>
 			<Dialog.Description class="sr-only">
