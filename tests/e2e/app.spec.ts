@@ -369,3 +369,81 @@ test.describe('searching the collections', () => {
 		await expect(page.getByText('6 more hidden by filters')).toBeVisible();
 	});
 });
+
+test.describe('keeping endpoints current', () => {
+	const withTtl = (ttlSeconds: number) => ({ ...loader, ttlSeconds });
+	const runs = (page: import('@playwright/test').Page) =>
+		page.evaluate(() => window.__FIBER_TEST__.calls.filter((c) => c.cmd === 'run_loader').length);
+
+	test('coming back to the window refreshes a stale loader', async ({ page }) => {
+		await install(page, { sections: [section({ loader: withTtl(60) })] });
+		await page.goto('/');
+
+		// The cached endpoints are ancient, so startup refreshes once.
+		await expect.poll(() => runs(page)).toBe(1);
+
+		await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+		await expect.poll(() => runs(page), { message: 'focus should refresh again' }).toBe(2);
+	});
+
+	/**
+	 * The TTL field promises that 0 means "only when asked", and some APIs need
+	 * it to. Focus must not quietly override that.
+	 */
+	test('a loader set to "only when asked" is left alone', async ({ page }) => {
+		await install(page, { sections: [section({ loader: withTtl(0) })] });
+		await page.goto('/');
+
+		await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+		await page.waitForTimeout(150);
+		expect(await runs(page)).toBe(0);
+	});
+
+	test('a collection shows it is refreshing while it happens', async ({ page }) => {
+		await install(page, {
+			sections: [section({ loader: withTtl(60) })],
+			deferRefresh: true
+		});
+		await page.goto('/');
+
+		const spinner = page.getByTitle('Refreshing endpoints…');
+		await expect(spinner).toBeVisible();
+
+		await page.evaluate(() => window.__FIBER_TEST__.finishRefresh());
+		await expect(spinner).toBeHidden();
+	});
+});
+
+/**
+ * Opening a loaded endpoint promotes it into the overlay, which is a change to
+ * the collection and so a write. It used to be an immediate one, per click —
+ * stringify the section, snapshot it, serialise TOML, hit the disk. The entry
+ * being written holds nothing of yours yet, so those coalesce like every other
+ * edit does.
+ */
+test('opening several endpoints writes the collection once, not once each', async ({ page }) => {
+	await install(page, {
+		sections: [section({ loader })],
+		loaded: Array.from({ length: 5 }, (_, i) => ({
+			method: 'POST',
+			path: `/thing/${i}`,
+			name: `thing-${i}`,
+			description: '',
+			body: ''
+		}))
+	});
+	await page.goto('/');
+
+	const saves = () =>
+		page.evaluate(
+			() => window.__FIBER_TEST__.calls.filter((c) => c.cmd === 'save_section').length
+		);
+
+	for (let i = 0; i < 5; i++) await page.getByText(`thing-${i}`).click();
+
+	// Every one of them is a new overlay entry, and none has been written yet.
+	expect(await saves()).toBe(0);
+
+	// They land together once the typing stops.
+	await expect.poll(saves, { timeout: 5000 }).toBe(1);
+});

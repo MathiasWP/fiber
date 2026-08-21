@@ -129,9 +129,14 @@ class Collections {
 		const cache = this.loaderCaches[section.id];
 		if (!cache) return [];
 
+		// Indexed rather than searched. `find` per endpoint made this quadratic —
+		// a manifest of several hundred endpoints against an overlay that grows
+		// every time you open one, walked afresh on every render.
+		const saved = new Map(section.overlay.map((entry) => [entry.id, entry]));
+
 		const rows: LoadedRow[] = cache.endpoints.map((endpoint: LoadedEndpoint) => {
 			const id = endpointKey(endpoint.method, endpoint.path);
-			const saved = section.overlay.find((entry) => entry.id === id);
+			const held = saved.get(id);
 			return {
 				request: {
 					id,
@@ -141,8 +146,8 @@ class Collections {
 					// The loader's body is a starting point, not an override: `??`
 					// rather than `||`, so a body you deliberately emptied stays
 					// empty instead of being refilled on every refresh.
-					body: saved?.body ?? endpoint.body ?? '',
-					headers: saved?.headers ?? []
+					body: held?.body ?? endpoint.body ?? '',
+					headers: held?.headers ?? []
 				},
 				missing: false
 			};
@@ -176,7 +181,12 @@ class Collections {
 			section.overlay.some((entry) => entry.id === request.id);
 		if (!known) {
 			section.overlay.push({ ...request });
-			this.flush(section);
+			// Debounced like every other edit, not written on the spot. Opening
+			// three endpoints in a row used to be three full section writes —
+			// stringify, snapshot, TOML, disk — and the entry being written holds
+			// nothing of yours yet, so there is nothing to lose by coalescing
+			// them. It would simply be re-promoted next time you clicked it.
+			this.touch(section);
 		}
 		this.selectedRequestId = request.id;
 	}
@@ -303,11 +313,31 @@ class Collections {
 		for (const section of this.sections) {
 			const loader = section.loader;
 			if (!loader?.enabled || loader.ttlSeconds <= 0) continue;
+			// Already running: a second pass while the first is in flight would
+			// double the requests and race over the same cache.
+			if (this.loading[section.id]) continue;
 
 			const cache = this.loaderCaches[section.id];
 			const age = now - (cache?.loadedAt ?? 0);
 			if (age > loader.ttlSeconds * 1000) this.refresh(section);
 		}
+	}
+
+	/**
+	 * Re-checks staleness whenever the window comes back to the front.
+	 *
+	 * Startup was the only trigger before, which for an app you leave open for
+	 * days meant a TTL almost never came round — coming back to Fiber after an
+	 * afternoon of deploys showed yesterday's endpoints. Focus is the moment you
+	 * are about to look, so it is the moment worth being current.
+	 *
+	 * It reuses the staleness rule rather than refetching outright: a TTL of 0
+	 * still means "only when asked", which some APIs need it to.
+	 */
+	watchFocus(): () => void {
+		const onFocus = () => this.refreshStale();
+		window.addEventListener('focus', onFocus);
+		return () => window.removeEventListener('focus', onFocus);
 	}
 
 	/** Runs a section's loader and refreshes its cache. Never throws. */

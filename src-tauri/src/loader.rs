@@ -63,7 +63,11 @@ impl Default for LoaderConfig {
             method: "GET".to_string(),
             query: DEFAULT_QUERY.to_string(),
             next: String::new(),
-            ttl_seconds: 0,
+            // Not 0 ("only when asked"): with focus as a trigger, a new loader
+            // that quietly keeps itself current is the more useful default, and
+            // five minutes is short enough to be right and long enough not to
+            // matter. Set it back to 0 for an API where every call counts.
+            ttl_seconds: 300,
         }
     }
 }
@@ -613,6 +617,19 @@ mod tests {
     /// The reported gap: a loader pointed at an OpenAPI document listed the
     /// endpoints but left every body empty, because a jq filter maps shape to
     /// shape and knows nothing about JSON Schema.
+
+    /// A new loader keeps itself current without being told to. 0 still means
+    /// "only when asked" — it just is not the default any more.
+    #[test]
+    fn a_new_loader_refreshes_itself() {
+        let config = LoaderConfig::default();
+        assert!(config.enabled);
+        assert!(
+            config.ttl_seconds > 0,
+            "a default of 0 would mean a new loader never refreshed on its own"
+        );
+    }
+
     #[tokio::test]
     async fn an_openapi_manifest_fills_in_bodies() {
         let manifest = r##"{

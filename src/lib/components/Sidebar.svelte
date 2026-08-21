@@ -60,37 +60,57 @@
 
 	interface VisibleSection {
 		section: Section;
+		/** Hand-written requests matching the search, or all of them. */
 		requests: SavedRequest[];
+		/** Loaded endpoints matching the search, or all of them. */
+		rows: LoadedRow[];
+		/** Everything the collection holds, before the search touched it. */
+		total: number;
 	}
 
-	const visible = $derived.by<VisibleSection[]>(() => {
-		const needle = query.trim();
-		if (!needle) {
-			return collections.collectionSections.map((section) => ({
-				section,
-				requests: section.requests
-			}));
-		}
+	/** Fuzzy-filtered and ordered by score, best first. */
+	function rank<T>(items: T[], text: (item: T) => string, needle: string): T[] {
+		return items
+			.map((item) => ({ item, score: fuzzyScore(text(item), needle) }))
+			.filter((match) => match.score !== null)
+			.sort((a, b) => a.score! - b.score!)
+			.map((match) => match.item);
+	}
 
-		return collections.collectionSections
-			.map((section) => ({
-				section,
-				requests: section.requests
-					.map((request) => ({
-						request,
-						score: fuzzyScore(`${request.name} ${request.method} ${request.path}`, needle)
-					}))
-					.filter((match) => match.score !== null)
-					.sort((a, b) => a.score! - b.score!)
-					.map((match) => match.request)
-			}))
-			.filter(
-				(entry) => entry.requests.length > 0 || loadedRows(entry.section).length > 0
-			);
-	});
+	const label = (request: SavedRequest) => `${request.name} ${request.method} ${request.path}`;
 
 	// A search hides the collapsed state — matches are no use if you can't see them.
 	const searching = $derived(query.trim().length > 0);
+
+	/**
+	 * Every collection, with its rows and counts worked out once.
+	 *
+	 * `rowsFor` walks the whole loader cache and builds a row per endpoint, so
+	 * it is called exactly once per collection here rather than the five times
+	 * it used to be across the derives and the template. Against a manifest of
+	 * several hundred endpoints that was thousands of objects rebuilt on every
+	 * render — which is to say, on every click.
+	 */
+	const scanned = $derived.by<VisibleSection[]>(() => {
+		const needle = query.trim();
+
+		return collections.collectionSections.map((section) => {
+			const rows = collections.rowsFor(section);
+			const total = section.requests.length + rows.length;
+
+			if (!needle) return { section, requests: section.requests, rows, total };
+			return {
+				section,
+				requests: rank(section.requests, label, needle),
+				rows: rank(rows, (row) => label(row.request), needle),
+				total
+			};
+		});
+	});
+
+	const visible = $derived(
+		searching ? scanned.filter((entry) => entry.requests.length > 0 || entry.rows.length > 0) : scanned
+	);
 
 	/**
 	 * How much the search is keeping out of sight.
@@ -103,35 +123,17 @@
 		if (!searching) return 0;
 
 		const total =
-			collections.collectionSections.reduce(
-				(sum, section) => sum + section.requests.length + collections.rowsFor(section).length,
-				0
-			) + (collections.looseSection?.requests.length ?? 0);
+			scanned.reduce((sum, entry) => sum + entry.total, 0) +
+			(collections.looseSection?.requests.length ?? 0);
 
 		const shown =
-			visible.reduce(
-				(sum, entry) => sum + entry.requests.length + loadedRows(entry.section).length,
-				0
-			) + looseRequests.length;
+			scanned.reduce((sum, entry) => sum + entry.requests.length + entry.rows.length, 0) +
+			looseRequests.length;
 
 		return Math.max(0, total - shown);
 	});
 
 	const themeIcon = $derived(theme.resolved === 'dark' ? 'i-lucide-moon' : 'i-lucide-sun');
-
-	function loadedRows(section: Section): LoadedRow[] {
-		const rows = collections.rowsFor(section);
-		const needle = query.trim();
-		if (!needle) return rows;
-		return rows
-			.map((row) => ({
-				row,
-				score: fuzzyScore(`${row.request.name} ${row.request.method} ${row.request.path}`, needle)
-			}))
-			.filter((match) => match.score !== null)
-			.sort((a, b) => a.score! - b.score!)
-			.map((match) => match.row);
-	}
 
 	/**
 	 * Leaving History puts every request back on the response it was showing.
@@ -160,14 +162,7 @@
 		if (!section) return [];
 		const needle = query.trim();
 		if (!needle) return section.requests;
-		return section.requests
-			.map((request) => ({
-				request,
-				score: fuzzyScore(`${request.name} ${request.method} ${request.path}`, needle)
-			}))
-			.filter((match) => match.score !== null)
-			.sort((a, b) => a.score! - b.score!)
-			.map((match) => match.request);
+		return rank(section.requests, label, needle);
 	});
 
 	async function addLooseRequest() {
@@ -625,7 +620,7 @@
 					</div>
 				{/if}
 
-				{#each visible as { section, requests } (section.id)}
+				{#each visible as { section, requests, rows, total } (section.id)}
 					{@const open = searching || !section.collapsed}
 					<div class="border-b border-border/50">
 						<div
@@ -696,9 +691,21 @@
 									<span class="i-lucide-settings text-3"></span>
 								</button>
 
+								<!--
+									Refreshes happen on their own now — at startup and on focus — so
+									without this they happen invisibly and endpoints appear to change
+									by themselves. Same spinning icon the Refresh menu item uses.
+								-->
+								{#if collections.loading[section.id]}
+									<span
+										class="i-lucide-refresh-cw text-3 text-muted shrink-0 animate-spin"
+										title="Refreshing endpoints…"
+									></span>
+								{/if}
+
 								<!-- Static: nothing appears or disappears on hover, so nothing shifts. -->
 								<span class="text-2.5 text-muted shrink-0 tabular-nums">
-									{section.requests.length + collections.rowsFor(section).length}
+									{total}
 								</span>
 							</ContextMenu.Trigger>
 
@@ -749,7 +756,7 @@
 
 							<!-- Loader output. Regenerated on every refresh; the user's
 							     bodies live in the section's overlay and survive it. -->
-							{#each loadedRows(section) as row (row.request.id)}
+							{#each rows as row (row.request.id)}
 								<ContextMenu.Root>
 									<ContextMenu.Trigger
 										class="flex items-center gap-2 pl-8 pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
@@ -802,7 +809,7 @@
 								</ContextMenu.Root>
 							{/each}
 
-							{#if requests.length === 0 && loadedRows(section).length === 0}
+							{#if requests.length === 0 && rows.length === 0}
 								<p class="pl-8 pr-4 py-1 text-2.5 text-muted">
 									{section.loader ? 'No endpoints loaded yet.' : 'No requests yet.'}
 								</p>
