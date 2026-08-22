@@ -426,7 +426,7 @@ pub async fn send_streaming(
         proxy: spec.proxy.clone(),
     })?;
 
-    let body = prepare_body(&spec)?;
+    let body = prepare_body(&spec).await?;
     if matches!(body, OutboundBody::Multipart(_) | OutboundBody::Form(_)) {
         // reqwest sets these Content-Types (multipart carries a boundary).
         // A leftover application/json from the JSON editor would win.
@@ -459,7 +459,7 @@ pub async fn send_streaming(
     outcome
 }
 
-fn prepare_body(spec: &RequestSpec) -> Result<OutboundBody, HttpError> {
+async fn prepare_body(spec: &RequestSpec) -> Result<OutboundBody, HttpError> {
     match spec.body_kind {
         BodyKind::Json | BodyKind::Text => Ok(spec
             .body
@@ -493,7 +493,11 @@ fn prepare_body(spec: &RequestSpec) -> Result<OutboundBody, HttpError> {
             if path.is_empty() {
                 return Ok(OutboundBody::None);
             }
-            let bytes = std::fs::read(path).map_err(|err| {
+            // `tokio::fs`, not `std::fs`: this runs on the async runtime, and a
+            // large file read blocking one of its worker threads stalls every
+            // other request being sent or streamed at the same time. The
+            // multipart path below reads its files the same way.
+            let bytes = tokio::fs::read(path).await.map_err(|err| {
                 HttpError::Transport(format!("could not read {}: {err}", Path::new(path).display()))
             })?;
             Ok(OutboundBody::Bytes(bytes))
