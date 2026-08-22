@@ -45,13 +45,7 @@ where
     F: Fn(&str) -> Option<String>,
 {
     send_authenticated_streaming(
-        http_state,
-        auth_state,
-        section,
-        spec,
-        lookup,
-        recapture,
-        None,
+        http_state, auth_state, section, spec, lookup, recapture, None,
     )
     .await
 }
@@ -85,8 +79,8 @@ where
     let prepared = apply_auth(http_state, auth_state, section, spec, lookup).await?;
     let first = http::send_streaming(http_state, prepared, sink).await;
 
-    let should_retry = matches!(&first, Ok(response) if response.status == 401)
-        && retry_spec.is_some();
+    let should_retry =
+        matches!(&first, Ok(response) if response.status == 401) && retry_spec.is_some();
     if !should_retry {
         return first;
     }
@@ -286,7 +280,7 @@ mod tests {
             mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
-        ..Default::default()
+            ..Default::default()
         }
     }
 
@@ -303,7 +297,7 @@ mod tests {
             follow_redirects: true,
             accept_invalid_certs: false,
             sensitive_header: None,
-        ..Default::default()
+            ..Default::default()
         }
     }
 
@@ -377,7 +371,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(response.status, 401, "still unauthorised, honestly reported");
+        assert_eq!(
+            response.status, 401,
+            "still unauthorised, honestly reported"
+        );
         assert_eq!(calls.protected.load(Ordering::SeqCst), 2, "no retry storm");
     }
 
@@ -474,10 +471,16 @@ mod tests {
         let http_state = HttpState::default();
         let auth_state = AuthState::default();
 
-        let response =
-            send_authenticated(&http_state, &auth_state, None, spec_for(&base), &secret, None)
-                .await
-                .unwrap();
+        let response = send_authenticated(
+            &http_state,
+            &auth_state,
+            None,
+            spec_for(&base),
+            &secret,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(response.status, 401);
         assert_eq!(calls.logins.load(Ordering::SeqCst), 0, "never logged in");

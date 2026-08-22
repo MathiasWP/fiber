@@ -58,8 +58,9 @@ The container reads `${FIBER_DATA_DIR}/sections/*.toml` (`/data` by default).
 Point it at the desktop app's own sections directory or at a plain folder of
 section files. Two things a section needs to be usable over MCP:
 
-- `mcp.enabled = true` in its `[mcp]` table (the app sets this by default).
-  Add `allowWrites = true` to permit anything beyond GET/HEAD/OPTIONS.
+- `mcp.enabled = true` in its `[mcp]` table. Sharing is off by default; enable
+  it explicitly in Section settings. Add `allowWrites = true` to permit
+  anything beyond GET/HEAD/OPTIONS.
 - for authenticated sections, a `secretRef` — the app writes `"<sectionId>:auth"`.
   That exact string is the key you provide below.
 

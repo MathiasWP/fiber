@@ -30,7 +30,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 60_000;
 /// Ceiling on manually-followed redirects, matching the client-level policy.
 const MAX_REDIRECTS: usize = 10;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Header {
     pub name: String,
     pub value: String,
@@ -38,7 +38,9 @@ pub struct Header {
 
 /// How the request body is built. JSON remains the default so existing
 /// collections keep the editor they already have.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema, Default, PartialEq, Eq,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum BodyKind {
     #[default]
@@ -53,7 +55,7 @@ pub enum BodyKind {
 }
 
 /// One field of a form or multipart body.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FormField {
     pub name: String,
@@ -78,14 +80,25 @@ pub fn is_credential(name: &str) -> bool {
     )
 }
 
+fn is_sensitive(name: &str, additional: Option<&str>) -> bool {
+    is_credential(name)
+        || additional.is_some_and(|sensitive| name.eq_ignore_ascii_case(sensitive.trim()))
+}
+
 /// The same headers with their credential values blanked. Names survive, so
 /// "the server did set a cookie" stays visible; the cookie itself does not.
 pub fn redact(headers: &[Header]) -> Vec<Header> {
+    redact_with(headers, None)
+}
+
+/// Redacts the standard credential headers plus a section's configured auth
+/// header, which can be any valid HTTP header name.
+pub fn redact_with(headers: &[Header], additional: Option<&str>) -> Vec<Header> {
     headers
         .iter()
         .map(|header| Header {
             name: header.name.clone(),
-            value: if is_credential(&header.name) {
+            value: if is_sensitive(&header.name, additional) {
                 "<redacted>".into()
             } else {
                 header.value.clone()
@@ -477,7 +490,9 @@ async fn prepare_body(spec: &RequestSpec) -> Result<OutboundBody, HttpError> {
             let pairs: Vec<(String, String)> = spec
                 .form
                 .iter()
-                .filter(|field| !field.name.trim().is_empty() && field.file.is_empty() && !field.is_file)
+                .filter(|field| {
+                    !field.name.trim().is_empty() && field.file.is_empty() && !field.is_file
+                })
                 .map(|field| (field.name.clone(), field.value.clone()))
                 .collect();
             if pairs.is_empty() {
@@ -503,7 +518,10 @@ async fn prepare_body(spec: &RequestSpec) -> Result<OutboundBody, HttpError> {
             // other request being sent or streamed at the same time. The
             // multipart path below reads its files the same way.
             let bytes = tokio::fs::read(path).await.map_err(|err| {
-                HttpError::Transport(format!("could not read {}: {err}", Path::new(path).display()))
+                HttpError::Transport(format!(
+                    "could not read {}: {err}",
+                    Path::new(path).display()
+                ))
             })?;
             Ok(OutboundBody::Bytes(bytes))
         }
@@ -689,9 +707,8 @@ async fn run(
     // Only text is streamed. Part of a binary body is not a string, and base64
     // of a fragment is not a prefix of base64 of the whole, so those still
     // arrive once at the end.
-    let streaming = sink.filter(|_| {
-        looks_textual(content_type.as_deref()) || content_type.is_none()
-    });
+    let streaming =
+        sink.filter(|_| looks_textual(content_type.as_deref()) || content_type.is_none());
     if let Some(sink) = streaming {
         sink(BodyEvent::Start);
     }
@@ -826,9 +843,7 @@ mod tests {
 
     /// Serves one connection with a canned response and hands back whatever the
     /// client sent, so tests can assert on both directions.
-    async fn one_shot_server(
-        response: &'static [u8],
-    ) -> (String, tokio::task::JoinHandle<String>) {
+    async fn one_shot_server(response: &'static [u8]) -> (String, tokio::task::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -843,9 +858,7 @@ mod tests {
                 received.extend_from_slice(&buf[..n]);
                 if n == 0 || received.windows(4).any(|w| w == b"\r\n\r\n") {
                     let text = String::from_utf8_lossy(&received).to_string();
-                    let has_body = text
-                        .to_lowercase()
-                        .contains("content-length: ")
+                    let has_body = text.to_lowercase().contains("content-length: ")
                         && text.split("\r\n\r\n").nth(1).is_some_and(|b| !b.is_empty());
                     if has_body || !text.to_lowercase().contains("content-length: ") {
                         break;
@@ -892,7 +905,7 @@ mod tests {
                 follow_redirects: true,
                 accept_invalid_certs: false,
                 sensitive_header: None,
-            ..Default::default()
+                ..Default::default()
             },
         )
         .await
@@ -943,7 +956,7 @@ mod tests {
                 follow_redirects: true,
                 accept_invalid_certs: false,
                 sensitive_header: None,
-            ..Default::default()
+                ..Default::default()
             },
         )
         .await
@@ -978,7 +991,7 @@ mod tests {
             follow_redirects: true,
             accept_invalid_certs: false,
             sensitive_header: None,
-        ..Default::default()
+            ..Default::default()
         };
 
         let sending = tokio::spawn({
@@ -994,7 +1007,6 @@ mod tests {
         assert!(matches!(outcome, Err(HttpError::Cancelled)), "{outcome:?}");
         assert!(!state.cancel("test-3"), "handle should be cleaned up");
     }
-
 
     /// A character can straddle two chunks. The half that has arrived is held
     /// back rather than shown as a replacement character.
@@ -1035,6 +1047,23 @@ mod tests {
         assert!(!looks_textual(Some("image/png")));
         assert!(!looks_textual(Some("application/octet-stream")));
         assert!(!looks_textual(None));
+    }
+
+    #[test]
+    fn redacts_a_collection_specific_auth_header() {
+        let headers = vec![
+            Header {
+                name: "X-Custom-Auth".into(),
+                value: "secret".into(),
+            },
+            Header {
+                name: "Content-Type".into(),
+                value: "application/json".into(),
+            },
+        ];
+        let redacted = redact_with(&headers, Some("x-custom-auth"));
+        assert_eq!(redacted[0].value, "<redacted>");
+        assert_eq!(redacted[1].value, "application/json");
     }
 
     /// Serves a scripted sequence of responses, one per connection, recording
@@ -1104,7 +1133,11 @@ mod tests {
             .expect("request should succeed");
 
         assert_eq!(response.status, 200);
-        assert!(response.final_url.ends_with("/landing"), "{}", response.final_url);
+        assert!(
+            response.final_url.ends_with("/landing"),
+            "{}",
+            response.final_url
+        );
 
         let requests = seen.lock().unwrap();
         assert_eq!(requests.len(), 2);
@@ -1121,10 +1154,8 @@ mod tests {
     /// along to whatever host the redirect named. It must not.
     #[tokio::test]
     async fn a_cross_host_redirect_drops_the_custom_auth_header() {
-        let (elsewhere, landed) = scripted_server(vec![
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".into(),
-        ])
-        .await;
+        let (elsewhere, landed) =
+            scripted_server(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".into()]).await;
         // Same loopback address, different port — a different origin.
         let (url, _) = scripted_server(vec![format!(
             "HTTP/1.1 302 Found\r\nLocation: {elsewhere}/landed\r\nContent-Length: 0\r\n\r\n"
@@ -1168,7 +1199,10 @@ mod tests {
         let requests = seen.lock().unwrap();
         assert!(requests[0].starts_with("POST /submit"), "{}", requests[0]);
         assert!(requests[1].starts_with("GET /result"), "{}", requests[1]);
-        assert!(!requests[1].contains("{\"a\":1}"), "the body should not replay");
+        assert!(
+            !requests[1].contains("{\"a\":1}"),
+            "the body should not replay"
+        );
     }
 
     #[tokio::test]
@@ -1222,10 +1256,8 @@ mod tests {
         let path = dir.join("payload.bin");
         std::fs::write(&path, b"hello file").unwrap();
 
-        let (url, server) = one_shot_server(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
-        )
-        .await;
+        let (url, server) =
+            one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
 
         let state = HttpState::default();
         send(
@@ -1303,7 +1335,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(leaked.body, "no", "another collection must not inherit the jar");
+        assert_eq!(
+            leaked.body, "no",
+            "another collection must not inherit the jar"
+        );
 
         let kept = send(
             &state,
@@ -1323,10 +1358,8 @@ mod tests {
 
     #[tokio::test]
     async fn substitutes_path_params_on_the_way_out() {
-        let (url, server) = one_shot_server(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
-        )
-        .await;
+        let (url, server) =
+            one_shot_server(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
 
         let state = HttpState::default();
         send(

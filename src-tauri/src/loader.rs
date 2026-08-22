@@ -211,9 +211,9 @@ pub struct LoaderResponse {
 pub type Fetcher = Arc<
     dyn Fn(
             LoaderRequest,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<LoaderResponse, String>> + Send>>
-        + Send
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<LoaderResponse, String>> + Send>,
+        > + Send
         + Sync,
 >;
 
@@ -258,7 +258,9 @@ pub fn apply(query: &str, input: &serde_json::Value) -> Result<serde_json::Value
         return Err(LoaderError::NoQuery);
     }
 
-    let defs = jaq_core::defs().chain(jaq_std::defs()).chain(jaq_json::defs());
+    let defs = jaq_core::defs()
+        .chain(jaq_std::defs())
+        .chain(jaq_json::defs());
     // jq's `env` builtin returns the whole process environment. A filter has no
     // business reading it, and every reason not to: filters get shared inside
     // collections and, from step 6, authored by an agent. Dropping it is the
@@ -270,7 +272,13 @@ pub fn apply(query: &str, input: &serde_json::Value) -> Result<serde_json::Value
 
     let arena = Arena::default();
     let modules = Loader::new(defs)
-        .load(&arena, File { code: query, path: () })
+        .load(
+            &arena,
+            File {
+                code: query,
+                path: (),
+            },
+        )
         .map_err(|errors| LoaderError::BadQuery(describe_load(errors)))?;
 
     let filter = Compiler::default()
@@ -280,7 +288,8 @@ pub fn apply(query: &str, input: &serde_json::Value) -> Result<serde_json::Value
 
     // jaq's value type bridges to serde_json through JSON text, which keeps us
     // off its internal representation.
-    let encoded = serde_json::to_string(input).map_err(|err| LoaderError::NotJson(err.to_string()))?;
+    let encoded =
+        serde_json::to_string(input).map_err(|err| LoaderError::NotJson(err.to_string()))?;
     let input = jaq_json::read::parse_single(encoded.as_bytes())
         .map_err(|err| LoaderError::NotJson(err.to_string()))?;
 
@@ -594,7 +603,11 @@ mod tests {
 
     #[tokio::test]
     async fn maps_a_route_manifest() {
-        let routes = TEMPLATES.iter().find(|(name, _)| *name == "Array of routes").unwrap().1;
+        let routes = TEMPLATES
+            .iter()
+            .find(|(name, _)| *name == "Array of routes")
+            .unwrap()
+            .1;
         let (endpoints, _schemas, _responses, pages) = run(
             &config(routes),
             answering(
@@ -632,15 +645,16 @@ mod tests {
             }
         });
 
-        let query = TEMPLATES.iter().find(|(name, _)| *name == "OpenAPI").unwrap().1;
+        let query = TEMPLATES
+            .iter()
+            .find(|(name, _)| *name == "OpenAPI")
+            .unwrap()
+            .1;
         let mut endpoints = to_endpoints(&apply(query, &document).unwrap()).unwrap();
         endpoints.sort_by_key(|endpoint| endpoint.key());
 
         let keys: Vec<String> = endpoints.iter().map(LoadedEndpoint::key).collect();
-        assert_eq!(
-            keys,
-            vec!["GET /users", "GET /users/{id}", "POST /users"]
-        );
+        assert_eq!(keys, vec!["GET /users", "GET /users/{id}", "POST /users"]);
         assert_eq!(endpoints[0].name, "/users");
     }
 
@@ -653,7 +667,11 @@ mod tests {
             ]
         });
 
-        let query = TEMPLATES.iter().find(|(name, _)| *name == "Skip deprecated").unwrap().1;
+        let query = TEMPLATES
+            .iter()
+            .find(|(name, _)| *name == "Skip deprecated")
+            .unwrap()
+            .1;
         let endpoints = to_endpoints(&apply(query, &document).unwrap()).unwrap();
         assert_eq!(endpoints.len(), 1);
         assert_eq!(endpoints[0].path, "/live");
@@ -662,8 +680,7 @@ mod tests {
     #[test]
     fn a_missing_name_falls_back_to_the_path() {
         let document = json!([{ "method": "GET", "path": "/thing" }]);
-        let endpoints =
-            to_endpoints(&apply("map({method, path})", &document).unwrap()).unwrap();
+        let endpoints = to_endpoints(&apply("map({method, path})", &document).unwrap()).unwrap();
         assert_eq!(endpoints[0].name, "/thing");
     }
 
@@ -705,7 +722,10 @@ mod tests {
         let (endpoints, _schemas, _responses, pages) = run(&settings, fetcher).await.unwrap();
         assert_eq!(pages, 2);
         assert_eq!(
-            endpoints.iter().map(LoadedEndpoint::key).collect::<Vec<_>>(),
+            endpoints
+                .iter()
+                .map(LoadedEndpoint::key)
+                .collect::<Vec<_>>(),
             vec!["GET /first", "GET /second"]
         );
     }
@@ -732,7 +752,6 @@ mod tests {
         // create 50 sidebar rows with the same endpoint identity.
         assert_eq!(endpoints.len(), 1);
     }
-
 
     /// The reported gap: a loader pointed at an OpenAPI document listed the
     /// endpoints but left every body empty, because a jq filter maps shape to
@@ -780,14 +799,23 @@ mod tests {
             }
         }"##;
 
-        let openapi = TEMPLATES.iter().find(|(name, _)| *name == "OpenAPI").unwrap().1;
-        let (endpoints, schemas, _responses, _) = run(&config(openapi), answering(manifest)).await.unwrap();
+        let openapi = TEMPLATES
+            .iter()
+            .find(|(name, _)| *name == "OpenAPI")
+            .unwrap()
+            .1;
+        let (endpoints, schemas, _responses, _) =
+            run(&config(openapi), answering(manifest)).await.unwrap();
 
         let post = endpoints.iter().find(|e| e.method == "POST").unwrap();
         // Type names rather than empty values — the editor turns these into
         // fields you tab through.
         assert!(post.body.contains("\"offset\": number"), "{}", post.body);
-        assert!(post.body.contains("\"messageIndex\": number"), "{}", post.body);
+        assert!(
+            post.body.contains("\"messageIndex\": number"),
+            "{}",
+            post.body
+        );
         assert!(post.body.contains("\"dryRun\": boolean"), "{}", post.body);
         assert_eq!(
             schemas
@@ -848,7 +876,11 @@ mod tests {
     /// nothing breaks.
     #[tokio::test]
     async fn a_routes_manifest_is_left_alone() {
-        let routes = TEMPLATES.iter().find(|(name, _)| *name == "Array of routes").unwrap().1;
+        let routes = TEMPLATES
+            .iter()
+            .find(|(name, _)| *name == "Array of routes")
+            .unwrap()
+            .1;
         let (endpoints, _schemas, _, _) = run(
             &config(routes),
             answering(r#"{"routes":[{"verb":"post","url":"/user","handler":"createUser"}]}"#),
@@ -903,7 +935,10 @@ mod tests {
             Err(LoaderError::BadQuery(message)) => assert!(!message.is_empty()),
             other => panic!("expected a query error, got {other:?}"),
         }
-        assert!(matches!(apply("   ", &json!({})), Err(LoaderError::NoQuery)));
+        assert!(matches!(
+            apply("   ", &json!({})),
+            Err(LoaderError::NoQuery)
+        ));
     }
 
     #[test]
@@ -919,7 +954,10 @@ mod tests {
             let value = apply(query, &json!({})).unwrap();
             match to_endpoints(&value) {
                 Err(LoaderError::BadShape(message)) => {
-                    assert!(message.contains(expected), "{message} should mention {expected}");
+                    assert!(
+                        message.contains(expected),
+                        "{message} should mention {expected}"
+                    );
                 }
                 other => panic!("expected a shape error for {query}, got {other:?}"),
             }

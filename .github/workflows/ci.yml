@@ -36,11 +36,17 @@ jobs:
             libxdo-dev \
             libdbus-1-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
       - run: cargo test --manifest-path src-tauri/Cargo.toml
 
@@ -137,7 +143,19 @@ jobs:
       - name: Does it speak MCP?
         run: |
           mkdir -p /tmp/fiber-data && chmod 777 /tmp/fiber-data
-          request='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
-          reply=$(echo "$request" | docker run -i --rm -v /tmp/fiber-data:/data fiber-mcp:ci)
+          initialize='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
+          initialized='{"jsonrpc":"2.0","method":"notifications/initialized"}'
+          tools='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          replies=$(printf '%s\n%s\n%s\n' "$initialize" "$initialized" "$tools" \
+            | docker run -i --rm -v /tmp/fiber-data:/data fiber-mcp:ci)
+          echo "$replies"
+          echo "$replies" | jq -s -e \
+            '.[0].result.serverInfo.name == "fiber"
+             and (.[1].result.tools | map(.name) | index("send_request") != null)
+             and (.[1].result.tools | map(.name) | index("get_endpoint") != null)' > /dev/null
+
+          meta='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"ci","version":"0"}}'
+          discover="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{{$meta}}}"
+          reply=$(echo "$discover" | docker run -i --rm -v /tmp/fiber-data:/data fiber-mcp:ci)
           echo "$reply"
-          echo "$reply" | jq -e '.result.serverInfo.name == "fiber"' > /dev/null
+          echo "$reply" | jq -e '.result.supportedVersions | index("2026-07-28") != null' > /dev/null
