@@ -218,18 +218,22 @@
 	 * not in `close()`: Escape and the scrim go through there too, and neither
 	 * of those should fire a request at someone's API.
 	 *
-	 * Not awaited — the drawer shuts straight away and the sidebar shows the
-	 * refresh running, which is where the result is going to appear anyway.
+	 * Persist first: Rust reloads the section from disk when it runs a loader,
+	 * so starting the refresh before the write finishes uses the old filter.
 	 */
-	function done() {
-		if (section?.loader?.enabled) void collections.refresh(section);
-		close();
+	async function done() {
+		const current = section;
+		if (current) {
+			const saved = await collections.flush(current);
+			if (saved && current.loader?.enabled) void collections.refresh(current);
+		}
+		close(false);
 	}
 
-	function close() {
+	function close(persist = true) {
 		if (section) {
 			collections.refreshCredential(section);
-			collections.flush(section);
+			if (persist) collections.flush(section);
 			browserClose(section.id);
 		}
 		draftSecret = '';

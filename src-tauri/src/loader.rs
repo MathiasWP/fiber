@@ -20,7 +20,7 @@
 //! Free of Tauri and of the HTTP stack — the fetcher is injected — so the MCP
 //! server can run a loader headlessly.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -316,6 +316,7 @@ pub fn to_endpoints(value: &serde_json::Value) -> Result<Vec<LoadedEndpoint>, Lo
     })?;
 
     let mut endpoints = Vec::with_capacity(items.len());
+    let mut identities = HashSet::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
         let object = item.as_object().ok_or_else(|| {
             LoaderError::BadShape(format!("item {index} is {}, not an object", kind_of(item)))
@@ -329,7 +330,14 @@ pub fn to_endpoints(value: &serde_json::Value) -> Result<Vec<LoadedEndpoint>, Lo
         }
         let endpoint: LoadedEndpoint = serde_json::from_value(item.clone())
             .map_err(|err| LoaderError::BadShape(format!("item {index}: {err}")))?;
-        endpoints.push(endpoint.tidy());
+        let endpoint = endpoint.tidy();
+        let key = endpoint.key();
+        if !identities.insert(key.clone()) {
+            return Err(LoaderError::BadShape(format!(
+                "item {index} duplicates endpoint `{key}`"
+            )));
+        }
+        endpoints.push(endpoint);
     }
 
     Ok(endpoints)
@@ -377,11 +385,16 @@ pub async fn run(
         let mut endpoints = Vec::new();
         let mut schemas = BTreeMap::new();
         let mut response_schemas = BTreeMap::new();
+        let mut identities = HashSet::new();
         let mut pages = 0;
 
         loop {
             let document = fetch_json(&fetcher, &url, &method).await?;
             let mut mapped = to_endpoints(&apply(&config.query, &document)?)?;
+            // Adjacent API pages commonly overlap by one item. Identity is
+            // METHOD/path, so keep the first rather than emitting duplicate
+            // keyed rows into the sidebar and overlay.
+            mapped.retain(|endpoint| identities.insert(endpoint.key()));
             let (request, response) = enrich_openapi(&document, &mut mapped);
             schemas.extend(request);
             response_schemas.extend(response);
@@ -655,6 +668,21 @@ mod tests {
         let endpoints =
             to_endpoints(&apply("map({method, path})", &document).unwrap()).unwrap();
         assert_eq!(endpoints[0].name, "/thing");
+    }
+
+    #[test]
+    fn duplicate_endpoint_identities_are_rejected() {
+        let document = json!([
+            { "method": "get", "path": "/thing", "name": "first" },
+            { "method": "GET", "path": "/thing", "name": "second" }
+        ]);
+
+        match to_endpoints(&document) {
+            Err(LoaderError::BadShape(message)) => {
+                assert!(message.contains("duplicates endpoint `GET /thing`"));
+            }
+            other => panic!("expected a duplicate identity error, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@
 		endpointKey,
 		methodColor,
 		parseOpenApi,
+		splitQuery,
 		withQuery,
 		type Import,
 		type Section
@@ -23,7 +24,11 @@
 
 	/** What's already here, so the preview can say what it would actually add. */
 	const existing = $derived(
-		new Set(section.requests.map((request) => endpointKey(request.method, request.path)))
+		new Set(
+			section.requests.map((request) =>
+				endpointKey(request.method, splitQuery(request.path).base)
+			)
+		)
 	);
 	/**
 	 * Operations are identified by method and path. A malformed or merged spec
@@ -42,10 +47,13 @@
 		);
 	});
 
+	let pickToken = 0;
+
 	async function pick(event: Event) {
 		const input = event.target as HTMLInputElement;
 		const file = input.files?.[0];
 		if (!file) return;
+		const token = ++pickToken;
 
 		fileName = file.name;
 		error = null;
@@ -53,9 +61,10 @@
 		parsed = null;
 
 		try {
-			parsed = await parseOpenApi(await file.text());
+			const result = await parseOpenApi(await file.text());
+			if (token === pickToken) parsed = result;
 		} catch (failure) {
-			error = String(failure);
+			if (token === pickToken) error = String(failure);
 		}
 		// Let the same file be chosen again after a failed parse.
 		input.value = '';
@@ -65,6 +74,8 @@
 		if (!parsed) return;
 
 		const adding = [...fresh];
+		const previousBaseUrl = section.baseUrl;
+		const addedIds: string[] = [];
 		for (const endpoint of adding) {
 			const query = (endpoint.parameters ?? [])
 				.filter((param) => param.in === 'query')
@@ -72,8 +83,10 @@
 			const path = query.some((param) => param.name)
 				? withQuery(endpoint.path, query)
 				: endpoint.path;
+			const id = crypto.randomUUID();
+			addedIds.push(id);
 			section.requests.push({
-				id: crypto.randomUUID(),
+				id,
 				name: endpoint.name || endpoint.path,
 				method: endpoint.method,
 				path,
@@ -93,7 +106,13 @@
 		if (!section.baseUrl.trim() && parsed.baseUrl) section.baseUrl = parsed.baseUrl;
 
 		const added = adding.length;
-		await collections.flush(section);
+		if (!(await collections.flush(section))) {
+			const ids = new Set(addedIds);
+			section.requests = section.requests.filter((request) => !ids.has(request.id));
+			section.baseUrl = previousBaseUrl;
+			error = collections.error ?? 'The imported endpoints could not be saved.';
+			return;
+		}
 		done = `Added ${added} endpoint${added === 1 ? '' : 's'}.`;
 		parsed = null;
 	}

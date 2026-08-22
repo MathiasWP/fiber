@@ -314,10 +314,17 @@ export interface QueryParam {
  * means a URL pasted in with its query already attached simply appears in the
  * table.
  */
-export function splitQuery(path: string): { base: string; query: string } {
-	const at = path.indexOf('?');
-	if (at < 0) return { base: path, query: '' };
-	return { base: path.slice(0, at), query: path.slice(at + 1) };
+export function splitQuery(path: string): { base: string; query: string; fragment: string } {
+	const hash = path.indexOf('#');
+	const beforeFragment = hash < 0 ? path : path.slice(0, hash);
+	const fragment = hash < 0 ? '' : path.slice(hash);
+	const at = beforeFragment.indexOf('?');
+	if (at < 0) return { base: beforeFragment, query: '', fragment };
+	return {
+		base: beforeFragment.slice(0, at),
+		query: beforeFragment.slice(at + 1),
+		fragment
+	};
 }
 
 export function parseQuery(path: string): QueryParam[] {
@@ -334,13 +341,13 @@ export function parseQuery(path: string): QueryParam[] {
  * to type into, and that row is not a parameter until it is named.
  */
 export function withQuery(path: string, params: QueryParam[]): string {
-	const { base } = splitQuery(path);
+	const { base, fragment } = splitQuery(path);
 	const search = new URLSearchParams();
 	for (const { name, value } of params) {
 		if (name.trim()) search.append(name, value);
 	}
 	const query = search.toString();
-	return query ? `${base}?${query}` : base;
+	return `${query ? `${base}?${query}` : base}${fragment}`;
 }
 
 /** Names of `{placeholder}` segments in a path, ignoring the query string. */
