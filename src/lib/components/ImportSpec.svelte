@@ -25,11 +25,22 @@
 	const existing = $derived(
 		new Set(section.requests.map((request) => endpointKey(request.method, request.path)))
 	);
-	const fresh = $derived(
-		parsed?.endpoints.filter(
-			(endpoint) => !existing.has(endpointKey(endpoint.method, endpoint.path))
-		) ?? []
-	);
+	/**
+	 * Operations are identified by method and path. A malformed or merged spec
+	 * can repeat one; importing it twice would create two indistinguishable
+	 * sidebar rows even though neither existed before the import.
+	 */
+	const fresh = $derived.by(() => {
+		const seen = new Set(existing);
+		return (
+			parsed?.endpoints.filter((endpoint) => {
+				const key = endpointKey(endpoint.method, endpoint.path);
+				if (seen.has(key)) return false;
+				seen.add(key);
+				return true;
+			}) ?? []
+		);
+	});
 
 	async function pick(event: Event) {
 		const input = event.target as HTMLInputElement;
@@ -133,8 +144,8 @@
 			</div>
 
 			<div class="max-h-40 overflow-y-auto">
-				{#each parsed.endpoints as endpoint (endpoint.method + endpoint.path)}
-					{@const isNew = !existing.has(endpointKey(endpoint.method, endpoint.path))}
+				{#each parsed.endpoints as endpoint, index (endpoint.method + endpoint.path + '\0' + index)}
+					{@const isNew = fresh.includes(endpoint)}
 					<div class="flex items-center gap-2 px-2 py-0.5 {isNew ? '' : 'opacity-40'}">
 						<span class="font-mono text-2.5 font-bold w-9 shrink-0 {methodColor(endpoint.method)}">
 							{endpoint.method}
