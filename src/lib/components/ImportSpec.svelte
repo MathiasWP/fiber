@@ -53,7 +53,8 @@
 	async function apply() {
 		if (!parsed) return;
 
-		for (const endpoint of fresh) {
+		const adding = [...fresh];
+		for (const endpoint of adding) {
 			const query = (endpoint.parameters ?? [])
 				.filter((param) => param.in === 'query')
 				.map((param) => ({ name: param.name, value: param.example || '' }));
@@ -80,7 +81,7 @@
 		// Only fill the base URL in when there's nothing to overwrite.
 		if (!section.baseUrl.trim() && parsed.baseUrl) section.baseUrl = parsed.baseUrl;
 
-		const added = fresh.length;
+		const added = adding.length;
 		await collections.flush(section);
 		done = `Added ${added} endpoint${added === 1 ? '' : 's'}.`;
 		parsed = null;

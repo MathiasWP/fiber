@@ -50,6 +50,22 @@
 	async function copy() {
 		await navigator.clipboard.writeText(`Fiber ${version}\n${message}\n\n${detail}`);
 	}
+
+	// E2E: Chromium does not deliver synthetic `error` / `unhandledrejection`
+	// events to `<svelte:window>` the way a real throw does. The mock backend
+	// leaves this hook for tests to drive the same `record` path.
+	$effect(() => {
+		const hooks = (window as unknown as { __FIBER_TEST__?: FiberTestHooks }).__FIBER_TEST__;
+		if (!hooks) return;
+		hooks.crash = (text) => record(text, new Error(text), 'test');
+		hooks.reject = (text) =>
+			record('A background task failed', new Error(text), 'unhandled promise rejection');
+	});
+
+	interface FiberTestHooks {
+		crash?: (message: string) => void;
+		reject?: (message: string) => void;
+	}
 </script>
 
 <svelte:window onerror={onError} onunhandledrejection={onRejection} />

@@ -54,6 +54,14 @@ test('closing the quote is what finishes a string, and then a comma moves on', a
 	expect(await selected(page)).toBe('number');
 });
 
+test('integer is a gap you can tab to', async ({ page }) => {
+	await openBody(page, '{\n  "n": integer,\n  "ok": boolean\n}');
+	await page.keyboard.press('Tab');
+	expect(await selected(page)).toBe('integer');
+	await page.keyboard.press('Tab');
+	expect(await selected(page)).toBe('boolean');
+});
+
 test('unknown is a gap you can tab to', async ({ page }) => {
 	await openBody(page, '{\n  "a": unknown,\n  "b": string\n}');
 	await page.keyboard.press('Tab');
