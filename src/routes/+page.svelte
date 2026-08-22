@@ -251,9 +251,8 @@
 	/**
 	 * Visits every field without keeping any of it. The visit is the point:
 	 * reading a property inside an effect is what subscribes the effect to it,
-	 * and a read touches only the reference — unlike the JSON.stringify this
-	 * replaces, which copied and escaped every character of every body on every
-	 * keystroke just to notice that something had changed.
+	 * and a read touches only the reference — unlike JSON.stringify, which
+	 * copies and escapes every character just to notice a change.
 	 */
 	function readDeep(node: unknown): void {
 		if (node === null || typeof node !== 'object') return;
@@ -273,17 +272,19 @@
 	 */
 	let watchedRequestId: string | null = null;
 
-	// Reading the whole section deeply is what subscribes this effect to every
-	// field the user can edit; the effect firing again for the same request is
-	// then itself the "something changed" signal `touch` used to recompute.
+	// Only the selected request is edited in this pane. Walking its whole section
+	// here made every keystroke scan every other request and body in the
+	// collection as well. Section-level controls persist themselves, so this
+	// watcher can stay proportional to the request actually being edited.
 	$effect(() => {
 		const section = selection?.section;
-		const requestId = selection?.request.id ?? null;
+		const request = selection?.request;
+		const requestId = request?.id ?? null;
 		if (!section) {
 			watchedRequestId = null;
 			return;
 		}
-		readDeep(section);
+		readDeep(request);
 		if (watchedRequestId !== requestId) {
 			watchedRequestId = requestId;
 			return;
