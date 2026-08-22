@@ -939,8 +939,10 @@ test('query params are available on POST', async ({ page }) => {
 
 	await expect(page.getByText('Body', { exact: true })).toBeVisible();
 	await page.getByText('Params', { exact: true }).click();
-	await page.getByPlaceholder('Parameter').fill('pretty');
-	await page.getByPlaceholder('Value').fill('1');
+	const name = page.getByPlaceholder('Parameter').first();
+	const value = name.locator('xpath=following-sibling::input');
+	await name.fill('pretty');
+	await value.fill('1');
 
 	await expect(page.locator('input[placeholder="/user/get"]')).toHaveValue('/users?pretty=1');
 });
