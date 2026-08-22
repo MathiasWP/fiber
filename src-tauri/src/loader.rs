@@ -550,20 +550,17 @@ pub fn forget_cache(dir: &std::path::Path, section_id: &str) {
 }
 
 /// What changed between two runs, by stable key.
+///
+/// Keyed lookups rather than `Vec::contains`: a manifest of several hundred
+/// endpoints made the old pairwise scan quadratic, run in full on every
+/// refresh.
 pub fn diff(previous: &[LoadedEndpoint], next: &[LoadedEndpoint]) -> (Vec<String>, Vec<String>) {
-    let before: Vec<String> = previous.iter().map(LoadedEndpoint::key).collect();
-    let after: Vec<String> = next.iter().map(LoadedEndpoint::key).collect();
+    let before: std::collections::HashSet<String> =
+        previous.iter().map(LoadedEndpoint::key).collect();
+    let after: std::collections::HashSet<String> = next.iter().map(LoadedEndpoint::key).collect();
 
-    let added = after
-        .iter()
-        .filter(|key| !before.contains(key))
-        .cloned()
-        .collect();
-    let removed = before
-        .iter()
-        .filter(|key| !after.contains(key))
-        .cloned()
-        .collect();
+    let added = after.difference(&before).cloned().collect();
+    let removed = before.difference(&after).cloned().collect();
     (added, removed)
 }
 
