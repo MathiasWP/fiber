@@ -30,7 +30,8 @@ test('picking a cookie stores it and names the capture rule', async ({ page }) =
 
 	await expect(page.getByText('Pick your credential')).toBeHidden();
 	await expect(page.getByText('captured', { exact: true })).toBeVisible();
-	await expect(page.getByText(/cookie · session/)).toBeVisible();
+	await expect(page.locator('p.font-mono')).toHaveText(/cookie/);
+	await expect(page.locator('p.font-mono')).toHaveText(/session/);
 	await expect.poll(() => commands(page, 'browser_capture')).not.toEqual([]);
 });
 
@@ -48,7 +49,8 @@ test('picking a storage key stores it as a storage rule', async ({ page }) => {
 
 	await page.getByText('access_token', { exact: true }).click();
 	await expect(page.getByText('captured', { exact: true })).toBeVisible();
-	await expect(page.getByText(/storage · access_token/)).toBeVisible();
+	await expect(page.locator('p.font-mono')).toHaveText(/storage/);
+	await expect(page.locator('p.font-mono')).toHaveText(/access_token/);
 });
 
 test('the filter is a substring match, and an empty result says how many were hidden', async ({

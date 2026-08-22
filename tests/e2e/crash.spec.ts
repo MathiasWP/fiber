@@ -8,6 +8,9 @@ import { install } from './mock-ipc';
  * The app registers the same `record` path on `__FIBER_TEST__` once it mounts.
  */
 async function explode(page: Page, message: string) {
+	await page.waitForFunction(
+		() => !window.__FIBER_TEST__.crash.toString().includes('has not registered')
+	);
 	await page.evaluate((text) => window.__FIBER_TEST__.crash(text), message);
 }
 
@@ -53,6 +56,9 @@ test('an unhandled rejection is reported the same way', async ({ page }) => {
 	await install(page);
 	await page.goto('/');
 
+	await page.waitForFunction(
+		() => !window.__FIBER_TEST__.reject.toString().includes('has not registered')
+	);
 	await page.evaluate(() => window.__FIBER_TEST__.reject('background died'));
 
 	await expect(page.getByRole('alert')).toContainText('A background task failed');

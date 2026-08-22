@@ -7,6 +7,9 @@ import { install, savedRequest, section } from './mock-ipc';
  * same open path the shortcut would take.
  */
 async function openPalette(page: Page) {
+	await page.waitForFunction(
+		() => !window.__FIBER_TEST__.openPalette.toString().includes('has not registered')
+	);
 	await page.evaluate(() => window.__FIBER_TEST__.openPalette());
 	return page.getByRole('dialog', { name: 'Search endpoints' });
 }
