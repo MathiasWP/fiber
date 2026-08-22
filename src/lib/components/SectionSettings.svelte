@@ -34,7 +34,7 @@
 	let draftSecret = $state('');
 	let secretSaved = $state(false);
 	let pickerOpen = $state(false);
-	let captureError = $state<string | null>(null);
+	let authError = $state<string | null>(null);
 
 	const open = $derived(section !== null);
 
@@ -86,6 +86,7 @@
 		const reference = section && 'secretRef' in section.auth ? section.auth.secretRef : null;
 		draftSecret = '';
 		secretSaved = false;
+		authError = null;
 		if (!reference) {
 			stored = false;
 			return;
@@ -95,6 +96,7 @@
 
 	function changeKind(next: AuthKind) {
 		if (!section) return;
+		authError = null;
 		const secretRef = `${section.id}:auth`;
 
 		if (next === 'none') {
@@ -129,33 +131,53 @@
 
 	async function saveSecret() {
 		if (!section || !('secretRef' in section.auth) || !draftSecret.trim()) return;
-		await setSecret(section.auth.secretRef, draftSecret);
-		// Drop it from memory the moment it's in the keychain.
-		draftSecret = '';
-		stored = true;
-		secretSaved = true;
-		await forgetToken(section.id);
-		await collections.refreshCredential(section);
+		authError = null;
+		try {
+			await setSecret(section.auth.secretRef, draftSecret);
+			// Drop it from memory the moment it's in the keychain.
+			draftSecret = '';
+			stored = true;
+			secretSaved = true;
+			await forgetToken(section.id);
+			await collections.refreshCredential(section);
+		} catch (failure) {
+			authError = String(failure);
+		}
 	}
 
 	async function removeSecret() {
 		if (!section || !('secretRef' in section.auth)) return;
-		await deleteSecret(section.auth.secretRef);
-		stored = false;
-		secretSaved = false;
-		await forgetToken(section.id);
-		await collections.refreshCredential(section);
+		authError = null;
+		try {
+			await deleteSecret(section.auth.secretRef);
+			stored = false;
+			secretSaved = false;
+			await forgetToken(section.id);
+			await collections.refreshCredential(section);
+		} catch (failure) {
+			authError = String(failure);
+		}
+	}
+
+	async function forgetCachedToken() {
+		if (!section) return;
+		authError = null;
+		try {
+			await forgetToken(section.id);
+		} catch (failure) {
+			authError = String(failure);
+		}
 	}
 
 	async function signIn() {
 		if (!section) return;
-		captureError = null;
+		authError = null;
 		// The window is opened from the section on disk, so persist first.
 		await collections.flush(section);
 		try {
 			await browserSignIn(section.id);
 		} catch (failure) {
-			captureError = String(failure);
+			authError = String(failure);
 		}
 	}
 
@@ -166,7 +188,7 @@
 	async function applyRule(rule: { capture: CaptureKind; key: string; path: string }) {
 		if (!section || section.auth.kind !== 'browser') return;
 		pickerOpen = false;
-		captureError = null;
+		authError = null;
 
 		section.auth.capture = rule.capture;
 		section.auth.captureKey = rule.key;
@@ -184,7 +206,7 @@
 			// the sidebar's shield is reporting.
 			await collections.refreshCredential(section);
 		} catch (failure) {
-			captureError = String(failure);
+			authError = String(failure);
 		}
 	}
 
@@ -196,22 +218,26 @@
 	 * not in `close()`: Escape and the scrim go through there too, and neither
 	 * of those should fire a request at someone's API.
 	 *
-	 * Not awaited — the drawer shuts straight away and the sidebar shows the
-	 * refresh running, which is where the result is going to appear anyway.
+	 * Persist first: Rust reloads the section from disk when it runs a loader,
+	 * so starting the refresh before the write finishes uses the old filter.
 	 */
-	function done() {
-		if (section?.loader?.enabled) void collections.refresh(section);
-		close();
+	async function done() {
+		const current = section;
+		if (current) {
+			const saved = await collections.flush(current);
+			if (saved && current.loader?.enabled) void collections.refresh(current);
+		}
+		close(false);
 	}
 
-	function close() {
+	function close(persist = true) {
 		if (section) {
 			collections.refreshCredential(section);
-			collections.flush(section);
+			if (persist) collections.flush(section);
 			browserClose(section.id);
 		}
 		draftSecret = '';
-		captureError = null;
+		authError = null;
 		onClose();
 	}
 </script>
@@ -538,10 +564,6 @@
 									</p>
 								{/if}
 
-								{#if captureError}
-									<p class="text-2.5 text-bad">{captureError}</p>
-								{/if}
-
 								<p class="text-2.5 text-muted leading-relaxed">
 									On a 401 the sign-in page is reopened hidden. If the identity provider still
 									considers you signed in, a fresh credential is captured and you never see a
@@ -587,7 +609,7 @@
 										<button
 											class="btn-ghost text-xs"
 											title="Discard the cached token so the next send logs in again"
-											onclick={() => section && forgetToken(section.id)}
+											onclick={forgetCachedToken}
 										>
 											Forget token
 										</button>
@@ -602,6 +624,9 @@
 									share or commit. It can't be read back out, only replaced.
 								</p>
 							</div>
+						{/if}
+						{#if authError}
+							<p class="text-2.5 text-bad" role="alert">{authError}</p>
 						{/if}
 						</Tabs.Content>
 					</div>

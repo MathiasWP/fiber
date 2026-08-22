@@ -114,6 +114,7 @@ class History {
 			// says this body is no longer wanted; attaching it anyway would park a
 			// possibly-huge string on an entry nobody is looking at.
 			if (entry.bodyLoaded) entry.body = body;
+			this.error = null;
 		} catch (error) {
 			entry.bodyLoaded = false;
 			this.error = String(error);

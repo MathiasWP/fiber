@@ -136,6 +136,8 @@ export interface MockUpdate {
 
 export interface MockOptions {
 	sections?: Section[];
+	/** Immediate rejection while loading the collection list. */
+	listSectionsError?: string;
 	/** Files `list_sections` reports as unreadable, alongside the good sections. */
 	sectionErrors?: SectionFileError[];
 	/** What the loader has already reported, i.e. `loader_cache`. */
@@ -155,10 +157,16 @@ export interface MockOptions {
 	saveLatencyMs?: number;
 	/** Seeded history, newest first. */
 	history?: HistoryRecord[];
+	historyListError?: string;
 	/** Response bodies for `history_body`, keyed by entry id. */
 	historyBodies?: Record<string, string>;
+	historyBodyError?: string;
+	/** When set, only this many body reads fail; otherwise every read fails. */
+	historyBodyFailures?: number;
 	/** What a finished `send_request` resolves to when not deferred. */
 	sendResponse?: ResponseData;
+	/** Per-request responses, useful when proving response isolation. */
+	sendResponses?: Record<string, ResponseData>;
 	/** Immediate rejection for `send_request` when not deferred. */
 	sendError?: string;
 	/** `has_secret` for any reference that has not been written this session. */
@@ -173,11 +181,19 @@ export interface MockOptions {
 	probeError?: string;
 	previewEndpoints?: LoadedEndpoint[];
 	previewError?: string;
+	loaderCacheError?: string;
+	loaderSchemaError?: string;
+	runLoaderError?: string;
+	/** Overrides run metadata that is not represented by `refreshed`. */
+	loaderRun?: Partial<Pick<import('../../src/lib/api').LoaderRun, 'loadedAt' | 'pages'>>;
 	saveError?: string;
 	deleteSectionError?: string;
 	deleteHistoryError?: string;
 	signInError?: string;
 	captureError?: string;
+	setSecretError?: string;
+	deleteSecretError?: string;
+	forgetTokenError?: string;
 	/** When set, startup's updater check offers this version. */
 	update?: MockUpdate;
 }
@@ -206,6 +222,8 @@ declare global {
 			updateProgress(chunkLength: number): void;
 			/** Resolves the held-open `download_and_install`. */
 			finishUpdate(): void;
+			/** Emits the quit handshake event from the Rust window loop. */
+			flushBeforeExit(): void;
 			/** Rejects the held-open `download_and_install`. */
 			failUpdate(message: string): void;
 			/** Opens the command palette. The app fills this in once it mounts. */
@@ -233,14 +251,18 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 		(opts: MockOptions) => {
 			const calls: { cmd: string; args: Record<string, unknown> }[] = [];
 			const callbacks = new Map<number, { fn: (payload: unknown) => void; once: boolean }>();
+			const eventListeners = new Map<string, number>();
 			let nextCallbackId = 1;
 
 			const secrets = new Map<string, boolean>();
+			const runtimeHistoryBodies = new Map<string, string>();
 			let lastSaved: unknown = null;
 
 			// The channel `send_request` was handed, and the resolver for the promise
 			// it is waiting on. Both are set when the app sends.
 			let channelId: number | null = null;
+			let activeSendId: string | null = null;
+			let remainingHistoryBodyFailures = opts.historyBodyFailures ?? 0;
 			let messageIndex = 0;
 			let settleSend: ((data: unknown) => void) | null = null;
 			let rejectSend: ((error: unknown) => void) | null = null;
@@ -308,14 +330,26 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 				switch (cmd) {
 					// Startup. Anything the app asks for before a test does anything.
 					case 'list_sections':
+						if (opts.listSectionsError) return Promise.reject(new Error(opts.listSectionsError));
 						return Promise.resolve({
 							sections: opts.sections ?? [],
 							errors: opts.sectionErrors ?? []
 						});
 					case 'history_list':
+						if (opts.historyListError) return Promise.reject(new Error(opts.historyListError));
 						return Promise.resolve(opts.history ?? []);
 					case 'history_body':
-						return Promise.resolve(opts.historyBodies?.[String(args.id)] ?? null);
+						if (
+							opts.historyBodyError &&
+							(opts.historyBodyFailures === undefined || remainingHistoryBodyFailures-- > 0)
+						) {
+							return Promise.reject(new Error(opts.historyBodyError));
+						}
+						return Promise.resolve(
+							opts.historyBodies?.[String(args.id)] ??
+								runtimeHistoryBodies.get(String(args.id)) ??
+								null
+						);
 					case 'history_delete':
 						if (opts.deleteHistoryError) return Promise.reject(new Error(opts.deleteHistoryError));
 						return Promise.resolve(null);
@@ -329,6 +363,9 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					// window's own close event; both go through the event plugin. The
 					// resolved number stands in for Tauri's event id.
 					case 'plugin:event|listen':
+						if (typeof args.event === 'string' && typeof args.handler === 'number') {
+							eventListeners.set(args.event, args.handler);
+						}
 						return Promise.resolve(0);
 					case 'plugin:event|unlisten':
 						return Promise.resolve(null);
@@ -386,23 +423,26 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 						return Promise.resolve(null);
 
 					case 'loader_cache':
+						if (opts.loaderCacheError) return Promise.reject(new Error(opts.loaderCacheError));
 						return Promise.resolve({ loadedAt: 1, endpoints: opts.loaded ?? [] });
 					case 'loader_schema':
+						if (opts.loaderSchemaError) return Promise.reject(new Error(opts.loaderSchemaError));
 						return Promise.resolve({
 							request: opts.schemas?.[String(args.endpointId)] ?? null,
 							response: opts.responseSchemas?.[String(args.endpointId)] ?? null
 						});
 
 					case 'run_loader': {
+						if (opts.runLoaderError) return Promise.reject(new Error(opts.runLoaderError));
 						const endpoints = opts.refreshed ?? opts.loaded ?? [];
 						const before = (opts.loaded ?? []).map((e) => `${e.method} ${e.path}`);
 						const after = endpoints.map((e) => `${e.method} ${e.path}`);
 						const run = {
-							loadedAt: 2,
+							loadedAt: opts.loaderRun?.loadedAt ?? 2,
 							endpoints,
 							added: after.filter((key) => !before.includes(key)),
 							removed: before.filter((key) => !after.includes(key)),
-							pages: 1
+							pages: opts.loaderRun?.pages ?? 1
 						};
 						if (!opts.deferRefresh) return Promise.resolve(run);
 						// Held open, so a test can look at the app mid-refresh.
@@ -480,12 +520,15 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					case 'has_secret':
 						return Promise.resolve(secretOf(String(args.reference ?? '')));
 					case 'set_secret':
+						if (opts.setSecretError) return Promise.reject(new Error(opts.setSecretError));
 						secrets.set(String(args.reference ?? ''), true);
 						return Promise.resolve(null);
 					case 'delete_secret':
+						if (opts.deleteSecretError) return Promise.reject(new Error(opts.deleteSecretError));
 						secrets.set(String(args.reference ?? ''), false);
 						return Promise.resolve(null);
 					case 'forget_token':
+						if (opts.forgetTokenError) return Promise.reject(new Error(opts.forgetTokenError));
 						return Promise.resolve(null);
 
 					case 'save_section':
@@ -505,12 +548,21 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 
 					case 'send_request': {
 						channelId = channelFrom(args.onBody);
+						activeSendId =
+							args.spec && typeof args.spec === 'object' && 'id' in args.spec
+								? String((args.spec as { id?: unknown }).id ?? '')
+								: null;
 						messageIndex = 0;
 						if (opts.sendError && !opts.deferSend) {
 							return Promise.reject(new Error(opts.sendError));
 						}
 						if (!opts.deferSend) {
-							return Promise.resolve(
+							const requestId =
+								args.spec && typeof args.spec === 'object' && 'requestId' in args.spec
+									? String((args.spec as { requestId?: unknown }).requestId ?? '')
+									: '';
+							const result =
+								opts.sendResponses?.[requestId] ??
 								opts.sendResponse ?? {
 									status: 200,
 									statusText: 'OK',
@@ -521,8 +573,9 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 									sizeBytes: 2,
 									timing: { ttfbMs: 5, totalMs: 9 },
 									body: '{}'
-								}
-							);
+								};
+							if (activeSendId) runtimeHistoryBodies.set(activeSendId, result.body);
+							return Promise.resolve(result);
 						}
 						// Held open, so the test decides when the body arrives and when
 						// the request finishes.
@@ -567,6 +620,15 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					emit(channelId, messageIndex++, { event: 'chunk', data: { text } });
 				},
 				settle(data: unknown) {
+					if (
+						activeSendId &&
+						data &&
+						typeof data === 'object' &&
+						'body' in data &&
+						typeof (data as { body?: unknown }).body === 'string'
+					) {
+						runtimeHistoryBodies.set(activeSendId, (data as { body: string }).body);
+					}
 					settleSend?.(data);
 					settleSend = null;
 					rejectSend = null;
@@ -584,7 +646,15 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					if (opts.snapshotError) {
 						rejectSnapshot?.(new Error(opts.snapshotError));
 					} else {
-						settleSnapshot?.();
+						settleSnapshot?.(
+							opts.snapshot ?? {
+								localStorage: [{ key: 'auth0.token', value: 'ey.header.payload', path: '' }],
+								cookies: [
+									{ name: 'session', value: 'abc123', domain: 'acme.com', httpOnly: true }
+								],
+								indexedDb: []
+							}
+						);
 					}
 					settleSnapshot = null;
 					rejectSnapshot = null;
@@ -600,6 +670,15 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					settleUpdate?.();
 					settleUpdate = null;
 					rejectUpdate = null;
+				},
+				flushBeforeExit() {
+					const handler = eventListeners.get('flush-before-exit');
+					if (handler === undefined) throw new Error('flush-before-exit listener is not registered');
+					internals.runCallback(handler, {
+						event: 'flush-before-exit',
+						id: 0,
+						payload: null
+					});
 				},
 				failUpdate(message: string) {
 					rejectUpdate?.(new Error(message));

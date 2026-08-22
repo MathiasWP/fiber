@@ -22,6 +22,7 @@
 	let error = $state<string | null>(null);
 	let loading = $state(false);
 	let query = $state('');
+	let loadToken = 0;
 
 	interface Candidate {
 		capture: CaptureKind;
@@ -38,15 +39,19 @@
 	}
 
 	async function load() {
+		const token = ++loadToken;
 		loading = true;
 		error = null;
 		try {
-			snapshot = await browserSnapshot(sectionId);
+			const next = await browserSnapshot(sectionId);
+			if (token === loadToken) snapshot = next;
 		} catch (failure) {
-			error = String(failure);
-			snapshot = null;
+			if (token === loadToken) {
+				error = String(failure);
+				snapshot = null;
+			}
 		} finally {
-			loading = false;
+			if (token === loadToken) loading = false;
 		}
 	}
 
@@ -55,7 +60,9 @@
 			query = '';
 			load();
 		} else {
+			loadToken += 1;
 			snapshot = null;
+			loading = false;
 		}
 	});
 
