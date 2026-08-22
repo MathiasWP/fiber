@@ -505,3 +505,255 @@ test.describe('collection persistence edges', () => {
 			.toBe(chosen);
 	});
 });
+
+test.describe('persistence and transition regressions', () => {
+	test('quit waits for a save whose debounce has already fired', async ({ page }) => {
+		await install(page, {
+			sections: [section({ requests: [savedRequest()] })],
+			saveLatencyMs: 800
+		});
+		await page.goto('/');
+		await page.getByText('List users').click();
+		await page.getByPlaceholder('/user/get').fill('/users?edited=1');
+
+		// The timer has fired and the disk write is now in progress.
+		await expect.poll(async () => (await commands(page, 'save_section')).length).toBe(1);
+		await expect.poll(async () => (await commands(page, 'plugin:event|listen')).length).toBeGreaterThan(0);
+		await page.evaluate(() => window.__FIBER_TEST__.flushBeforeExit());
+
+		await page.waitForTimeout(100);
+		expect(await commands(page, 'flush_complete')).toHaveLength(0);
+		await expect.poll(async () => (await commands(page, 'flush_complete')).length).toBe(1);
+	});
+
+	test('opening another collection’s settings flushes the one being left', async ({ page }) => {
+		await install(page, {
+			sections: [
+				section({ id: 'alpha', name: 'Alpha', order: 0 }),
+				section({ id: 'beta', name: 'Beta', order: 1 })
+			]
+		});
+		await page.goto('/');
+		await page.getByLabel('Settings for Alpha').click();
+		await page.locator('.drawer').getByLabel('Name').fill('Alpha edited');
+		await page.getByLabel('Settings for Beta').click();
+
+		await expect(page.locator('.drawer').getByLabel('Name')).toHaveValue('Beta');
+		const saves = await commands(page, 'save_section');
+		const alpha = saves.find(
+			(call) => (call.args.section as { id?: string }).id === 'alpha'
+		);
+		expect(alpha).toBeDefined();
+		expect((alpha!.args.section as { name: string }).name).toBe('Alpha edited');
+	});
+
+	test('Done saves loader edits before asking Rust to run them', async ({ page }) => {
+		await install(page, {
+			sections: [
+				section({
+					loader: {
+						enabled: true,
+						url: '/old.json',
+						method: 'GET',
+						query: '.paths',
+						next: '',
+						ttlSeconds: 0
+					}
+				})
+			]
+		});
+		await page.goto('/');
+		await openSettings(page);
+		await page.getByRole('tab', { name: /^Loader/ }).click();
+		await page.getByPlaceholder('/openapi.json').fill('/new.json');
+		await page.getByRole('button', { name: 'Done' }).click();
+
+		await expect.poll(async () => (await commands(page, 'run_loader')).length).toBe(1);
+		const calls = await page.evaluate(() => window.__FIBER_TEST__.calls);
+		const saveAt = calls.findIndex((call) => call.cmd === 'save_section');
+		const runAt = calls.findIndex((call) => call.cmd === 'run_loader');
+		expect(saveAt).toBeGreaterThanOrEqual(0);
+		expect(runAt).toBeGreaterThan(saveAt);
+		const saved = calls[saveAt].args.section as { loader: { url: string } };
+		expect(saved.loader.url).toBe('/new.json');
+	});
+
+	test('a sidebar loader refresh failure is visible after the spinner stops', async ({ page }) => {
+		await install(page, {
+			sections: [
+				section({
+					loader: {
+						enabled: true,
+						url: '/openapi.json',
+						method: 'GET',
+						query: '.paths',
+						next: '',
+						ttlSeconds: 0
+					}
+				})
+			],
+			runLoaderError: 'loader endpoint is offline'
+		});
+		await page.goto('/');
+		await page.getByText('Acme', { exact: true }).click({ button: 'right' });
+		await page.getByRole('menuitem', { name: 'Refresh endpoints' }).click();
+		await expect(page.getByText(/loader endpoint is offline/)).toBeVisible();
+		await expect(page.getByLabel('Refreshing endpoints')).toBeHidden();
+	});
+});
+
+test.describe('body-kind and shortcut regressions', () => {
+	test('GET suppresses form, multipart, and raw-file payloads', async ({ page }) => {
+		const form = savedRequest({
+			id: 'form',
+			name: 'Form GET',
+			method: 'GET',
+			path: '/form',
+			bodyKind: 'form',
+			form: [{ name: 'visible', value: 'value', file: '', isFile: false }]
+		});
+		const file = savedRequest({
+			id: 'file',
+			name: 'File GET',
+			method: 'GET',
+			path: '/file',
+			bodyKind: 'file',
+			file: '/tmp/secret.bin'
+		});
+		await install(page, { sections: [section({ requests: [form, file] })] });
+		await page.goto('/');
+
+		await page.getByText('Form GET').click();
+		await page.getByRole('button', { name: 'Send' }).click();
+		await page.getByText('File GET').click();
+		await page.getByRole('button', { name: 'Send' }).click();
+
+		const sent = await commands(page, 'send_request');
+		for (const call of sent) {
+			const spec = call.args.spec as { body: unknown; form: unknown[]; file: string };
+			expect(spec.body).toBeNull();
+			expect(spec.form).toEqual([]);
+			expect(spec.file).toBe('');
+		}
+	});
+
+	test('switching Multipart to Form sends a visible value as text', async ({ page }) => {
+		const request = savedRequest({
+			method: 'POST',
+			bodyKind: 'multipart',
+			form: [
+				{
+					name: 'attachment',
+					value: '',
+					file: '/tmp/old-file',
+					isFile: true
+				}
+			]
+		});
+		await openRequest(page, request);
+		await page.locator('select').selectOption('form');
+		await page.locator('input[placeholder="Value"]:visible').first().fill('now text');
+		await page.getByRole('button', { name: 'Send' }).click();
+
+		const spec = (await commands(page, 'send_request'))[0].args.spec as {
+			form: { name: string; value: string; file: string; isFile: boolean }[];
+		};
+		expect(spec.form).toEqual([
+			{ name: 'attachment', value: 'now text', file: '', isFile: false }
+		]);
+	});
+
+	test('Cmd/Ctrl+Enter inside settings does not send the hidden request', async ({ page }) => {
+		await openRequest(page, savedRequest({ method: 'POST', body: '{}' }));
+		await openSettings(page);
+		const name = page.locator('.drawer').getByLabel('Name');
+		await name.focus();
+		await name.press('ControlOrMeta+Enter');
+		expect(await commands(page, 'send_request')).toEqual([]);
+		await expect(page.getByRole('heading', { name: 'Section settings' })).toBeVisible();
+	});
+});
+
+test.describe('import and history recovery regressions', () => {
+	test('a failed import save rolls back and never reports success', async ({ page }) => {
+		await install(page, {
+			sections: [section()],
+			saveError: 'disk is full',
+			openapi: openApiImport({
+				endpoints: [
+					{ method: 'GET', path: '/pets', name: 'listPets', description: '', body: '' }
+				]
+			})
+		});
+		await page.goto('/');
+		await openSettings(page);
+		await page.locator('input[type="file"]').setInputFiles({
+			name: 'pets.json',
+			mimeType: 'application/json',
+			buffer: Buffer.from('{}')
+		});
+		await page.getByRole('button', { name: 'Add 1 endpoint' }).click();
+
+		await expect(page.getByText(/disk is full/)).toBeVisible();
+		await expect(page.getByText('Added 1 endpoint.')).toBeHidden();
+		await page.getByRole('button', { name: 'Done' }).click();
+		await expect(page.getByText('listPets', { exact: true })).toBeHidden();
+	});
+
+	test('an imported operation with query examples is not offered again', async ({ page }) => {
+		await install(page, {
+			sections: [
+				section({
+					requests: [
+						savedRequest({
+							id: 'pets',
+							name: 'listPets',
+							path: '/pets?verbose=true'
+						})
+					]
+				})
+			],
+			openapi: openApiImport({
+				endpoints: [
+					{
+						method: 'GET',
+						path: '/pets',
+						name: 'listPets',
+						description: '',
+						body: '',
+						parameters: [{ name: 'verbose', in: 'query', example: 'true' }]
+					}
+				]
+			})
+		});
+		await page.goto('/');
+		await openSettings(page);
+		await page.locator('input[type="file"]').setInputFiles({
+			name: 'pets.json',
+			mimeType: 'application/json',
+			buffer: Buffer.from('{}')
+		});
+		await expect(page.getByText('0 new of 1')).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Add 0 endpoints' })).toBeDisabled();
+	});
+
+	test('a transient history-body error clears after reopening succeeds', async ({ page }) => {
+		const first = savedRequest({ id: 'r1', name: 'First' });
+		const second = savedRequest({ id: 'r2', name: 'Second', path: '/second' });
+		await install(page, {
+			sections: [section({ requests: [first, second] })],
+			history: [historyRecord({ id: 'h1', requestId: 'r1' })],
+			historyBodies: { h1: '{"recovered":true}' },
+			historyBodyError: 'temporary body read failure',
+			historyBodyFailures: 1
+		});
+		await page.goto('/');
+		await page.getByText('First', { exact: true }).click();
+		await page.getByText('Second', { exact: true }).click();
+		await page.getByText('First', { exact: true }).click();
+		await expect(page.locator('.cm-content').nth(1)).toContainText('"recovered"');
+
+		await page.getByRole('button', { name: 'History' }).click();
+		await expect(page.getByText(/temporary body read failure/)).toBeHidden();
+	});
+});

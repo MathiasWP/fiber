@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { applyPathParams, pathParamNames } from '../../src/lib/api';
+import { applyPathParams, parseQuery, pathParamNames, withQuery } from '../../src/lib/api';
 
 test.describe('path params', () => {
 	test('names come from placeholders in the path, not the query', () => {
@@ -14,5 +14,15 @@ test.describe('path params', () => {
 
 	test('a slash in a value does not become another path component', () => {
 		expect(applyPathParams('/pet/{petId}', [{ name: 'petId', value: 'a/b' }])).toBe('/pet/a%2Fb');
+	});
+
+	test('query editing preserves URL fragments in the right position', () => {
+		expect(parseQuery('/users?x=1#details')).toEqual([{ name: 'x', value: '1' }]);
+		expect(withQuery('/users?x=1#details', [{ name: 'x', value: '2' }])).toBe(
+			'/users?x=2#details'
+		);
+		expect(withQuery('/users#details', [{ name: 'added', value: 'yes' }])).toBe(
+			'/users?added=yes#details'
+		);
 	});
 });

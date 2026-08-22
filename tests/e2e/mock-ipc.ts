@@ -161,6 +161,8 @@ export interface MockOptions {
 	/** Response bodies for `history_body`, keyed by entry id. */
 	historyBodies?: Record<string, string>;
 	historyBodyError?: string;
+	/** When set, only this many body reads fail; otherwise every read fails. */
+	historyBodyFailures?: number;
 	/** What a finished `send_request` resolves to when not deferred. */
 	sendResponse?: ResponseData;
 	/** Per-request responses, useful when proving response isolation. */
@@ -220,6 +222,8 @@ declare global {
 			updateProgress(chunkLength: number): void;
 			/** Resolves the held-open `download_and_install`. */
 			finishUpdate(): void;
+			/** Emits the quit handshake event from the Rust window loop. */
+			flushBeforeExit(): void;
 			/** Rejects the held-open `download_and_install`. */
 			failUpdate(message: string): void;
 			/** Opens the command palette. The app fills this in once it mounts. */
@@ -247,6 +251,7 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 		(opts: MockOptions) => {
 			const calls: { cmd: string; args: Record<string, unknown> }[] = [];
 			const callbacks = new Map<number, { fn: (payload: unknown) => void; once: boolean }>();
+			const eventListeners = new Map<string, number>();
 			let nextCallbackId = 1;
 
 			const secrets = new Map<string, boolean>();
@@ -257,6 +262,7 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 			// it is waiting on. Both are set when the app sends.
 			let channelId: number | null = null;
 			let activeSendId: string | null = null;
+			let remainingHistoryBodyFailures = opts.historyBodyFailures ?? 0;
 			let messageIndex = 0;
 			let settleSend: ((data: unknown) => void) | null = null;
 			let rejectSend: ((error: unknown) => void) | null = null;
@@ -333,7 +339,12 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 						if (opts.historyListError) return Promise.reject(new Error(opts.historyListError));
 						return Promise.resolve(opts.history ?? []);
 					case 'history_body':
-						if (opts.historyBodyError) return Promise.reject(new Error(opts.historyBodyError));
+						if (
+							opts.historyBodyError &&
+							(opts.historyBodyFailures === undefined || remainingHistoryBodyFailures-- > 0)
+						) {
+							return Promise.reject(new Error(opts.historyBodyError));
+						}
 						return Promise.resolve(
 							opts.historyBodies?.[String(args.id)] ??
 								runtimeHistoryBodies.get(String(args.id)) ??
@@ -352,6 +363,9 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					// window's own close event; both go through the event plugin. The
 					// resolved number stands in for Tauri's event id.
 					case 'plugin:event|listen':
+						if (typeof args.event === 'string' && typeof args.handler === 'number') {
+							eventListeners.set(args.event, args.handler);
+						}
 						return Promise.resolve(0);
 					case 'plugin:event|unlisten':
 						return Promise.resolve(null);
@@ -656,6 +670,15 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					settleUpdate?.();
 					settleUpdate = null;
 					rejectUpdate = null;
+				},
+				flushBeforeExit() {
+					const handler = eventListeners.get('flush-before-exit');
+					if (handler === undefined) throw new Error('flush-before-exit listener is not registered');
+					internals.runCallback(handler, {
+						event: 'flush-before-exit',
+						id: 0,
+						payload: null
+					});
 				},
 				failUpdate(message: string) {
 					rejectUpdate?.(new Error(message));
