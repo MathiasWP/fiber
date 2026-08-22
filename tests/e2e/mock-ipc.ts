@@ -132,6 +132,13 @@ export interface MockUpdate {
 	/** Hold `downloadAndInstall` open so a test can drive progress. */
 	deferDownload?: boolean;
 	contentLength?: number;
+	/**
+	 * What successive `check()` calls report, one entry per call — the first
+	 * replaces `version` for the first call, the rest for each call after.
+	 * The last entry repeats once exhausted. Lets a test simulate a newer
+	 * release appearing after one was declined.
+	 */
+	versions?: string[];
 }
 
 export interface MockOptions {
@@ -267,13 +274,14 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 			let settleSend: ((data: unknown) => void) | null = null;
 			let rejectSend: ((error: unknown) => void) | null = null;
 			let settleRefresh: (() => void) | null = null;
-			let settleSnapshot: ((data: unknown) => void) | null = null;
+			let settleSnapshot: (() => void) | null = null;
 			let rejectSnapshot: ((error: unknown) => void) | null = null;
 
 			let updateChannelId: number | null = null;
 			let updateIndex = 0;
 			let settleUpdate: (() => void) | null = null;
 			let rejectUpdate: ((error: unknown) => void) | null = null;
+			let checkCallIndex = 0;
 
 			const internals = {
 				callbacks,
@@ -377,16 +385,22 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 						return Promise.resolve('0.0.0-test');
 					case 'plugin:resources|close':
 						return Promise.resolve(null);
-					case 'plugin:updater|check':
-						if (!opts.update) return Promise.resolve(null);
-						return Promise.resolve({
-							rid: 1,
-							currentVersion: opts.update.currentVersion ?? '0.0.0-test',
-							version: opts.update.version,
-							date: '2026-01-01',
-							body: '',
-							rawJson: {}
-						});
+				case 'plugin:updater|check': {
+					if (!opts.update) return Promise.resolve(null);
+					const versions = opts.update.versions;
+					const version = versions?.length
+						? versions[Math.min(checkCallIndex, versions.length - 1)]
+						: opts.update.version;
+					checkCallIndex++;
+					return Promise.resolve({
+						rid: 1,
+						currentVersion: opts.update.currentVersion ?? '0.0.0-test',
+						version,
+						date: '2026-01-01',
+						body: '',
+						rawJson: {}
+					});
+				}
 					case 'plugin:updater|download_and_install': {
 						updateChannelId = channelFrom(args.onEvent);
 						updateIndex = 0;
@@ -646,15 +660,11 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					if (opts.snapshotError) {
 						rejectSnapshot?.(new Error(opts.snapshotError));
 					} else {
-						settleSnapshot?.(
-							opts.snapshot ?? {
-								localStorage: [{ key: 'auth0.token', value: 'ey.header.payload', path: '' }],
-								cookies: [
-									{ name: 'session', value: 'abc123', domain: 'acme.com', httpOnly: true }
-								],
-								indexedDb: []
-							}
-						);
+						// `settleSnapshot` already closes over the exact same
+						// `opts.snapshot ?? {default}` value computed when
+						// `browser_snapshot` was called, so there is nothing to
+						// pass here — it takes no arguments.
+						settleSnapshot?.();
 					}
 					settleSnapshot = null;
 					rejectSnapshot = null;
