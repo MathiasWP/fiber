@@ -202,6 +202,10 @@ mod gui {
     /// Sends, and records the outcome. History is written here rather than by the
     /// frontend so the body never has to travel back down the IPC bridge, and so
     /// an entry exists even if the window dies mid-flight.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Tauri injects each command state dependency as its own argument"
+    )]
     #[tauri::command]
     async fn send_request(
         app: AppHandle,

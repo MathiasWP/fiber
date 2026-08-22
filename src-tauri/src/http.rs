@@ -85,12 +85,6 @@ fn is_sensitive(name: &str, additional: Option<&str>) -> bool {
         || additional.is_some_and(|sensitive| name.eq_ignore_ascii_case(sensitive.trim()))
 }
 
-/// The same headers with their credential values blanked. Names survive, so
-/// "the server did set a cookie" stays visible; the cookie itself does not.
-pub fn redact(headers: &[Header]) -> Vec<Header> {
-    redact_with(headers, None)
-}
-
 /// Redacts the standard credential headers plus a section's configured auth
 /// header, which can be any valid HTTP header name.
 pub fn redact_with(headers: &[Header], additional: Option<&str>) -> Vec<Header> {
