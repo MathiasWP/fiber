@@ -518,7 +518,8 @@
 	request: SavedRequest,
 	indent: string,
 	rows: { id: string }[],
-	index: number
+	index: number,
+	targets: { id: string; name: string }[]
 )}
 	<div
 		{@attach dragRequest({ sectionId: section.id, requestId: request.id })}
@@ -570,7 +571,6 @@
 
 				<!-- Dragging is the quick way; this is the one that always works,
 				     and the only one available from the keyboard. -->
-				{@const targets = moveTargets(section)}
 				{#if targets.length}
 					<ContextMenu.Sub>
 						<ContextMenu.SubTrigger class="menu-item">
@@ -854,9 +854,17 @@
 		<ContextMenu.Root>
 			<ContextMenu.Trigger class="sidebar-scroller flex-1 overflow-y-auto min-h-0" data-sidebar-scroller>
 				{#if collections.looseSection && looseRequests.length}
+					{@const looseTargets = moveTargets(collections.looseSection)}
 					<div class="border-b border-border/50 pb-1">
 						{#each looseRequests as request, index (request.id)}
-							{@render requestRow(collections.looseSection, request, 'pl-4', looseRequests, index)}
+							{@render requestRow(
+								collections.looseSection,
+								request,
+								'pl-4',
+								looseRequests,
+								index,
+								looseTargets
+							)}
 						{/each}
 					</div>
 				{/if}
@@ -1056,8 +1064,9 @@
 						</div>
 
 						{#if open}
+							{@const targets = moveTargets(section)}
 							{#each displayedRequests as request, index (request.id)}
-								{@render requestRow(section, request, 'pl-8', displayedRequests, index)}
+								{@render requestRow(section, request, 'pl-8', displayedRequests, index, targets)}
 							{/each}
 
 							<!-- Loader output. Regenerated on every refresh; the user's

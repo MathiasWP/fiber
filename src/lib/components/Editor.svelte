@@ -5,7 +5,6 @@
 	import { oneDark } from '@codemirror/theme-one-dark';
 	import { EditorView, placeholder as placeholderExt } from '@codemirror/view';
 	import { JSON_TOOLING_LIMIT } from '$lib/api';
-	import { validateJsonBody } from '$lib/json-schema';
 	import { placeholders } from '$lib/placeholders';
 	import { basicSetup } from 'codemirror';
 	import { untrack } from 'svelte';
@@ -21,8 +20,6 @@
 		placeholder?: string;
 		/** Which of the two text sizes this editor follows. */
 		scope?: EditorScope;
-		/** OpenAPI request-body schema, fetched only for the selected endpoint. */
-		schema?: unknown | null;
 	}
 
 	let {
@@ -30,8 +27,7 @@
 		readonly = false,
 		language = 'json',
 		placeholder = '',
-		scope = 'request',
-		schema = null
+		scope = 'request'
 	}: Props = $props();
 
 	let view: EditorView | undefined;
@@ -57,7 +53,7 @@
 
 	const parseJson = jsonParseLinter();
 
-	function languageExtensions(lang: 'json' | 'text', bodySchema: unknown | null) {
+	function languageExtensions(lang: 'json' | 'text') {
 		if (lang !== 'json') return [];
 		return [
 			json(),
@@ -72,24 +68,6 @@
 					? []
 					: parseJson(target)
 			),
-			// Schema errors share CodeMirror's lint gutter with JSON syntax errors.
-			// The body tab also spells them out below the editor, where they remain
-			// visible without having to hover a gutter marker.
-			linter((target) => {
-				if (
-					!bodySchema ||
-					target.state.doc.length === 0 ||
-					target.state.doc.length > JSON_TOOLING_LIMIT
-				) {
-					return [];
-				}
-				return validateJsonBody(bodySchema, target.state.doc.toString()).map((message) => ({
-					from: 0,
-					to: target.state.doc.length,
-					severity: 'error' as const,
-					message
-				}));
-			}),
 			lintGutter()
 		];
 	}
@@ -137,7 +115,7 @@
 				extensions: [
 					basicSetup,
 					themeConf.of(untrack(() => (theme.resolved === 'dark' ? oneDark : []))),
-					languageConf.of(languageExtensions(untrack(() => language), untrack(() => schema))),
+					languageConf.of(languageExtensions(untrack(() => language))),
 					// Editable, but read-only: `EditorView.editable.of(false)` sets
 					// contenteditable=false, which makes the editor unfocusable —
 					// and an unfocused editor means ⌘A selects the whole app
@@ -270,7 +248,7 @@
 
 		$effect(() => {
 			instance.dispatch({
-				effects: languageConf.reconfigure(languageExtensions(language, schema))
+				effects: languageConf.reconfigure(languageExtensions(language))
 			});
 		});
 

@@ -921,7 +921,7 @@
 												absolute path.
 											</p>
 										</div>
-									{:else}
+									{:else if shownRequestTab === 'body'}
 										{#key draft.id}
 											<div class="flex-1 min-h-0">
 												<Editor
@@ -929,7 +929,6 @@
 													bind:value={draft.body}
 													placeholder={bodyKind === 'json' ? '{}' : ''}
 													scope="request"
-													schema={bodyKind === 'json' ? bodySchema : null}
 												/>
 											</div>
 										{/key}
@@ -1188,7 +1187,7 @@
 														Binary response ({formatBytes(response.sizeBytes)}). Switch to Raw for
 														base64.
 													</p>
-												{:else}
+												{:else if responseTab === 'pretty'}
 													<Editor value={responseText} readonly language={responseLanguage} scope="response" />
 												{/if}
 												{#if responseSchemaErrors.length}
@@ -1207,7 +1206,9 @@
 											</Tabs.Content>
 
 											<Tabs.Content value="raw" class="flex-1 min-h-0">
-												<Editor value={shownBody} readonly language="text" scope="response" />
+												{#if responseTab === 'raw'}
+													<Editor value={shownBody} readonly language="text" scope="response" />
+												{/if}
 											</Tabs.Content>
 
 											<Tabs.Content value="headers" class="flex-1 min-h-0 overflow-y-auto p-3">
