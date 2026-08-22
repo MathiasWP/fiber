@@ -132,6 +132,13 @@ export interface MockUpdate {
 	/** Hold `downloadAndInstall` open so a test can drive progress. */
 	deferDownload?: boolean;
 	contentLength?: number;
+	/**
+	 * What successive `check()` calls report, one entry per call — the first
+	 * replaces `version` for the first call, the rest for each call after.
+	 * The last entry repeats once exhausted. Lets a test simulate a newer
+	 * release appearing after one was declined.
+	 */
+	versions?: string[];
 }
 
 export interface MockOptions {
@@ -252,6 +259,7 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 			let updateIndex = 0;
 			let settleUpdate: (() => void) | null = null;
 			let rejectUpdate: ((error: unknown) => void) | null = null;
+			let checkCallIndex = 0;
 
 			const internals = {
 				callbacks,
@@ -340,16 +348,22 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 						return Promise.resolve('0.0.0-test');
 					case 'plugin:resources|close':
 						return Promise.resolve(null);
-					case 'plugin:updater|check':
-						if (!opts.update) return Promise.resolve(null);
-						return Promise.resolve({
-							rid: 1,
-							currentVersion: opts.update.currentVersion ?? '0.0.0-test',
-							version: opts.update.version,
-							date: '2026-01-01',
-							body: '',
-							rawJson: {}
-						});
+				case 'plugin:updater|check': {
+					if (!opts.update) return Promise.resolve(null);
+					const versions = opts.update.versions;
+					const version = versions?.length
+						? versions[Math.min(checkCallIndex, versions.length - 1)]
+						: opts.update.version;
+					checkCallIndex++;
+					return Promise.resolve({
+						rid: 1,
+						currentVersion: opts.update.currentVersion ?? '0.0.0-test',
+						version,
+						date: '2026-01-01',
+						body: '',
+						rawJson: {}
+					});
+				}
 					case 'plugin:updater|download_and_install': {
 						updateChannelId = channelFrom(args.onEvent);
 						updateIndex = 0;

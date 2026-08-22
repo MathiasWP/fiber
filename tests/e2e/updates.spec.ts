@@ -81,3 +81,87 @@ test('the dismiss X is the same as Not now', async ({ page }) => {
 	await page.getByLabel('Dismiss').click();
 	await expect(page.getByRole('status')).toBeHidden();
 });
+
+test('a missing content-length shows an indeterminate bar, not a stuck one', async ({ page }) => {
+	await install(page, {
+		update: { version: '1.2.3', deferDownload: true, contentLength: 0 }
+	});
+	await page.goto('/');
+
+	await page.getByRole('button', { name: 'Update' }).click();
+	await expect(page.getByText(/Downloading 1.2.3/)).toBeVisible();
+	// No percentage readout, and the bar pulses rather than sitting at 0%.
+	await expect(page.getByText(/%/)).toBeHidden();
+	await expect(page.locator('.animate-pulse')).toBeVisible();
+
+	await page.evaluate(() => window.__FIBER_TEST__.updateProgress(500));
+	await page.waitForTimeout(100);
+	await expect(page.getByText(/%/)).toBeHidden();
+});
+
+test('a focus check never interrupts a download in progress', async ({ page }) => {
+	await install(page, {
+		update: { version: '1.2.3', deferDownload: true, contentLength: 1000 }
+	});
+	await page.goto('/');
+
+	await page.getByRole('button', { name: 'Update' }).click();
+	await expect(page.getByText(/Downloading 1.2.3/)).toBeVisible();
+
+	await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+	await page.waitForTimeout(150);
+	// Still downloading — a check that ran anyway would have reset the toast
+	// back to "available" or left two competing states.
+	await expect(page.getByText(/Downloading 1.2.3/)).toBeVisible();
+	await expect(page.getByText('Fiber 1.2.3 is available')).toBeHidden();
+
+	await page.evaluate(() => window.__FIBER_TEST__.finishUpdate());
+	await expect(page.getByText(/Installing 1.2.3/)).toBeVisible();
+});
+
+test('declining is for this run only — a reload offers the same version again', async ({
+	page
+}) => {
+	await install(page, { update: { version: '1.2.3' } });
+	await page.goto('/');
+
+	await page.getByRole('button', { name: 'Not now' }).click();
+	await expect(page.getByRole('status')).toBeHidden();
+
+	await page.reload();
+	await expect(page.getByText('Fiber 1.2.3 is available')).toBeVisible();
+});
+
+test('a newer version than the one declined is still offered', async ({ page }) => {
+	// Padded with repeats of the declined version: some browsers fire an extra
+	// focus check as a side effect of the click itself, so the exact number of
+	// checks before the newer one appears isn't something to pin down here —
+	// only that it eventually does, and that the declined version never comes
+	// back on its own.
+	await install(page, {
+		update: { version: '1.2.3', versions: ['1.2.3', '1.2.3', '1.2.3', '1.3.0'] }
+	});
+	await page.goto('/');
+
+	await expect(page.getByText('Fiber 1.2.3 is available')).toBeVisible();
+	await page.getByRole('button', { name: 'Not now' }).click();
+
+	await expect
+		.poll(async () => {
+			await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+			return page.getByText('Fiber 1.3.0 is available').isVisible();
+		})
+		.toBe(true);
+});
+
+test('declining the same version again after a focus check keeps it hidden', async ({ page }) => {
+	await install(page, { update: { version: '1.2.3', versions: ['1.2.3', '1.2.3'] } });
+	await page.goto('/');
+
+	await page.getByRole('button', { name: 'Not now' }).click();
+	await expect(page.getByRole('status')).toBeHidden();
+
+	await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+	await page.waitForTimeout(150);
+	await expect(page.getByRole('status')).toBeHidden();
+});
