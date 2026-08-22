@@ -173,7 +173,7 @@ test.describe('the collection context menu', () => {
 
 		await page.getByText('Acme', { exact: true }).click({ button: 'right' });
 		await page.getByRole('menuitem', { name: 'New request' }).click();
-		await expect(page.getByText('New request')).toBeVisible();
+		await expect(page.getByTitle('/', { exact: true })).toHaveText('New request');
 		await expect(page.getByPlaceholder('/user/get')).toHaveValue('/');
 	});
 
