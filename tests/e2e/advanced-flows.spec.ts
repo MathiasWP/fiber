@@ -220,7 +220,7 @@ test.describe('response edge cases', () => {
 			sendResponse: response({ body: '{"unfinished":', sizeBytes: 14 })
 		});
 		await page.getByRole('button', { name: 'Send' }).click();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('{"unfinished":');
+		await expect(page.locator('.cm-content:visible').last()).toContainText('{"unfinished":');
 	});
 
 	test('switching requests restores each request’s own latest response', async ({ page }) => {
@@ -237,15 +237,15 @@ test.describe('response edge cases', () => {
 
 		await page.getByText('First', { exact: true }).click();
 		await page.getByRole('button', { name: 'Send' }).click();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('"first"');
+		await expect(page.locator('.cm-content:visible').last()).toContainText('"first"');
 
 		await page.getByText('Second', { exact: true }).click();
 		await page.getByRole('button', { name: 'Send' }).click();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('"second"');
+		await expect(page.locator('.cm-content:visible').last()).toContainText('"second"');
 
 		await page.getByText('First', { exact: true }).click();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('"first"');
-		await expect(page.locator('.cm-content').nth(1)).not.toContainText('"second"');
+		await expect(page.locator('.cm-content:visible').last()).toContainText('"first"');
+		await expect(page.locator('.cm-content:visible').last()).not.toContainText('"second"');
 	});
 });
 
@@ -298,10 +298,10 @@ test.describe('history failures remain recoverable', () => {
 			deleteHistoryError: 'cannot clear history'
 		});
 		await page.getByRole('button', { name: 'Send' }).click();
-		await page.locator('.cm-editor').nth(1).click({ button: 'right' });
+		await page.locator('.cm-editor:visible').click({ button: 'right' });
 		await page.getByRole('menuitem', { name: "Clear this request's history" }).click();
 
-		await expect(page.locator('.cm-content').nth(1)).toContainText('"keep"');
+		await expect(page.locator('.cm-content:visible')).toContainText('"keep"');
 		await page.getByRole('button', { name: 'History' }).click();
 		await expect(page.getByText(/cannot clear history/)).toBeVisible();
 	});
@@ -751,7 +751,7 @@ test.describe('import and history recovery regressions', () => {
 		await page.getByText('First', { exact: true }).click();
 		await page.getByText('Second', { exact: true }).click();
 		await page.getByText('First', { exact: true }).click();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('"recovered"');
+		await expect(page.locator('.cm-content:visible').last()).toContainText('"recovered"');
 
 		await page.getByRole('button', { name: 'History' }).click();
 		await expect(page.getByText(/temporary body read failure/)).toBeHidden();

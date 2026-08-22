@@ -28,10 +28,12 @@ test.describe('a settled response', () => {
 		await page.getByRole('button', { name: 'Send' }).click();
 
 		await expect(page.getByText('200 OK')).toBeVisible();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('"hello": "world"');
+		await expect(page.locator('.cm-editor')).toHaveCount(1);
+		await expect(page.locator('.cm-content:visible')).toContainText('"hello": "world"');
 
 		await page.getByRole('tab', { name: 'Raw' }).click();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('{"hello":"world"}');
+		await expect(page.locator('.cm-editor')).toHaveCount(1);
+		await expect(page.locator('.cm-content:visible')).toContainText('{"hello":"world"}');
 
 		await page.getByRole('tab', { name: 'Headers (2)' }).click();
 		await expect(page.getByText('content-type', { exact: true })).toBeVisible();
@@ -82,7 +84,7 @@ test.describe('a settled response', () => {
 		await expect(page.getByText(/Binary response/)).toBeVisible();
 
 		await page.getByRole('tab', { name: 'Raw' }).click();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('AAAA');
+		await expect(page.locator('.cm-content:visible')).toContainText('AAAA');
 	});
 
 	test('Pretty is disabled when the body is too large to format', async ({ page }) => {
@@ -156,17 +158,17 @@ test.describe('the response context menu', () => {
 		await page.getByRole('button', { name: 'Send' }).click();
 		await expect(page.getByRole('tab', { name: 'Pretty' })).toBeVisible();
 
-		await page.locator('.cm-editor').nth(1).click({ button: 'right' });
+		await page.locator('.cm-editor:visible').click({ button: 'right' });
 		await page.getByRole('menuitem', { name: 'Copy response' }).click();
 		await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('{"a":1}');
 
-		await page.locator('.cm-editor').nth(1).click({ button: 'right' });
+		await page.locator('.cm-editor:visible').click({ button: 'right' });
 		await page.getByRole('menuitem', { name: 'Copy formatted' }).click();
 		await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
 			JSON.stringify({ a: 1 }, null, 2)
 		);
 
-		await page.locator('.cm-editor').nth(1).click({ button: 'right' });
+		await page.locator('.cm-editor:visible').click({ button: 'right' });
 		await page.getByRole('menuitem', { name: 'Copy URL' }).click();
 		await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(
 			'https://api.acme.com/users'
@@ -183,7 +185,7 @@ test.describe('the response context menu', () => {
 		await page.getByRole('button', { name: 'Send' }).click();
 		await expect(page.getByRole('tab', { name: 'Pretty' })).toBeVisible();
 
-		await page.locator('.cm-editor').nth(1).click({ button: 'right' });
+		await page.locator('.cm-editor:visible').click({ button: 'right' });
 		await page.getByRole('menuitem', { name: "Clear this request's history" }).click();
 		await expect(page.getByText('Send a request to see the response.')).toBeVisible();
 	});

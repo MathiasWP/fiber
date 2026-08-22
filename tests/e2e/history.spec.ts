@@ -65,16 +65,16 @@ test.describe('opening an entry', () => {
 		await page.goto('/');
 		await page.getByText('List users').click();
 		await expect(page.getByText('200')).toBeVisible();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('"now"');
+		await expect(page.locator('.cm-content:visible').last()).toContainText('"now"');
 
 		await page.getByRole('button', { name: 'History' }).click();
 		await page.getByText('404', { exact: true }).click();
 		await expect(page.getByText('404', { exact: true })).toBeVisible();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('"then"');
+		await expect(page.locator('.cm-content:visible').last()).toContainText('"then"');
 
 		await page.getByRole('button', { name: 'Collections' }).click();
 		await expect(page.getByText('200')).toBeVisible();
-		await expect(page.locator('.cm-content').nth(1)).toContainText('"now"');
+		await expect(page.locator('.cm-content:visible').last()).toContainText('"now"');
 	});
 
 	test('an entry whose request is gone loads into scratch', async ({ page }) => {
@@ -100,7 +100,7 @@ test.describe('opening an entry', () => {
 		);
 		await expect(page.getByLabel('HTTP method')).toContainText('PATCH');
 		await expect(page.locator('.cm-content').first()).toContainText('"revive"');
-		await expect(page.locator('.cm-content').nth(1)).toContainText('"gone"');
+		await expect(page.locator('.cm-content:visible').last()).toContainText('"gone"');
 	});
 });
 
