@@ -731,7 +731,9 @@ mod tests {
 
         let (endpoints, _schemas, _responses, pages) = run(&settings, fetcher).await.unwrap();
         assert_eq!(pages, MAX_PAGES);
-        assert_eq!(endpoints.len(), MAX_PAGES);
+        // The cap still stops the bad pointer, while overlapping pages no longer
+        // create 50 sidebar rows with the same endpoint identity.
+        assert_eq!(endpoints.len(), 1);
     }
 
 
