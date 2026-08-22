@@ -17,10 +17,10 @@
 		flushComplete,
 		formatBytes,
 		JSON_TOOLING_LIMIT,
+		joinUrl,
 		loaderSchema,
 		parseQuery,
 		pathParamNames,
-		resolveUrl,
 		sendRequest,
 		statusColor,
 		tryFormatJson,
@@ -73,7 +73,6 @@
 		};
 	}
 	let settingsFor = $state.raw<Section | null>(null);
-	let resolved = $state('');
 	let bodyEditor = $state<Editor>();
 
 	const selection = $derived<Selection | null>(collections.selected);
@@ -97,6 +96,12 @@
 	const requestKey = $derived(selection?.request.id ?? SCRATCH_ID);
 	const baseUrl = $derived(selection?.section.baseUrl ?? '');
 	const bodilessMethod = $derived(draft.method === 'GET' || draft.method === 'HEAD');
+	/**
+	 * Same join the sender uses, computed here rather than asked of Rust on
+	 * every keystroke: `resolve_url` is cheap, but it is a synchronous command
+	 * and the IPC round trip still runs on the thread that paints the window.
+	 */
+	const resolved = $derived(joinUrl(baseUrl, applyPathParams(draft.path, draft.pathParams)));
 	const canSend = $derived(resolved.trim().length > 0 && !inflightId);
 
 	/**
@@ -231,18 +236,6 @@
 
 	$effect(() => {
 		theme.apply();
-	});
-
-	// Rust owns URL resolution, so the string previewed here is exactly the one
-	// that goes out. The token guards against out-of-order replies while typing.
-	let resolveToken = 0;
-	$effect(() => {
-		const base = baseUrl;
-		const path = applyPathParams(draft.path, draft.pathParams);
-		const token = ++resolveToken;
-		resolveUrl(base, path).then((value) => {
-			if (token === resolveToken) resolved = value;
-		});
 	});
 
 	// An unnamed request is named after whatever URL you type into it, until you
@@ -543,15 +536,16 @@
 		});
 
 		// Chunks can land faster than the editor can usefully repaint, so they are
-		// coalesced into one update a frame. Without this a fast stream spends
-		// more time re-rendering than reading the socket.
-		let buffered = '';
+		// coalesced into one update a frame. They are also pushed onto an array
+		// rather than concatenated: `buffered += chunk` on a fast stream of small
+		// pieces is quadratic in the bytes received this frame.
+		let pieces: string[] = [];
 		let frame = 0;
 		const flush = () => {
 			frame = 0;
-			if (!buffered) return;
-			history.stream(id, buffered);
-			buffered = '';
+			if (!pieces.length) return;
+			history.stream(id, pieces.join(''));
+			pieces = [];
 		};
 
 		try {
@@ -577,21 +571,30 @@
 					if (event.event === 'start') {
 						// A retry after a 401. Drop what the first attempt streamed,
 						// including anything still waiting for a frame.
-						buffered = '';
+						pieces = [];
 						history.restartBody(id);
 						return;
 					}
-					buffered += event.data.text;
+					pieces.push(event.data.text);
 					frame ||= requestAnimationFrame(flush);
 				}
 			);
+			// Anything still waiting for a frame is part of the body the pane
+			// is showing. Flush it before settle: a streamed response may omit
+			// the body from the final payload, and cancelling the frame would
+			// drop the tail.
+			if (frame) {
+				cancelAnimationFrame(frame);
+				flush();
+			}
 			history.settle(id, { response });
 		} catch (error) {
+			if (frame) {
+				cancelAnimationFrame(frame);
+				flush();
+			}
 			history.settle(id, { error: String(error) });
 		} finally {
-			// Whatever is still buffered is about to be replaced by the settled
-			// body, so the pending frame has nothing left to do.
-			if (frame) cancelAnimationFrame(frame);
 			if (inflightId === id) inflightId = null;
 		}
 	}

@@ -15,6 +15,10 @@
 	let active = $state(0);
 
 	const matches = $derived.by<Selection[]>(() => {
+		// The palette stays mounted while closed, and `allRequests` rebuilds a
+		// row per loaded endpoint across every collection. A loader refresh of
+		// a large OpenAPI must not pay that cost for a dialog nobody can see.
+		if (!open) return [];
 		const entries = allRequests(collections.sections);
 		const needle = query.trim();
 		if (!needle) return entries.slice(0, 50);

@@ -294,8 +294,8 @@ pub fn load_all(dir: &Path) -> Result<Vec<Section>, StoreError> {
     Ok(load.sections)
 }
 
-/// Reads a single section by id. Used on every send to find the section's auth
-/// config, so the file on disk stays the single source of truth.
+/// Reads a single section by id. Used when the in-memory cache has not seen
+/// this collection yet (MCP, or a send before `list_sections` has returned).
 pub fn load_one(dir: &Path, id: &str) -> Result<Option<Section>, StoreError> {
     let path = dir.join(safe_file_name(id)?);
     let text = match fs::read_to_string(&path) {

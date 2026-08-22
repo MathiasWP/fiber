@@ -185,6 +185,11 @@ pub struct ResponseData {
     pub headers: Vec<Header>,
     /// UTF-8 text, or standard base64 when `is_binary` is set.
     pub body: String,
+    /// Chunks were pushed to the streaming sink. The window already has the
+    /// text; the command result may leave `body` empty for large replies so
+    /// the same bytes do not cross the IPC bridge twice.
+    #[serde(default)]
+    pub body_streamed: bool,
     pub is_binary: bool,
     pub truncated: bool,
     pub size_bytes: u64,
@@ -754,6 +759,7 @@ async fn run(
         final_url,
         headers,
         body,
+        body_streamed: streaming.is_some(),
         is_binary,
         truncated,
         size_bytes,
@@ -896,6 +902,7 @@ mod tests {
         assert_eq!(response.status_text, "Created");
         assert_eq!(response.body, "{\"created\":true}\n");
         assert!(!response.is_binary);
+        assert!(!response.body_streamed);
         assert!(!response.truncated);
         assert_eq!(response.size_bytes, 17);
         assert!(response

@@ -107,6 +107,10 @@ function validate(value: unknown, schema: unknown, path: string): string[] {
  */
 export function validateJsonBody(schema: unknown | null, text: string): string[] {
 	if (!schema || !text.trim()) return [];
+	// Same ceiling as `JSON_TOOLING_LIMIT` in api.ts: a synchronous JSON.parse
+	// of a multi-megabyte body on a keystroke is a frozen window, and the
+	// errors it would produce are not readable at that size anyway.
+	if (text.length > 1.5 * 1024 * 1024) return [];
 	try {
 		return validate(JSON.parse(text), schema, '$');
 	} catch {

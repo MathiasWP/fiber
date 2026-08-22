@@ -369,16 +369,43 @@ class Collections {
 
 	/** Reads the cached run for every section that has a loader. */
 	async loadCaches(): Promise<void> {
+		const loaded = await Promise.all(
+			this.sections
+				.filter((section) => section.loader)
+				.map(async (section) => {
+					try {
+						return [section.id, await loaderCache(section.id)] as const;
+					} catch {
+						// A missing cache is simply "nothing loaded yet".
+						return null;
+					}
+				})
+		);
 		const next = { ...this.loaderCaches };
-		for (const section of this.sections) {
-			if (!section.loader) continue;
-			try {
-				next[section.id] = await loaderCache(section.id);
-			} catch {
-				// A missing cache is simply "nothing loaded yet".
-			}
+		for (const entry of loaded) {
+			if (entry) next[entry[0]] = entry[1];
 		}
 		this.loaderCaches = next;
+	}
+
+	/**
+	 * How many loaded rows a collection would show, without building them.
+	 *
+	 * `rowsFor` allocates a request object per endpoint. A collapsed collection
+	 * only needs the number on its header, and rebuilding hundreds of objects
+	 * to print that number — on every collections update — is wasted work.
+	 */
+	loadedCount(section: Section): number {
+		const cache = this.loaderCaches[section.id];
+		if (!cache) return 0;
+		const reported = new Set(
+			cache.endpoints.map((endpoint) => endpointKey(endpoint.method, endpoint.path))
+		);
+		let missing = 0;
+		for (const entry of section.overlay) {
+			if (!reported.has(entry.id)) missing++;
+		}
+		return cache.endpoints.length + missing;
 	}
 
 	/**

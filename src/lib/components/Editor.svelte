@@ -76,7 +76,13 @@
 			// The body tab also spells them out below the editor, where they remain
 			// visible without having to hover a gutter marker.
 			linter((target) => {
-				if (target.state.doc.length === 0 || target.state.doc.length > JSON_TOOLING_LIMIT) return [];
+				if (
+					!bodySchema ||
+					target.state.doc.length === 0 ||
+					target.state.doc.length > JSON_TOOLING_LIMIT
+				) {
+					return [];
+				}
 				return validateJsonBody(bodySchema, target.state.doc.toString()).map((message) => ({
 					from: 0,
 					to: target.state.doc.length,
