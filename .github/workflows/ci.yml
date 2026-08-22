@@ -155,7 +155,7 @@ jobs:
              and (.[1].result.tools | map(.name) | index("get_endpoint") != null)' > /dev/null
 
           meta='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"ci","version":"0"}}'
-          discover="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{{$meta}}}"
+          discover="{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{$meta}}"
           reply=$(echo "$discover" | docker run -i --rm -v /tmp/fiber-data:/data fiber-mcp:ci)
           echo "$reply"
           echo "$reply" | jq -e '.result.supportedVersions | index("2026-07-28") != null' > /dev/null
