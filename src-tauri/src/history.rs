@@ -227,11 +227,11 @@ impl HistoryStore {
                 at,
                 spec.method,
                 url,
-                spec.body.clone().unwrap_or_default(),
+                spec.body.as_deref().unwrap_or_default(),
                 error,
                 response.map(|r| r.status),
-                response.map(|r| r.status_text.clone()),
-                response.map(|r| r.final_url.clone()),
+                response.map(|r| r.status_text.as_str()),
+                response.map(|r| r.final_url.as_str()),
                 headers,
                 response.map(|r| r.is_binary).unwrap_or(false),
                 response.map(|r| r.truncated).unwrap_or(false),
@@ -367,16 +367,18 @@ impl HistoryStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let mut statement =
-            connection.prepare(&format!("SELECT body_path FROM history WHERE {predicate}"))?;
+        // RETURNING gets the spill paths while deleting in the same indexed
+        // statement. The old SELECT-then-DELETE walked the matching rows twice
+        // for every per-request prune and every clear.
+        let mut statement = connection.prepare(&format!(
+            "DELETE FROM history WHERE {predicate} RETURNING body_path"
+        ))?;
         let paths: Vec<String> = statement
             .query_map(args.clone(), |row| row.get::<_, Option<String>>(0))?
             .filter_map(Result::ok)
             .flatten()
             .collect();
         drop(statement);
-
-        connection.execute(&format!("DELETE FROM history WHERE {predicate}"), args)?;
         drop(connection);
 
         for path in paths {
