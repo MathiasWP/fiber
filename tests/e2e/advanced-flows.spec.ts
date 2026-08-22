@@ -326,7 +326,7 @@ test.describe('loader failures and summaries', () => {
 		await openSettings(page);
 		await page.getByRole('tab', { name: /^Loader/ }).click();
 		await page.getByRole('button', { name: 'Run now' }).click();
-		await expect(page.getByText(/manifest returned 503/)).toBeVisible();
+		await expect(page.getByLabel('Loader · on').getByText(/manifest returned 503/)).toBeVisible();
 	});
 
 	test('the summary includes paging, additions and removals', async ({ page }) => {
@@ -694,7 +694,7 @@ test.describe('import and history recovery regressions', () => {
 		});
 		await page.getByRole('button', { name: 'Add 1 endpoint' }).click();
 
-		await expect(page.getByText(/disk is full/)).toBeVisible();
+		await expect(page.getByLabel('General').getByText(/disk is full/)).toBeVisible();
 		await expect(page.getByText('Added 1 endpoint.')).toBeHidden();
 		await page.getByRole('button', { name: 'Done' }).click();
 		await expect(page.getByText('listPets', { exact: true })).toBeHidden();
