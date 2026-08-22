@@ -190,6 +190,8 @@ struct CachedLoader {
     cache: Arc<loader::LoaderCache>,
 }
 
+type SectionSnapshot = (Arc<Vec<Arc<Section>>>, Arc<Vec<String>>);
+
 fn file_stamp(path: &std::path::Path) -> Option<(u128, u64)> {
     let meta = std::fs::metadata(path).ok()?;
     let modified = meta
@@ -291,7 +293,7 @@ impl FiberMcp {
         cache
     }
 
-    fn all_sections(&self) -> Result<(Arc<Vec<Arc<Section>>>, Arc<Vec<String>>), McpError> {
+    fn all_sections(&self) -> Result<SectionSnapshot, McpError> {
         let stamp = sections_stamp(&self.sections_dir).map_err(|err| {
             McpError::internal_error(format!("could not inspect collections: {err}"), None)
         })?;
@@ -305,8 +307,9 @@ impl FiberMcp {
         }
         let load = store::load_all_reporting(&self.sections_dir)
             .map_err(|err| McpError::internal_error(err.to_string(), None))?;
-        let sections = Arc::new(load.sections.into_iter().map(Arc::new).collect());
-        let warnings = Arc::new(
+        let sections: Arc<Vec<Arc<Section>>> =
+            Arc::new(load.sections.into_iter().map(Arc::new).collect());
+        let warnings: Arc<Vec<String>> = Arc::new(
             load.errors
                 .into_iter()
                 .map(|error| format!("{}: {}", error.file, error.message))

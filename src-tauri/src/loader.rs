@@ -753,10 +753,6 @@ mod tests {
         assert_eq!(endpoints.len(), 1);
     }
 
-    /// The reported gap: a loader pointed at an OpenAPI document listed the
-    /// endpoints but left every body empty, because a jq filter maps shape to
-    /// shape and knows nothing about JSON Schema.
-
     /// A new loader keeps itself current without being told to. 0 still means
     /// "only when asked" — it just is not the default any more.
     #[test]
