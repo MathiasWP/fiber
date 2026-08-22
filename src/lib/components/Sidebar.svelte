@@ -556,7 +556,8 @@
 
 				<!-- Dragging is the quick way; this is the one that always works,
 				     and the only one available from the keyboard. -->
-				{#if moveTargets(section).length}
+				{@const targets = moveTargets(section)}
+				{#if targets.length}
 					<ContextMenu.Sub>
 						<ContextMenu.SubTrigger class="menu-item">
 							<span class="i-lucide-corner-down-right text-3"></span>
@@ -564,7 +565,7 @@
 							<span class="i-lucide-chevron-right text-3 ml-auto"></span>
 						</ContextMenu.SubTrigger>
 						<ContextMenu.SubContent class="menu-content">
-							{#each moveTargets(section) as target (target.id)}
+							{#each targets as target (target.id)}
 								<ContextMenu.Item
 									class="menu-item"
 									onSelect={() =>
