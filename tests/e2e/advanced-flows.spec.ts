@@ -263,15 +263,16 @@ test.describe('history failures remain recoverable', () => {
 
 	test('a body-load failure is reported without taking history down', async ({ page }) => {
 		await install(page, {
+			sections: [section({ requests: [savedRequest()] })],
 			history: [historyRecord()],
 			historyBodyError: 'body file is unreadable'
 		});
 		await page.goto('/');
+		// Selecting its request asks for the newest response body.
+		await page.getByText('List users').click();
 		await page.getByRole('button', { name: 'History' }).click();
-		await page.getByText('https://api.acme.com/users').evaluate((node) => {
-			(node.closest('[data-context-menu-trigger]') as HTMLElement | null)?.click();
-		});
 		await expect(page.getByText(/body file is unreadable/)).toBeVisible();
+		await expect(page.getByText('https://api.acme.com/users')).toBeVisible();
 	});
 
 	test('a failed clear-all restores every row', async ({ page }) => {
