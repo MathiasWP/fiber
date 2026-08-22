@@ -36,6 +36,7 @@
 	import { history, SCRATCH_ID, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
 	import { urlField } from '$lib/urlfield';
+	import { untrack } from 'svelte';
 
 	/**
 	 * The unsaved request you get before picking anything from the sidebar.
@@ -190,7 +191,14 @@
 	// Bodies aren't loaded with the history list; pull one in when it's about
 	// to be shown.
 	$effect(() => {
-		if (shown) history.ensureBody(shown);
+		/*
+		 * `ensureBody` flips `bodyLoaded` while it works and resets it when the
+		 * read fails. Those are implementation details, not reasons to run this
+		 * effect again: tracking them turns a failed read into a tight retry
+		 * loop. A different `shown` entry still re-runs the effect, so leaving
+		 * and reopening an entry remains the deliberate retry path.
+		 */
+		if (shown) untrack(() => history.ensureBody(shown));
 	});
 
 	/**
