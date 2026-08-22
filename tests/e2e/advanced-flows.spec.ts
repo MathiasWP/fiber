@@ -34,7 +34,8 @@ test.describe('path parameters', () => {
 		await openRequest(page, request);
 
 		await page.getByRole('tab', { name: /^Params/ }).click();
-		const name = page.getByDisplayValue('petId');
+		const name = page.locator('input[readonly]').first();
+		await expect(name).toHaveValue('petId');
 		const value = name.locator('xpath=following-sibling::input');
 		await value.fill('a/b β');
 
@@ -63,7 +64,9 @@ test.describe('path parameters', () => {
 		await openRequest(page, request);
 		await page.getByRole('tab', { name: /^Params/ }).click();
 
-		await expect(page.getByDisplayValue('id')).toHaveCount(1);
+		const names = page.locator('input[readonly]');
+		await expect(names).toHaveCount(1);
+		await expect(names.first()).toHaveValue('id');
 		await page.getByTitle('Clear').click();
 		await page.getByRole('button', { name: 'Send' }).click();
 
@@ -265,7 +268,10 @@ test.describe('history failures remain recoverable', () => {
 		});
 		await page.goto('/');
 		await page.getByRole('button', { name: 'History' }).click();
-		await page.getByText('https://api.acme.com/users').click();
+		await page
+			.locator('button')
+			.filter({ hasText: 'https://api.acme.com/users' })
+			.dispatchEvent('click');
 		await expect(page.getByText(/body file is unreadable/)).toBeVisible();
 	});
 
@@ -443,9 +449,9 @@ test.describe('settings and import edge cases', () => {
 		await expect(page.locator('select')).toHaveValue('form');
 		await expect(page.locator('input[placeholder="Field"]:visible').first()).toHaveValue('name');
 		await page.getByRole('tab', { name: 'Params (2)' }).click();
-		await expect(
-			page.getByDisplayValue('petId').locator('xpath=following-sibling::input')
-		).toHaveValue('p-1');
+		const name = page.locator('input[readonly]').first();
+		await expect(name).toHaveValue('petId');
+		await expect(name.locator('xpath=following-sibling::input')).toHaveValue('p-1');
 	});
 });
 
