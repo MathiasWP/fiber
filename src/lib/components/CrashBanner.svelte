@@ -50,6 +50,21 @@
 	async function copy() {
 		await navigator.clipboard.writeText(`Fiber ${version}\n${message}\n\n${detail}`);
 	}
+
+	interface FiberTestHooks {
+		crash?: (message: string) => void;
+		reject?: (message: string) => void;
+	}
+
+	// E2E: Chromium does not deliver synthetic `error` / `unhandledrejection`
+	// events to `<svelte:window onerror>` the way a real throw does. Register
+	// synchronously so a test that runs right after `goto` can already call it.
+	const crashHooks = (window as unknown as { __FIBER_TEST__?: FiberTestHooks }).__FIBER_TEST__;
+	if (crashHooks) {
+		crashHooks.crash = (text) => record(text, new Error(text), 'test');
+		crashHooks.reject = (text) =>
+			record('A background task failed', new Error(text), 'unhandled promise rejection');
+	}
 </script>
 
 <svelte:window onerror={onError} onunhandledrejection={onRejection} />

@@ -58,6 +58,18 @@
 	let responseTab = $state('pretty');
 	let inflightId = $state<string | null>(null);
 	let paletteOpen = $state(false);
+
+	// E2E: Chromium swallows Ctrl+K for its own find-in-page, so Playwright
+	// cannot type the real shortcut. Registered here rather than in an effect
+	// so the hook is in place as soon as the page component is created.
+	const paletteHooks = (
+		window as unknown as { __FIBER_TEST__?: { openPalette?: () => void } }
+	).__FIBER_TEST__;
+	if (paletteHooks) {
+		paletteHooks.openPalette = () => {
+			paletteOpen = true;
+		};
+	}
 	let settingsFor = $state.raw<Section | null>(null);
 	let resolved = $state('');
 	let bodyEditor = $state<Editor>();

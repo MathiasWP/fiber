@@ -263,6 +263,18 @@ class Collections {
 		return this.createRequest(this.ensureLooseSection(), NEW_REQUEST_NAME, '');
 	}
 
+	/**
+	 * The reactive copy of a section, after it has been put in `sections`.
+	 *
+	 * `$state` wraps objects in a proxy on read. Mutating the original plain
+	 * object — `section.requests.push(...)` on the value `createSection` used
+	 * to return — updates the data but not the proxy's length source, so the
+	 * sidebar keeps saying the collection is empty.
+	 */
+	#live(section: Section): Section {
+		return this.sections.find((candidate) => candidate.id === section.id) ?? section;
+	}
+
 	/** The reserved section, created if this is the first thing to need it. */
 	ensureLooseSection(): Section {
 		const existing = this.looseSection;
@@ -284,7 +296,7 @@ class Collections {
 			overlay: []
 		};
 		this.sections = [...this.sections, section];
-		return section;
+		return this.#live(section);
 	}
 
 	/**
@@ -587,8 +599,9 @@ class Collections {
 			overlay: []
 		};
 		this.sections = [...this.sections, section];
-		await this.flush(section);
-		return section;
+		const created = this.#live(section);
+		await this.flush(created);
+		return created;
 	}
 
 	async removeSection(section: Section): Promise<void> {
@@ -637,10 +650,11 @@ class Collections {
 		// created with a name already chosen — from the command palette, say —
 		// keeps it.
 		if (name === NEW_REQUEST_NAME) this.#following.add(request.id);
-		section.requests.push(request);
-		section.collapsed = false;
+		const target = this.#live(section);
+		target.requests.push(request);
+		target.collapsed = false;
 		this.selectedRequestId = request.id;
-		await this.flush(section);
+		await this.flush(target);
 		return request;
 	}
 
