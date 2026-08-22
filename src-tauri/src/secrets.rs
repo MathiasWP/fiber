@@ -51,22 +51,44 @@ pub fn set(reference: &str, value: &str) -> Result<(), SecretError> {
 /// a JSON object of `reference -> value`; `FIBER_SECRETS_FILE` points at a file
 /// with the same. Both are unset in the desktop app, which uses only the
 /// keychain, so its behaviour is unchanged.
-fn injected() -> &'static HashMap<String, String> {
-    static INJECTED: OnceLock<HashMap<String, String>> = OnceLock::new();
+fn injected_result() -> &'static Result<HashMap<String, String>, String> {
+    static INJECTED: OnceLock<Result<HashMap<String, String>, String>> = OnceLock::new();
     INJECTED.get_or_init(|| {
-        let raw = std::env::var("FIBER_SECRETS").ok().or_else(|| {
-            let path = std::env::var_os("FIBER_SECRETS_FILE")?;
-            std::fs::read_to_string(path).ok()
-        });
-        raw.as_deref().map(parse_injected).unwrap_or_default()
+        let raw = if let Ok(raw) = std::env::var("FIBER_SECRETS") {
+            Some(raw)
+        } else if let Some(path) = std::env::var_os("FIBER_SECRETS_FILE") {
+            Some(
+                std::fs::read_to_string(&path)
+                    .map_err(|err| format!("could not read FIBER_SECRETS_FILE: {err}"))?,
+            )
+        } else {
+            None
+        };
+        raw.as_deref()
+            .map(parse_injected)
+            .transpose()
+            .map(Option::unwrap_or_default)
     })
 }
 
 /// The injected-secrets document is a flat JSON object of string values;
-/// anything else resolves to no injected secrets rather than an error, so a
-/// malformed file can't wedge the server.
-fn parse_injected(raw: &str) -> HashMap<String, String> {
-    serde_json::from_str(raw).unwrap_or_default()
+/// anything else is a startup error in headless mode. Silently treating a typo
+/// as "no credentials" makes every authenticated call fail for an unrelated,
+/// invisible reason.
+fn parse_injected(raw: &str) -> Result<HashMap<String, String>, String> {
+    serde_json::from_str(raw)
+        .map_err(|err| format!("FIBER_SECRETS must be a JSON object of string values: {err}"))
+}
+
+pub fn validate_injected() -> Result<(), String> {
+    injected_result().as_ref().map(|_| ()).map_err(Clone::clone)
+}
+
+fn injected() -> &'static HashMap<String, String> {
+    static EMPTY: OnceLock<HashMap<String, String>> = OnceLock::new();
+    injected_result()
+        .as_ref()
+        .unwrap_or_else(|_| EMPTY.get_or_init(HashMap::new))
 }
 
 /// `None` when absent, which is not an error — an unconfigured section is a
@@ -131,16 +153,20 @@ mod tests {
     fn reads_injected_secrets_as_a_reference_map() {
         // A bearer token and a login body — both stored as string values, keyed
         // by the same reference the section file names.
-        let map = parse_injected(r#"{"sec-1:auth":"tok-123","sec-2:login":"{\"user\":\"me\"}"}"#);
+        let map = parse_injected(r#"{"sec-1:auth":"tok-123","sec-2:login":"{\"user\":\"me\"}"}"#)
+            .unwrap();
         assert_eq!(map.get("sec-1:auth").map(String::as_str), Some("tok-123"));
-        assert_eq!(map.get("sec-2:login").map(String::as_str), Some(r#"{"user":"me"}"#));
+        assert_eq!(
+            map.get("sec-2:login").map(String::as_str),
+            Some(r#"{"user":"me"}"#)
+        );
     }
 
     #[test]
-    fn malformed_injected_secrets_are_empty_not_fatal() {
-        assert!(parse_injected("not json").is_empty());
+    fn malformed_injected_secrets_are_rejected() {
+        assert!(parse_injected("not json").is_err());
         // Right JSON, wrong shape: a value must be a string.
-        assert!(parse_injected(r#"{"sec-1:auth":123}"#).is_empty());
-        assert!(parse_injected("[]").is_empty());
+        assert!(parse_injected(r#"{"sec-1:auth":123}"#).is_err());
+        assert!(parse_injected("[]").is_err());
     }
 }

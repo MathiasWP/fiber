@@ -91,8 +91,9 @@ impl Serialize for ImportError {
 pub fn parse(text: &str) -> Result<Import, ImportError> {
     let document: serde_json::Value = match serde_json::from_str(text) {
         Ok(value) => value,
-        Err(json_error) => serde_norway::from_str(text)
-            .map_err(|yaml_error| ImportError::Unparseable(format!("{json_error}; {yaml_error}")))?,
+        Err(json_error) => serde_norway::from_str(text).map_err(|yaml_error| {
+            ImportError::Unparseable(format!("{json_error}; {yaml_error}"))
+        })?,
     };
 
     let paths = document
@@ -133,13 +134,7 @@ pub fn parse(text: &str) -> Result<Import, ImportError> {
             let parameters = operation_params(&document, item, operation);
             let (body, body_kind, form) = operation
                 .map(|operation| request_payload(&document, operation))
-                .unwrap_or_else(|| {
-                    (
-                        String::new(),
-                        crate::http::BodyKind::Json,
-                        Vec::new(),
-                    )
-                });
+                .unwrap_or_else(|| (String::new(), crate::http::BodyKind::Json, Vec::new()));
 
             endpoints.push(ImportedEndpoint {
                 method: method.to_ascii_uppercase(),
@@ -216,7 +211,11 @@ pub(crate) fn request_body(
     }
 
     let text = serde_json::to_string_pretty(&value).unwrap_or_default();
-    if derived { unwrap_types(&text) } else { text }
+    if derived {
+        unwrap_types(&text)
+    } else {
+        text
+    }
 }
 
 /// The JSON Schema that governs an operation's JSON request body.
@@ -240,7 +239,9 @@ pub(crate) fn response_schema(
     document: &serde_json::Value,
     operation: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<serde_json::Value> {
-    let responses = operation.get("responses").and_then(|value| value.as_object())?;
+    let responses = operation
+        .get("responses")
+        .and_then(|value| value.as_object())?;
     let picked = responses
         .get("200")
         .or_else(|| {
@@ -312,7 +313,10 @@ fn form_fields_from_media(
         return Vec::new();
     };
     let resolved = resolve(document, schema);
-    let Some(properties) = resolved.get("properties").and_then(|value| value.as_object()) else {
+    let Some(properties) = resolved
+        .get("properties")
+        .and_then(|value| value.as_object())
+    else {
         return Vec::new();
     };
     properties
@@ -393,10 +397,12 @@ fn collect_params(
             .to_string();
         let example = parameter
             .get("example")
-            .or_else(|| parameter.get("schema").and_then(|schema| {
-                let schema = resolve(document, schema);
-                schema.get("example").or_else(|| schema.get("default"))
-            }))
+            .or_else(|| {
+                parameter.get("schema").and_then(|schema| {
+                    let schema = resolve(document, schema);
+                    schema.get("example").or_else(|| schema.get("default"))
+                })
+            })
             .map(|value| match value {
                 serde_json::Value::String(text) => text.clone(),
                 other => other.to_string(),
@@ -410,10 +416,9 @@ fn collect_params(
             description,
             example,
         };
-        if let Some(existing) = into
-            .iter_mut()
-            .find(|candidate| candidate.name == parsed.name && candidate.location == parsed.location)
-        {
+        if let Some(existing) = into.iter_mut().find(|candidate| {
+            candidate.name == parsed.name && candidate.location == parsed.location
+        }) {
             *existing = parsed;
         } else {
             into.push(parsed);
@@ -421,9 +426,7 @@ fn collect_params(
     }
 }
 
-pub(crate) fn first_tag(
-    operation: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> String {
+pub(crate) fn first_tag(operation: Option<&serde_json::Map<String, serde_json::Value>>) -> String {
     operation
         .and_then(|operation| operation.get("tags"))
         .and_then(|tags| tags.as_array())
@@ -641,10 +644,7 @@ fn skeleton(
         let mut fields = serde_json::Map::new();
         if let Some(properties) = object.get("properties").and_then(|it| it.as_object()) {
             for (name, property) in properties {
-                fields.insert(
-                    name.clone(),
-                    skeleton(document, property, depth + 1, trail),
-                );
+                fields.insert(name.clone(), skeleton(document, property, depth + 1, trail));
             }
         }
         return serde_json::Value::Object(fields);
@@ -865,9 +865,17 @@ mod tests {
             .unwrap();
         assert_eq!(upload.body_kind, crate::http::BodyKind::Multipart);
         assert_eq!(upload.body, "");
-        let note = upload.form.iter().find(|field| field.name == "note").unwrap();
+        let note = upload
+            .form
+            .iter()
+            .find(|field| field.name == "note")
+            .unwrap();
         assert!(!note.is_file);
-        let file = upload.form.iter().find(|field| field.name == "file").unwrap();
+        let file = upload
+            .form
+            .iter()
+            .find(|field| field.name == "file")
+            .unwrap();
         assert!(file.is_file);
     }
 
@@ -904,7 +912,12 @@ mod tests {
         let item = paths["/users"].as_object().unwrap();
         let operation = item["get"].as_object().unwrap();
         let schema = response_schema(&spec, operation).expect("200 schema");
-        assert_eq!(schema.pointer("/properties/id/type").and_then(|v| v.as_str()), Some("integer"));
+        assert_eq!(
+            schema
+                .pointer("/properties/id/type")
+                .and_then(|v| v.as_str()),
+            Some("integer")
+        );
     }
 
     #[test]
@@ -1290,7 +1303,11 @@ mod real_world {
         let text = include_str!("../tests/fixtures/petstore.json");
         let import = super::parse(text).expect("petstore should parse");
 
-        assert!(import.endpoints.len() > 10, "{} endpoints", import.endpoints.len());
+        assert!(
+            import.endpoints.len() > 10,
+            "{} endpoints",
+            import.endpoints.len()
+        );
         assert!(!import.title.is_empty());
         assert!(
             import.endpoints.iter().all(|e| e.path.starts_with('/')),
@@ -1310,7 +1327,10 @@ mod real_world {
             "petstore operations are tagged"
         );
         assert!(
-            import.endpoints.iter().any(|e| e.path.contains('{') && !e.parameters.is_empty()),
+            import
+                .endpoints
+                .iter()
+                .any(|e| e.path.contains('{') && !e.parameters.is_empty()),
             "path parameters land on the operations that declare them"
         );
     }

@@ -202,6 +202,10 @@ mod gui {
     /// Sends, and records the outcome. History is written here rather than by the
     /// frontend so the body never has to travel back down the IPC bridge, and so
     /// an entry exists even if the window dies mid-flight.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Tauri injects each command state dependency as its own argument"
+    )]
     #[tauri::command]
     async fn send_request(
         app: AppHandle,
@@ -213,6 +217,7 @@ mod gui {
         spec: RequestSpec,
         on_body: Channel<BodyEvent>,
     ) -> Result<ResponseData, HttpError> {
+        let mut spec = spec;
         // A section file that exists but no longer parses fails the send. The
         // old `.ok().flatten()` here treated corrupt as absent — and sent the
         // request anyway, with the section's auth silently missing.
@@ -222,6 +227,10 @@ mod gui {
                 .map_err(|err| HttpError::Section(err.to_string()))?,
             None => None,
         };
+        spec.sensitive_header = section
+            .as_deref()
+            .and_then(|section| section.auth.header_name())
+            .map(str::to_owned);
 
         let at = history::now_millis();
         let url = spec.url.clone();
@@ -375,12 +384,14 @@ mod gui {
             let section = section.clone();
 
             Box::pin(async move {
+                let url = store::join_url_scoped(&section.base_url, &request.url)
+                    .map_err(|err| format!("loader URL rejected: {err}"))?;
                 let spec = RequestSpec {
                     id: format!("loader:{}", section.id),
                     request_id: format!("loader:{}", section.id),
                     section_id: Some(section.id.clone()),
                     method: request.method,
-                    url: store::join_url(&section.base_url, &request.url),
+                    url,
                     headers: vec![crate::http::Header {
                         name: "Accept".into(),
                         value: "application/json".into(),
@@ -389,7 +400,7 @@ mod gui {
                     timeout_ms: Some(30_000),
                     follow_redirects: true,
                     accept_invalid_certs: false,
-                    sensitive_header: None,
+                    sensitive_header: section.auth.header_name().map(str::to_owned),
                     ..Default::default()
                 };
 

@@ -1,6 +1,9 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 // Only the GUI build wants this — the headless MCP server is a console program.
-#![cfg_attr(all(not(debug_assertions), feature = "gui"), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(not(debug_assertions), feature = "gui"),
+    windows_subsystem = "windows"
+)]
 
 /// The same binary is both the app and its MCP server: `fiber mcp` speaks MCP
 /// over stdio against the same collections on disk, with no window and no

@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthConfig;
-use crate::loader::LoaderConfig;
 use crate::http::{BodyKind, FormField, Header};
+use crate::loader::LoaderConfig;
 
 /// A group of requests that share a base URL. Auth and loaders attach here too,
 /// in later steps.
@@ -33,7 +33,10 @@ pub struct Section {
     #[serde(default)]
     pub order: i32,
     /// Applied to every send from this collection. 0 means the HTTP default (60s).
-    #[serde(default = "default_timeout_ms", skip_serializing_if = "is_default_timeout")]
+    #[serde(
+        default = "default_timeout_ms",
+        skip_serializing_if = "is_default_timeout"
+    )]
     pub timeout_ms: u64,
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub follow_redirects: bool,
@@ -396,6 +399,44 @@ pub fn join_url(base: &str, path: &str) -> String {
     )
 }
 
+/// Resolves a path without allowing an absolute URL to carry collection
+/// credentials to another origin.
+///
+/// Relative paths are always accepted and are resolved by [`join_url`].
+/// Absolute paths are useful for the occasional endpoint — or loader page —
+/// that spells the base URL out, but scheme, host and effective port must still
+/// match the collection.
+pub fn join_url_scoped(base: &str, path: &str) -> Result<String, String> {
+    let path = path.trim();
+    let resolved = join_url(base, path);
+    if !(path.starts_with("http://") || path.starts_with("https://")) {
+        return Ok(resolved);
+    }
+
+    let origin = |url: &reqwest::Url| {
+        (
+            url.scheme().to_string(),
+            url.host_str().map(str::to_owned),
+            url.port_or_known_default(),
+        )
+    };
+    let allowed = match (
+        reqwest::Url::parse(base.trim()),
+        reqwest::Url::parse(&resolved),
+    ) {
+        (Ok(base), Ok(target)) => origin(&base) == origin(&target),
+        _ => false,
+    };
+
+    if allowed {
+        Ok(resolved)
+    } else {
+        Err(format!(
+            "absolute URLs must stay on this collection's base URL ({base})"
+        ))
+    }
+}
+
 /// Replaces `{name}` placeholders in a path with the given values.
 ///
 /// Empty values are left as `{name}` so a half-filled template is obvious
@@ -441,8 +482,14 @@ mod tests {
     fn joins_base_and_path() {
         assert_eq!(join_url("https://a.com", "/user"), "https://a.com/user");
         assert_eq!(join_url("https://a.com/", "/user"), "https://a.com/user");
-        assert_eq!(join_url("https://a.com/v1", "user"), "https://a.com/v1/user");
-        assert_eq!(join_url("https://a.com/v1/", "/user"), "https://a.com/v1/user");
+        assert_eq!(
+            join_url("https://a.com/v1", "user"),
+            "https://a.com/v1/user"
+        );
+        assert_eq!(
+            join_url("https://a.com/v1/", "/user"),
+            "https://a.com/v1/user"
+        );
         assert_eq!(
             join_url("https://a.com", "/user?expand=orders"),
             "https://a.com/user?expand=orders"
@@ -452,17 +499,23 @@ mod tests {
     #[test]
     fn substitutes_path_params_without_inventing_slashes() {
         assert_eq!(
-            apply_path_params("/pet/{petId}", &[Header {
-                name: "petId".into(),
-                value: "123".into(),
-            }]),
+            apply_path_params(
+                "/pet/{petId}",
+                &[Header {
+                    name: "petId".into(),
+                    value: "123".into(),
+                }]
+            ),
             "/pet/123"
         );
         assert_eq!(
-            apply_path_params("/pet/{petId}/uploadImage", &[Header {
-                name: "petId".into(),
-                value: "a/b".into(),
-            }]),
+            apply_path_params(
+                "/pet/{petId}/uploadImage",
+                &[Header {
+                    name: "petId".into(),
+                    value: "a/b".into(),
+                }]
+            ),
             "/pet/a%2Fb/uploadImage"
         );
         // Unfilled placeholders stay visible rather than collapsing the path.
@@ -476,6 +529,20 @@ mod tests {
             "https://b.com/z"
         );
         assert_eq!(join_url("", "https://b.com/z"), "https://b.com/z");
+    }
+
+    #[test]
+    fn scoped_urls_keep_absolute_targets_on_the_collection_origin() {
+        let base = "https://api.example.com";
+        assert_eq!(
+            join_url_scoped(base, "/users").unwrap(),
+            "https://api.example.com/users"
+        );
+        assert!(join_url_scoped(base, "https://api.example.com/users").is_ok());
+        assert!(join_url_scoped(base, "https://api.example.com:443/users").is_ok());
+        assert!(join_url_scoped(base, "https://evil.example/users").is_err());
+        assert!(join_url_scoped(base, "http://api.example.com/users").is_err());
+        assert!(join_url_scoped("", "https://api.example.com/users").is_err());
     }
 
     #[test]
@@ -520,7 +587,7 @@ mod tests {
                 ..Default::default()
             }],
             overlay: vec![],
-        ..Default::default()
+            ..Default::default()
         };
 
         save(&dir, &section).unwrap();
@@ -568,7 +635,7 @@ mod tests {
                 mcp: Default::default(),
                 requests: vec![],
                 overlay: vec![],
-            ..Default::default()
+                ..Default::default()
             },
         )
         .unwrap();
@@ -602,7 +669,7 @@ mod tests {
                 mcp: Default::default(),
                 requests: vec![],
                 overlay: vec![],
-            ..Default::default()
+                ..Default::default()
             },
         )
         .unwrap();
@@ -625,7 +692,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        assert!(load_one(&dir, "absent").unwrap().is_none(), "missing is fine");
+        assert!(
+            load_one(&dir, "absent").unwrap().is_none(),
+            "missing is fine"
+        );
 
         fs::write(dir.join("bad.toml"), "not = valid [[[").unwrap();
         let err = load_one(&dir, "bad").unwrap_err();

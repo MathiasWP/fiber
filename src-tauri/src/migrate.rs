@@ -171,7 +171,10 @@ mod tests {
         std::fs::write(former.join("sections/acme.toml"), "id = \"acme\"").unwrap();
 
         assert!(move_across(&former, &current));
-        assert!(current.join("sections/acme.toml").exists(), "content came too");
+        assert!(
+            current.join("sections/acme.toml").exists(),
+            "content came too"
+        );
         assert!(!former.exists(), "and the old location is gone");
 
         let _ = std::fs::remove_dir_all(current);
@@ -262,7 +265,7 @@ mod tests {
             mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
-        ..Default::default()
+            ..Default::default()
         };
         crate::store::save(&dir, &section).unwrap();
 
@@ -271,7 +274,11 @@ mod tests {
         crate::store::save(&dir, &section).unwrap();
 
         let found = references(&dir);
-        assert_eq!(found, vec!["sec-1:auth"], "only sections with auth have one");
+        assert_eq!(
+            found,
+            vec!["sec-1:auth"],
+            "only sections with auth have one"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }

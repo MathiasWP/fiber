@@ -122,7 +122,10 @@ impl Serialize for BrowserError {
 
 fn window_label(section_id: &str) -> String {
     // Labels allow alphanumerics plus `-`, `/`, `:` and `_`.
-    format!("auth-{}", section_id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "-"))
+    format!(
+        "auth-{}",
+        section_id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "-")
+    )
 }
 
 fn browser_config(section: &Section) -> Result<(&str, CaptureKind, &str, &str), BrowserError> {
@@ -140,7 +143,11 @@ fn browser_config(section: &Section) -> Result<(&str, CaptureKind, &str, &str), 
 
 /// Opens the sign-in window, or focuses it if it's already open. `visible`
 /// is false for silent re-capture, where we hope the user never sees it.
-pub fn open(app: &AppHandle, section: &Section, visible: bool) -> Result<WebviewWindow, BrowserError> {
+pub fn open(
+    app: &AppHandle,
+    section: &Section,
+    visible: bool,
+) -> Result<WebviewWindow, BrowserError> {
     let (login_url, ..) = browser_config(section)?;
     let label = window_label(&section.id);
 
@@ -425,10 +432,7 @@ const MSAL_DECRYPT_JS: &str = r#"
 
 /// Runs a script that parks its result on `window`, polling until it lands.
 /// `""` means "still working".
-async fn read_parked<T: serde::de::DeserializeOwned>(
-    window: &WebviewWindow,
-    js: &str,
-) -> Vec<T> {
+async fn read_parked<T: serde::de::DeserializeOwned>(window: &WebviewWindow, js: &str) -> Vec<T> {
     for attempt in 0..PARKED_ATTEMPTS {
         if attempt > 0 {
             tokio::time::sleep(PARKED_INTERVAL).await;
@@ -448,7 +452,10 @@ async fn read_parked<T: serde::de::DeserializeOwned>(
 /// everything downstream sees ordinary readable storage entries.
 fn merge_decrypted(entries: &mut Vec<StorageEntry>, decrypted: Vec<StorageEntry>) {
     for entry in decrypted {
-        match entries.iter_mut().find(|existing| existing.key == entry.key) {
+        match entries
+            .iter_mut()
+            .find(|existing| existing.key == entry.key)
+        {
             Some(existing) => existing.value = entry.value,
             None => entries.push(entry),
         }
@@ -456,15 +463,15 @@ fn merge_decrypted(entries: &mut Vec<StorageEntry>, decrypted: Vec<StorageEntry>
 }
 
 /// Reads `localStorage` and every cookie visible to an open window.
-async fn read_session(
-    window: &WebviewWindow,
-    section: &Section,
-) -> Result<Snapshot, BrowserError> {
+async fn read_session(window: &WebviewWindow, section: &Section) -> Result<Snapshot, BrowserError> {
     let (login_url, ..) = browser_config(section)?;
 
     let mut local_storage = read_local_storage(window).await?;
     // MSAL entries arrive as ciphertext; put the plaintext in their place.
-    merge_decrypted(&mut local_storage, read_parked(window, MSAL_DECRYPT_JS).await);
+    merge_decrypted(
+        &mut local_storage,
+        read_parked(window, MSAL_DECRYPT_JS).await,
+    );
 
     // Cookies for both origins: the API we'll be calling, and the identity
     // provider we just signed in to. Often they differ.
@@ -629,18 +636,13 @@ fn dig(value: &str, path: &str) -> Option<String> {
 /// still alive — usually it is, for days — the page re-authenticates on its own
 /// and we lift the new credential out without a window ever appearing. If it
 /// isn't, we show the window so the user can sign in, and report failure.
-pub async fn silent_recapture(
-    app: &AppHandle,
-    section: &Section,
-) -> Result<String, BrowserError> {
+pub async fn silent_recapture(app: &AppHandle, section: &Section) -> Result<String, BrowserError> {
     // If a window is already open the user is probably mid-login; don't disturb
     // it. That was the intent before, but passing `already_open` as `visible`
     // did the opposite: `open` shows *and focuses* an existing window, so a
     // silent attempt yanked focus out of whatever you were doing. Silent means
     // silent — nothing is surfaced until the polling below gives up.
-    let already_open = app
-        .get_webview_window(&window_label(&section.id))
-        .is_some();
+    let already_open = app.get_webview_window(&window_label(&section.id)).is_some();
     let window = open(app, section, false)?;
 
     // `read_session` rather than `snapshot`, which would open and close a window
@@ -716,7 +718,7 @@ mod tests {
             mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
-        ..Default::default()
+            ..Default::default()
         }
     }
 
@@ -730,8 +732,9 @@ mod tests {
                 StorageEntry {
                     // The shape Auth0's SPA SDK actually writes.
                     key: "@@auth0spajs@@::abc123::https://api.example.com::openid profile".into(),
-                    value: r#"{"body":{"access_token":"tok-abc","expires_in":86400},"expiresAt":1}"#
-                        .into(),
+                    value:
+                        r#"{"body":{"access_token":"tok-abc","expires_in":86400},"expiresAt":1}"#
+                            .into(),
                 },
             ],
             cookies: vec![
@@ -748,14 +751,12 @@ mod tests {
                     http_only: false,
                 },
             ],
-            indexed_db: vec![
-                IndexedEntry {
-                    database: "firebaseLocalStorageDb".into(),
-                    store: "firebaseLocalStorage".into(),
-                    key: "firebase:authUser:AIzaKEY:[DEFAULT]".into(),
-                    value: r#"{"value":{"stsTokenManager":{"accessToken":"idb-tok"}}}"#.into(),
-                },
-            ],
+            indexed_db: vec![IndexedEntry {
+                database: "firebaseLocalStorageDb".into(),
+                store: "firebaseLocalStorage".into(),
+                key: "firebase:authUser:AIzaKEY:[DEFAULT]".into(),
+                value: r#"{"value":{"stsTokenManager":{"accessToken":"idb-tok"}}}"#.into(),
+            }],
         }
     }
 
@@ -775,7 +776,11 @@ mod tests {
     #[test]
     fn matches_an_auth0_key_by_prefix() {
         // Client id and audience move between environments; the prefix doesn't.
-        let section = section(CaptureKind::LocalStorage, "@@auth0spajs@@", "body.access_token");
+        let section = section(
+            CaptureKind::LocalStorage,
+            "@@auth0spajs@@",
+            "body.access_token",
+        );
         assert_eq!(
             extract(&auth0_snapshot(), &section).as_deref(),
             Some("tok-abc")
@@ -785,7 +790,10 @@ mod tests {
     #[test]
     fn an_empty_path_takes_the_whole_value() {
         let section = section(CaptureKind::LocalStorage, "unrelated", "");
-        assert_eq!(extract(&auth0_snapshot(), &section).as_deref(), Some("noise"));
+        assert_eq!(
+            extract(&auth0_snapshot(), &section).as_deref(),
+            Some("noise")
+        );
     }
 
     #[test]
@@ -828,9 +836,18 @@ mod tests {
 
     #[test]
     fn reports_nothing_when_the_rule_does_not_match() {
-        assert_eq!(extract(&auth0_snapshot(), &section(CaptureKind::Cookie, "absent", "")), None);
         assert_eq!(
-            extract(&auth0_snapshot(), &section(CaptureKind::LocalStorage, "", "")),
+            extract(
+                &auth0_snapshot(),
+                &section(CaptureKind::Cookie, "absent", "")
+            ),
+            None
+        );
+        assert_eq!(
+            extract(
+                &auth0_snapshot(),
+                &section(CaptureKind::LocalStorage, "", "")
+            ),
             None
         );
         assert_eq!(
@@ -870,14 +887,21 @@ mod tests {
             ],
         );
 
-        assert_eq!(entries.len(), 3, "decryption replaces, it doesn't duplicate");
+        assert_eq!(
+            entries.len(),
+            3,
+            "decryption replaces, it doesn't duplicate"
+        );
         assert_eq!(entries[0].value, r#"{"secret":"tok-msal"}"#);
         assert_eq!(entries[1].value, "plain");
         assert_eq!(entries[2].key, "only-in-decrypted");
 
         // And the replaced entry now reads like any other storage value, so the
         // ordinary capture rule finds the token.
-        assert_eq!(dig(&entries[0].value, "secret").as_deref(), Some("tok-msal"));
+        assert_eq!(
+            dig(&entries[0].value, "secret").as_deref(),
+            Some("tok-msal")
+        );
     }
 
     #[test]

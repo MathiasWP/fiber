@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::http::{Header, HttpError, RequestSpec, ResponseData, Timing};
@@ -26,6 +26,10 @@ use crate::http::{Header, HttpError, RequestSpec, ResponseData, Timing};
 const SPILL_BYTES: usize = 256 * 1024;
 /// Per request, newest kept. Enough to compare a few attempts, not a log.
 const MAX_PER_REQUEST: usize = 50;
+/// MCP response ids can remain in an agent's context for a long session. They
+/// share one synthetic request bucket per collection, so the UI's comparison
+/// cap of 50 is far too aggressive for them.
+const MAX_PER_MCP_SECTION: usize = 5_000;
 const MAX_AGE_DAYS: i64 = 30;
 /// Re-run the age prune after this many inserts. It otherwise only runs at
 /// open, which an app left running for weeks never reaches again.
@@ -108,6 +112,7 @@ impl HistoryStore {
             "CREATE TABLE IF NOT EXISTS history (
                 id           TEXT PRIMARY KEY,
                 request_id   TEXT NOT NULL,
+                section_id   TEXT,
                 at           INTEGER NOT NULL,
                 method       TEXT NOT NULL,
                 url          TEXT NOT NULL,
@@ -128,6 +133,16 @@ impl HistoryStore {
             CREATE INDEX IF NOT EXISTS history_by_request ON history(request_id, at DESC);
             CREATE INDEX IF NOT EXISTS history_by_time ON history(at DESC);",
         )?;
+        let has_section_id: bool = connection.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pragma_table_info('history') WHERE name = 'section_id'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_section_id {
+            connection.execute("ALTER TABLE history ADD COLUMN section_id TEXT", [])?;
+        }
 
         let store = Self {
             connection: Mutex::new(connection),
@@ -154,7 +169,8 @@ impl HistoryStore {
                 for name in ["history.db", "history.db-wal", "history.db-shm"] {
                     let path = app_data_dir.join(name);
                     if path.exists() {
-                        let _ = fs::rename(&path, app_data_dir.join(format!("{name}.broken-{stamp}")));
+                        let _ =
+                            fs::rename(&path, app_data_dir.join(format!("{name}.broken-{stamp}")));
                     }
                 }
                 Self::open(app_data_dir)
@@ -206,7 +222,12 @@ impl HistoryStore {
         // they touch disk. The live response pane shows them; a database that
         // outlives the session they belong to should not.
         let headers = response
-            .map(|r| serde_json::to_string(&crate::http::redact(&r.headers)))
+            .map(|r| {
+                serde_json::to_string(&crate::http::redact_with(
+                    &r.headers,
+                    spec.sensitive_header.as_deref(),
+                ))
+            })
             .transpose()?;
 
         // Locks below tolerate poisoning: SQLite's state lives in SQLite, not
@@ -217,13 +238,14 @@ impl HistoryStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         connection.execute(
             "INSERT OR REPLACE INTO history (
-                id, request_id, at, method, url, request_body, error,
+                id, request_id, section_id, at, method, url, request_body, error,
                 status, status_text, final_url, headers, is_binary, truncated,
                 size_bytes, ttfb_ms, total_ms, body, body_path
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
             params![
                 spec.id,
                 spec.request_id,
+                spec.section_id,
                 at,
                 spec.method,
                 url,
@@ -272,20 +294,32 @@ impl HistoryStore {
             let headers: Option<String> = row.get(10)?;
             let response = status.map(|status| ResponseMeta {
                 status,
-                status_text: row.get::<_, Option<String>>(8).unwrap_or_default().unwrap_or_default(),
-                final_url: row.get::<_, Option<String>>(9).unwrap_or_default().unwrap_or_default(),
+                status_text: row
+                    .get::<_, Option<String>>(8)
+                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                final_url: row
+                    .get::<_, Option<String>>(9)
+                    .unwrap_or_default()
+                    .unwrap_or_default(),
                 headers: headers
                     .and_then(|raw| serde_json::from_str(&raw).ok())
                     .unwrap_or_default(),
                 is_binary: row.get(11).unwrap_or(false),
                 truncated: row.get(12).unwrap_or(false),
-                size_bytes: row.get::<_, Option<i64>>(13).unwrap_or_default().unwrap_or_default()
-                    as u64,
+                size_bytes: row
+                    .get::<_, Option<i64>>(13)
+                    .unwrap_or_default()
+                    .unwrap_or_default() as u64,
                 timing: Timing {
-                    ttfb_ms: row.get::<_, Option<i64>>(14).unwrap_or_default().unwrap_or_default()
-                        as u64,
-                    total_ms: row.get::<_, Option<i64>>(15).unwrap_or_default().unwrap_or_default()
-                        as u64,
+                    ttfb_ms: row
+                        .get::<_, Option<i64>>(14)
+                        .unwrap_or_default()
+                        .unwrap_or_default() as u64,
+                    total_ms: row
+                        .get::<_, Option<i64>>(15)
+                        .unwrap_or_default()
+                        .unwrap_or_default() as u64,
                 },
             });
 
@@ -328,6 +362,36 @@ impl HistoryStore {
         }
     }
 
+    /// Returns a body only when it was created by MCP for the named section.
+    ///
+    /// The desktop app shares this history database. Without checking both
+    /// fields, knowing a GUI history id would let an MCP client read a response
+    /// from a collection that was never exposed.
+    pub fn mcp_body(&self, id: &str) -> Result<Option<(String, String)>, HistoryError> {
+        let connection = self
+            .connection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let found: Option<(String, Option<String>, Option<String>)> = connection
+            .query_row(
+                "SELECT section_id, body, body_path
+                 FROM history
+                 WHERE id = ?1 AND request_id = ('mcp:' || section_id)",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        drop(connection);
+
+        match found {
+            Some((section_id, Some(body), _)) => Ok(Some((section_id, body))),
+            Some((section_id, None, Some(path))) => {
+                Ok(fs::read_to_string(path).ok().map(|body| (section_id, body)))
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub fn delete(&self, id: &str) -> Result<(), HistoryError> {
         self.remove_where("id = ?1", params![id])
     }
@@ -347,11 +411,16 @@ impl HistoryStore {
 
     /// Keeps only the newest [`MAX_PER_REQUEST`] entries for one request.
     fn prune_request(&self, request_id: &str) -> Result<(), HistoryError> {
+        let limit = if request_id.starts_with("mcp:") {
+            MAX_PER_MCP_SECTION
+        } else {
+            MAX_PER_REQUEST
+        };
         self.remove_where(
             "request_id = ?1 AND id NOT IN (
                  SELECT id FROM history WHERE request_id = ?1 ORDER BY at DESC LIMIT ?2
              )",
-            params![request_id, MAX_PER_REQUEST as i64],
+            params![request_id, limit as i64],
         )
     }
 
@@ -405,7 +474,7 @@ mod tests {
             follow_redirects: true,
             accept_invalid_certs: false,
             sensitive_header: None,
-        ..Default::default()
+            ..Default::default()
         }
     }
 
@@ -440,7 +509,12 @@ mod tests {
     fn round_trips_a_response() {
         let (store, dir) = store("round");
         store
-            .record(&spec("e1", "req-a"), 1000, "https://example.com/x", &Ok(response("{\"ok\":true}")))
+            .record(
+                &spec("e1", "req-a"),
+                1000,
+                "https://example.com/x",
+                &Ok(response("{\"ok\":true}")),
+            )
             .unwrap();
 
         let listed = store.list(10).unwrap();
@@ -489,10 +563,18 @@ mod tests {
         let (store, dir) = store("spill");
         let big = "x".repeat(SPILL_BYTES + 10);
         store
-            .record(&spec("e1", "req-a"), 1000, "https://example.com/x", &Ok(response(&big)))
+            .record(
+                &spec("e1", "req-a"),
+                1000,
+                "https://example.com/x",
+                &Ok(response(&big)),
+            )
             .unwrap();
 
-        assert!(dir.join("bodies").join("e1.body").exists(), "should have spilled");
+        assert!(
+            dir.join("bodies").join("e1.body").exists(),
+            "should have spilled"
+        );
         assert_eq!(store.body("e1").unwrap().unwrap().len(), big.len());
 
         // Deleting the row takes the file with it.
@@ -517,7 +599,12 @@ mod tests {
         }
         // A second request must not be affected by the first's pruning.
         store
-            .record(&spec("other", "req-b"), 5, "https://example.com/y", &Ok(response("{}")))
+            .record(
+                &spec("other", "req-b"),
+                5,
+                "https://example.com/y",
+                &Ok(response("{}")),
+            )
             .unwrap();
 
         let all = store.list(500).unwrap();
@@ -579,8 +666,12 @@ mod tests {
     #[test]
     fn clears_by_request_and_wholesale() {
         let (store, dir) = store("clear");
-        store.record(&spec("a1", "req-a"), 1, "u", &Ok(response("{}"))).unwrap();
-        store.record(&spec("b1", "req-b"), 2, "u", &Ok(response("{}"))).unwrap();
+        store
+            .record(&spec("a1", "req-a"), 1, "u", &Ok(response("{}")))
+            .unwrap();
+        store
+            .record(&spec("b1", "req-b"), 2, "u", &Ok(response("{}")))
+            .unwrap();
 
         store.clear_request("req-a").unwrap();
         let left = store.list(10).unwrap();
@@ -603,11 +694,19 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("history.db"), "this is not a sqlite database").unwrap();
 
-        assert!(HistoryStore::open(&dir).is_err(), "plain open should refuse it");
+        assert!(
+            HistoryStore::open(&dir).is_err(),
+            "plain open should refuse it"
+        );
 
         let store = HistoryStore::open_or_recover(&dir).unwrap();
         store
-            .record(&spec("e1", "req-a"), 1000, "https://example.com/x", &Ok(response("{}")))
+            .record(
+                &spec("e1", "req-a"),
+                1000,
+                "https://example.com/x",
+                &Ok(response("{}")),
+            )
             .unwrap();
         assert_eq!(store.list(10).unwrap().len(), 1, "the fresh database works");
 
@@ -617,7 +716,10 @@ mod tests {
                 .to_string_lossy()
                 .starts_with("history.db.broken-")
         });
-        assert!(moved_aside, "the broken file should still be there, renamed");
+        assert!(
+            moved_aside,
+            "the broken file should still be there, renamed"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -639,10 +741,75 @@ mod tests {
         let listed = store.list(10).unwrap();
         let headers = &listed[0].response.as_ref().unwrap().headers;
         let cookie = headers.iter().find(|h| h.name == "set-cookie").unwrap();
-        assert_eq!(cookie.value, "<redacted>", "the name survives, the value must not");
+        assert_eq!(
+            cookie.value, "<redacted>",
+            "the name survives, the value must not"
+        );
         let content_type = headers.iter().find(|h| h.name == "content-type").unwrap();
-        assert_eq!(content_type.value, "application/json", "ordinary headers are untouched");
+        assert_eq!(
+            content_type.value, "application/json",
+            "ordinary headers are untouched"
+        );
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn configured_auth_headers_are_redacted_from_history() {
+        let (store, dir) = store("custom-redact");
+        let mut request = spec("e1", "req-a");
+        request.sensitive_header = Some("X-Custom-Auth".into());
+        let mut ok = response("{}");
+        ok.headers.push(crate::http::Header {
+            name: "x-custom-auth".into(),
+            value: "super-secret".into(),
+        });
+        store
+            .record(&request, 1000, "https://example.com/x", &Ok(ok))
+            .unwrap();
+
+        let listed = store.list(10).unwrap();
+        let headers = &listed[0].response.as_ref().unwrap().headers;
+        assert_eq!(
+            headers
+                .iter()
+                .find(|header| header.name == "x-custom-auth")
+                .unwrap()
+                .value,
+            "<redacted>"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mcp_body_rejects_non_mcp_history() {
+        let (store, dir) = store("mcp-scope");
+        let mut mcp = spec("mcp-1", "mcp:shared");
+        mcp.section_id = Some("shared".into());
+        store
+            .record(
+                &mcp,
+                1000,
+                "https://example.com/x",
+                &Ok(response("{\"ok\":true}")),
+            )
+            .unwrap();
+        assert_eq!(
+            store.mcp_body("mcp-1").unwrap(),
+            Some(("shared".into(), "{\"ok\":true}".into()))
+        );
+
+        let mut gui = spec("gui-1", "saved-request");
+        gui.section_id = Some("shared".into());
+        store
+            .record(
+                &gui,
+                1001,
+                "https://example.com/x",
+                &Ok(response("{\"private\":true}")),
+            )
+            .unwrap();
+        assert!(store.mcp_body("gui-1").unwrap().is_none());
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -656,8 +823,14 @@ mod tests {
             "https://example.com/x",
             &Ok(response("{}")),
         );
-        assert!(matches!(outcome, Err(HistoryError::UnsafeId(_))), "{outcome:?}");
-        assert!(store.list(10).unwrap().is_empty(), "nothing should be recorded");
+        assert!(
+            matches!(outcome, Err(HistoryError::UnsafeId(_))),
+            "{outcome:?}"
+        );
+        assert!(
+            store.list(10).unwrap().is_empty(),
+            "nothing should be recorded"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -669,7 +842,12 @@ mod tests {
         let (store, dir) = store("age");
         // Recorded *after* open's prune, with a timestamp far past retention.
         store
-            .record(&spec("ancient", "req-old"), 1000, "https://example.com/x", &Ok(response("{}")))
+            .record(
+                &spec("ancient", "req-old"),
+                1000,
+                "https://example.com/x",
+                &Ok(response("{}")),
+            )
             .unwrap();
         assert!(store.list(500).unwrap().iter().any(|e| e.id == "ancient"));
 
@@ -687,7 +865,10 @@ mod tests {
         }
 
         let listed = store.list(500).unwrap();
-        assert!(!listed.iter().any(|e| e.id == "ancient"), "the prune should have caught it");
+        assert!(
+            !listed.iter().any(|e| e.id == "ancient"),
+            "the prune should have caught it"
+        );
         assert!(listed.iter().any(|e| e.id == "new0"), "recent entries stay");
 
         let _ = fs::remove_dir_all(dir);

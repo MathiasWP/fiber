@@ -19,7 +19,11 @@ use crate::http::{Header, HttpState, RequestSpec};
 use crate::store::{self, Section};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum AuthConfig {
     #[default]
     None,
@@ -88,13 +92,24 @@ impl AuthConfig {
         }
     }
 
+    /// The response header that must be treated as credential-bearing too.
+    ///
+    /// APIs sometimes reflect their authentication header (or return a rotated
+    /// token in the same header). Login and browser auth allow any header name,
+    /// so a fixed redaction list can never uphold the "credentials never come
+    /// back" guarantee on its own.
+    pub fn header_name(&self) -> Option<&str> {
+        match self {
+            AuthConfig::None => None,
+            AuthConfig::Bearer { .. } => Some("Authorization"),
+            AuthConfig::Login { header, .. } | AuthConfig::Browser { header, .. } => Some(header),
+        }
+    }
+
     /// Whether a 401 is worth retrying. A static token won't have changed;
     /// a login can be re-run, and a browser session can be re-captured.
     pub fn can_refresh(&self) -> bool {
-        matches!(
-            self,
-            AuthConfig::Login { .. } | AuthConfig::Browser { .. }
-        )
+        matches!(self, AuthConfig::Login { .. } | AuthConfig::Browser { .. })
     }
 }
 
@@ -154,7 +169,8 @@ impl AuthState {
     }
 
     pub(crate) fn store(&self, section_id: &str, value: String, ttl_seconds: u64) {
-        let expires_at = (ttl_seconds > 0).then(|| Instant::now() + Duration::from_secs(ttl_seconds));
+        let expires_at =
+            (ttl_seconds > 0).then(|| Instant::now() + Duration::from_secs(ttl_seconds));
         self.tokens
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -213,8 +229,7 @@ where
                 Some(token) => token,
                 None => {
                     let body = fetch().ok_or(AuthError::MissingSecret)?;
-                    let token =
-                        log_in(http, section, method, url, &body, token_path).await?;
+                    let token = log_in(http, section, method, url, &body, token_path).await?;
                     state.store(&section.id, token.clone(), *ttl_seconds);
                     token
                 }
@@ -280,7 +295,7 @@ async fn log_in(
         follow_redirects: true,
         accept_invalid_certs: false,
         sensitive_header: None,
-    ..Default::default()
+        ..Default::default()
     };
 
     let response = crate::http::send(http, spec)
@@ -349,7 +364,7 @@ mod tests {
             mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
-        ..Default::default()
+            ..Default::default()
         }
     }
 
@@ -372,9 +387,15 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(value_at(&doc, "$.data.access_token").as_deref(), Some("abc"));
+        assert_eq!(
+            value_at(&doc, "$.data.access_token").as_deref(),
+            Some("abc")
+        );
         assert_eq!(value_at(&doc, "data.access_token").as_deref(), Some("abc"));
-        assert_eq!(value_at(&doc, "$.data.tokens.0.value").as_deref(), Some("first"));
+        assert_eq!(
+            value_at(&doc, "$.data.tokens.0.value").as_deref(),
+            Some("first")
+        );
         assert_eq!(value_at(&doc, "$.n").as_deref(), Some("7"));
         assert_eq!(value_at(&doc, "$.missing"), None);
         assert_eq!(value_at(&doc, "$.data.tokens.9.value"), None);
@@ -426,7 +447,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(again.value, "Bearer tok123");
-        assert_eq!(reads.load(Ordering::SeqCst), 1, "the cache should have served it");
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            1,
+            "the cache should have served it"
+        );
 
         // And once the token is invalidated, it is read again.
         state.invalidate(&section.id);
@@ -478,7 +503,11 @@ mod tests {
             assert_eq!(header.name, "Cookie");
             assert_eq!(header.value, "sid=abc");
         }
-        assert_eq!(reads.load(Ordering::SeqCst), 1, "three sends, one keychain read");
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            1,
+            "three sends, one keychain read"
+        );
     }
 
     /// Serves `/login`, handing out a new token each time it's called, so tests
@@ -559,7 +588,11 @@ mod tests {
 
         header_for(&state, &http, &section, &secret).await.unwrap();
         header_for(&state, &http, &section, &secret).await.unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "ttl 0 means cache until 401");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "ttl 0 means cache until 401"
+        );
     }
 
     #[tokio::test]
@@ -612,6 +645,9 @@ mod tests {
         let section = section(login_auth(60), &format!("http://{addr}"));
 
         let outcome = header_for(&state, &http, &section, &counted(Some("{}")).0).await;
-        assert!(matches!(outcome, Err(AuthError::Status(403))), "{outcome:?}");
+        assert!(
+            matches!(outcome, Err(AuthError::Status(403))),
+            "{outcome:?}"
+        );
     }
 }

@@ -638,10 +638,9 @@ class Collections {
 			collapsed: false,
 			order: this.collectionSections.length,
 			auth: { kind: 'none' },
-			// A new collection is shared with agents read-only by default: visible
-			// and callable with GET/HEAD/OPTIONS, but writes stay behind their own
-			// switch. Hide it entirely by turning the top switch off in settings.
-			mcp: { enabled: true, allowWrites: false },
+			// MCP exposure is an explicit collection-level decision. Writes have
+			// their own switch after sharing is enabled.
+			mcp: { enabled: false, allowWrites: false },
 			timeoutMs: 60_000,
 			followRedirects: true,
 			acceptInvalidCerts: false,
