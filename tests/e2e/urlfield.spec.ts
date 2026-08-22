@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { joinUrl } from '../../src/lib/api';
 import { backward, forward } from '../../src/lib/urlfield';
 import { install } from './mock-ipc';
 
@@ -188,5 +189,29 @@ test.describe('wired into a real field', () => {
 		const end = 'https://app.staging.example.com'.length;
 		const result = await pressAt(field, end, end, 'ArrowRight', { altKey: true });
 		expect(result.selection).toEqual([end, end]);
+	});
+});
+
+/**
+ * Same cases as `store::join_url` in Rust. The preview uses this instead of
+ * an IPC round trip, so it has to stay in lock-step with the sender.
+ */
+test.describe('joinUrl', () => {
+	test('joins a base and a path, collapsing the extra slash', () => {
+		expect(joinUrl('https://a.com', '/user')).toBe('https://a.com/user');
+		expect(joinUrl('https://a.com/', '/user')).toBe('https://a.com/user');
+		expect(joinUrl('https://a.com/v1', 'user')).toBe('https://a.com/v1/user');
+		expect(joinUrl('https://a.com/v1/', '/user')).toBe('https://a.com/v1/user');
+	});
+
+	test('an absolute path ignores the base', () => {
+		expect(joinUrl('https://a.com', 'https://b.com/z')).toBe('https://b.com/z');
+		expect(joinUrl('', 'https://b.com/z')).toBe('https://b.com/z');
+	});
+
+	test('tolerates empty sides', () => {
+		expect(joinUrl('https://a.com/', '')).toBe('https://a.com');
+		expect(joinUrl('', '/user')).toBe('/user');
+		expect(joinUrl('', '')).toBe('');
 	});
 });

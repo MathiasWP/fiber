@@ -417,6 +417,7 @@ mod tests {
                 value: "application/json".into(),
             }],
             body: body.to_string(),
+            body_streamed: false,
             is_binary: false,
             truncated: false,
             size_bytes: body.len() as u64,

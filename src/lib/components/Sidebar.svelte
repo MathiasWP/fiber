@@ -66,10 +66,9 @@
 	 * Everything the sidebar shows, worked out in one pass.
 	 *
 	 * `rowsFor` walks the whole loader cache and builds a row per endpoint, so
-	 * it is called exactly once per collection here rather than the five times
-	 * it used to be across the derives and the template. Against a manifest of
-	 * several hundred endpoints that was thousands of objects rebuilt on every
-	 * render — which is to say, on every click.
+	 * it is called exactly once per *visible* collection here rather than the
+	 * five times it used to be across the derives and the template. Collapsed
+	 * collections only need a count, so they skip the allocation entirely.
 	 *
 	 * The search runs here too, and in two phases: score everything, then decide
 	 * whether the scattered matches are worth showing. That decision spans the
@@ -78,22 +77,37 @@
 	const found = $derived.by(() => {
 		const needle = query.trim();
 		const loose = collections.looseSection?.requests ?? [];
+
+		if (!needle) {
+			return {
+				sections: collections.collectionSections.map((section) => {
+					// Collapsed: the header only needs a count. `rowsFor` builds a
+					// request object per endpoint, which nobody can see until the
+					// collection is opened.
+					if (section.collapsed) {
+						return {
+							section,
+							requests: [] as SavedRequest[],
+							rows: [] as LoadedRow[],
+							total: section.requests.length + collections.loadedCount(section)
+						};
+					}
+					const all = collections.rowsFor(section);
+					return {
+						section,
+						requests: section.requests,
+						rows: all,
+						total: section.requests.length + all.length
+					};
+				}),
+				loose
+			};
+		}
+
 		const walked = collections.collectionSections.map((section) => ({
 			section,
 			all: collections.rowsFor(section)
 		}));
-
-		if (!needle) {
-			return {
-				sections: walked.map(({ section, all }) => ({
-					section,
-					requests: section.requests,
-					rows: all,
-					total: section.requests.length + all.length
-				})),
-				loose
-			};
-		}
 
 		const score = <T,>(items: T[], text: (item: T) => string): Scored<T>[] =>
 			items

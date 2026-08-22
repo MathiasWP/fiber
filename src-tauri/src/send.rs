@@ -79,16 +79,19 @@ where
     };
 
     let spec = apply_section_http(section, spec);
-
-    let prepared = apply_auth(http_state, auth_state, section, spec.clone(), lookup).await?;
+    // Bearer and none cannot refresh: cloning the spec here would copy a
+    // possibly-megabyte body on every send just in case a 401 retry needed it.
+    let retry_spec = section.auth.can_refresh().then(|| spec.clone());
+    let prepared = apply_auth(http_state, auth_state, section, spec, lookup).await?;
     let first = http::send_streaming(http_state, prepared, sink).await;
 
     let should_retry = matches!(&first, Ok(response) if response.status == 401)
-        && section.auth.can_refresh();
+        && retry_spec.is_some();
     if !should_retry {
         return first;
     }
 
+    let spec = retry_spec.expect("should_retry implies can_refresh");
     log::info!("401 from {}, re-authenticating and retrying once", spec.url);
     auth_state.invalidate(&section.id);
 

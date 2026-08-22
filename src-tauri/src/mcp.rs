@@ -18,7 +18,8 @@
 //! - **Bodies are truncated**, with a jq filter available to query the rest.
 //!   Dumping 200KB of JSON into a context window helps nobody.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::UNIX_EPOCH;
 
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -158,6 +159,42 @@ struct TryFilterArgs {
     query: String,
 }
 
+struct CachedSections {
+    stamp: Vec<(String, u64, u64)>,
+    sections: Vec<Section>,
+}
+
+/// mtime + size of every collection file. Cheap enough to recompute on each
+/// tool call, and enough to notice a save without parsing the bodies.
+fn sections_stamp(dir: &std::path::Path) -> Vec<(String, u64, u64)> {
+    let mut stamp = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return stamp;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "toml") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        stamp.push((name, mtime, meta.len()));
+    }
+    stamp.sort();
+    stamp
+}
+
 #[derive(Clone)]
 pub struct FiberMcp {
     sections_dir: std::path::PathBuf,
@@ -165,16 +202,37 @@ pub struct FiberMcp {
     http: Arc<HttpState>,
     auth: Arc<AuthState>,
     history: Arc<HistoryStore>,
+    /// `exposed()` used to re-parse every collection file — bodies included —
+    /// on every tool call. The stamp is the mtime/size of those files, so a
+    /// save is noticed and a no-op call is a clone of what we already hold.
+    sections: Arc<Mutex<Option<CachedSections>>>,
     #[expect(dead_code, reason = "the tool_handler macro reads this field")]
     tool_router: ToolRouter<Self>,
 }
 
 impl FiberMcp {
+    fn all_sections(&self) -> Vec<Section> {
+        let stamp = sections_stamp(&self.sections_dir);
+        {
+            let cache = self.sections.lock().unwrap_or_else(|err| err.into_inner());
+            if let Some(cached) = cache.as_ref() {
+                if cached.stamp == stamp {
+                    return cached.sections.clone();
+                }
+            }
+        }
+        let sections = store::load_all(&self.sections_dir).unwrap_or_default();
+        *self.sections.lock().unwrap_or_else(|err| err.into_inner()) = Some(CachedSections {
+            stamp,
+            sections: sections.clone(),
+        });
+        sections
+    }
+
     /// Only sections the user has explicitly exposed. Everything else is
     /// invisible, not merely read-only.
     fn exposed(&self) -> Vec<Section> {
-        store::load_all(&self.sections_dir)
-            .unwrap_or_default()
+        self.all_sections()
             .into_iter()
             .filter(|section| section.mcp.enabled)
             .collect()
@@ -255,7 +313,7 @@ impl FiberMcp {
                     follow_redirects: true,
                     accept_invalid_certs: false,
                     sensitive_header: None,
-                ..Default::default()
+                    ..Default::default()
                 };
 
                 // `None` for the app handle: there's no window here, so a
@@ -357,10 +415,14 @@ impl FiberMcp {
                 needle.is_empty()
                     || format!(
                         "{} {} {} {} {}",
-                        endpoint.name, endpoint.method, endpoint.path, endpoint.description, endpoint.tag
+                        endpoint.name,
+                        endpoint.method,
+                        endpoint.path,
+                        endpoint.description,
+                        endpoint.tag
                     )
-                        .to_lowercase()
-                        .contains(&needle)
+                    .to_lowercase()
+                    .contains(&needle)
             })
             .collect();
 
@@ -415,13 +477,19 @@ impl FiberMcp {
             follow_redirects: true,
             accept_invalid_certs: false,
             sensitive_header: None,
-        ..Default::default()
+            ..Default::default()
         };
 
         let at = crate::history::now_millis();
-        let outcome =
-            crate::send_authenticated(&self.http, &self.auth, Some(&section), spec.clone(), &secrets::get, None)
-                .await;
+        let outcome = crate::send_authenticated(
+            &self.http,
+            &self.auth,
+            Some(&section),
+            spec.clone(),
+            &secrets::get,
+            None,
+        )
+        .await;
         let _ = self.history.record(&spec, at, &url, &outcome);
 
         let response = outcome.map_err(|err| McpError::internal_error(err.to_string(), None))?;
@@ -476,8 +544,9 @@ impl FiberMcp {
             return ok_json(&serde_json::json!({ "body": body, "truncated": truncated }));
         }
 
-        let document: serde_json::Value = serde_json::from_str(&body)
-            .map_err(|err| McpError::invalid_params(format!("that response isn't JSON: {err}"), None))?;
+        let document: serde_json::Value = serde_json::from_str(&body).map_err(|err| {
+            McpError::invalid_params(format!("that response isn't JSON: {err}"), None)
+        })?;
         let result = loader::apply(&args.query, &document)
             .map_err(|err| McpError::invalid_params(err.to_string(), None))?;
 
@@ -495,9 +564,10 @@ impl FiberMcp {
             McpError::invalid_params("That section has no loader.".to_string(), None)
         })?;
 
-        let (endpoints, schemas, response_schemas, pages) = loader::run(&config, self.fetcher(&section))
-            .await
-            .map_err(|err| McpError::internal_error(err.to_string(), None))?;
+        let (endpoints, schemas, response_schemas, pages) =
+            loader::run(&config, self.fetcher(&section))
+                .await
+                .map_err(|err| McpError::internal_error(err.to_string(), None))?;
 
         let previous = loader::read_cache(&self.loaders_dir, &section.id).unwrap_or_default();
         let (added, removed) = loader::diff(&previous.endpoints, &endpoints);
@@ -577,11 +647,11 @@ impl ServerHandler for FiberMcp {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-            "Fiber exposes API collections the user has explicitly shared. Start with \
+                "Fiber exposes API collections the user has explicitly shared. Start with \
              search_endpoints to find an endpoint, then send_request to call it — the \
              collection's base URL and credentials are applied for you and never returned. \
              Only GET, HEAD and OPTIONS are available unless a collection permits writes.",
-        )
+            )
     }
 }
 
@@ -636,7 +706,10 @@ pub fn export_secrets() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!(
         "{} credential(s) from {} shared collection(s).",
         exported.len(),
-        sections.iter().filter(|section| section.mcp.enabled).count()
+        sections
+            .iter()
+            .filter(|section| section.mcp.enabled)
+            .count()
     );
 
     let mut out = std::io::stdout();
@@ -679,6 +752,7 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         http: Arc::new(HttpState::default()),
         auth: Arc::new(AuthState::default()),
         history: Arc::new(HistoryStore::open_or_recover(&data)?),
+        sections: Arc::new(Mutex::new(None)),
         tool_router: FiberMcp::tool_router(),
     };
 
@@ -759,7 +833,7 @@ mod tests {
                 ..Default::default()
             }],
             overlay: vec![],
-        ..Default::default()
+            ..Default::default()
         }
     }
 
@@ -770,6 +844,7 @@ mod tests {
             http: Arc::new(HttpState::default()),
             auth: Arc::new(AuthState::default()),
             history: Arc::new(HistoryStore::open(dir).unwrap()),
+            sections: Arc::new(Mutex::new(None)),
             tool_router: FiberMcp::tool_router(),
         }
     }

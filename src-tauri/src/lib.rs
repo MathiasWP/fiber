@@ -8,11 +8,11 @@ mod auth;
 #[cfg(feature = "gui")]
 mod browser;
 mod history;
+mod http;
 mod loader;
 pub mod mcp;
 mod migrate;
 mod openapi;
-mod http;
 mod secrets;
 mod send;
 mod store;
@@ -48,6 +48,11 @@ mod gui {
 
     /// How many history entries the UI gets on startup.
     const HISTORY_PAGE: usize = 500;
+    /// Response bodies larger than this have already been streamed to the
+    /// window; repeating them on the command result doubles the IPC cost of a
+    /// large reply. Smaller bodies still travel with the result so settle has
+    /// an authoritative copy even if a chunk was dropped.
+    const STREAMED_BODY_IPC: usize = 64 * 1024;
 
     /// Resolved once at startup so every command agrees on where collections live.
     struct Paths {
@@ -98,12 +103,7 @@ mod gui {
             }
         }
 
-        fn schema(
-            &self,
-            dir: &Path,
-            section_id: &str,
-            endpoint_id: &str,
-        ) -> EndpointSchemas {
+        fn schema(&self, dir: &Path, section_id: &str, endpoint_id: &str) -> EndpointSchemas {
             let mut map = self.lock();
             let cache = Self::fill(&mut map, dir, section_id);
             EndpointSchemas {
@@ -123,6 +123,62 @@ mod gui {
 
         fn forget(&self, section_id: &str) {
             self.lock().remove(section_id);
+        }
+    }
+
+    /// Parsed collections, keyed by id.
+    ///
+    /// Every send used to deserialize the whole section file — every saved body
+    /// included — just to read auth and HTTP settings. The list at startup, and
+    /// each save after that, live here so later sends are a map lookup.
+    struct SectionMem {
+        inner: Mutex<HashMap<String, Arc<store::Section>>>,
+    }
+
+    impl SectionMem {
+        fn new() -> Self {
+            Self {
+                inner: Mutex::new(HashMap::new()),
+            }
+        }
+
+        fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<store::Section>>> {
+            self.inner.lock().unwrap_or_else(|err| err.into_inner())
+        }
+
+        fn replace(&self, sections: &[store::Section]) {
+            let mut map = self.lock();
+            map.clear();
+            for section in sections {
+                map.insert(section.id.clone(), Arc::new(section.clone()));
+            }
+        }
+
+        fn remember(&self, section: store::Section) {
+            self.lock().insert(section.id.clone(), Arc::new(section));
+        }
+
+        fn forget(&self, id: &str) {
+            self.lock().remove(id);
+        }
+
+        fn get_or_load(
+            &self,
+            dir: &Path,
+            id: &str,
+        ) -> Result<Option<Arc<store::Section>>, store::StoreError> {
+            {
+                let map = self.lock();
+                if let Some(section) = map.get(id) {
+                    return Ok(Some(section.clone()));
+                }
+            }
+            let loaded = store::load_one(dir, id)?;
+            Ok(loaded.map(|section| {
+                let held = Arc::new(section);
+                self.lock().insert(id.to_string(), held.clone());
+                held
+            }))
         }
     }
 
@@ -152,6 +208,7 @@ mod gui {
         state: State<'_, Arc<HttpState>>,
         log: State<'_, HistoryStore>,
         paths: State<'_, Paths>,
+        mem: State<'_, SectionMem>,
         auth_state: State<'_, Arc<AuthState>>,
         spec: RequestSpec,
         on_body: Channel<BodyEvent>,
@@ -160,7 +217,8 @@ mod gui {
         // old `.ok().flatten()` here treated corrupt as absent — and sent the
         // request anyway, with the section's auth silently missing.
         let section = match spec.section_id.as_deref() {
-            Some(id) => store::load_one(&paths.sections, id)
+            Some(id) => mem
+                .get_or_load(&paths.sections, id)
                 .map_err(|err| HttpError::Section(err.to_string()))?,
             None => None,
         };
@@ -177,10 +235,10 @@ mod gui {
             let _ = on_body.send(event);
         });
 
-        let outcome = send_authenticated_streaming(
+        let mut outcome = send_authenticated_streaming(
             state.inner().as_ref(),
             auth_state.inner().as_ref(),
-            section.as_ref(),
+            section.as_deref(),
             spec.clone(),
             &secrets::get,
             Some(&recapture),
@@ -191,6 +249,14 @@ mod gui {
         // A history failure must not fail the request the user actually made.
         if let Err(err) = log.record(&spec, at, &url, &outcome) {
             ::log::warn!("could not record history: {err}");
+        }
+
+        // History has the full body. The window already received it in chunks
+        // when it is large enough to be worth not sending again.
+        if let Ok(response) = &mut outcome {
+            if response.body_streamed && response.body.len() > STREAMED_BODY_IPC {
+                response.body.clear();
+            }
         }
 
         outcome
@@ -224,8 +290,12 @@ mod gui {
         auth_state.invalidate(&section_id);
     }
 
-    fn section_by_id(paths: &Paths, id: &str) -> Result<Section, BrowserError> {
-        store::load_one(&paths.sections, id)
+    fn section_by_id(
+        paths: &Paths,
+        mem: &SectionMem,
+        id: &str,
+    ) -> Result<Arc<Section>, BrowserError> {
+        mem.get_or_load(&paths.sections, id)
             .map_err(|err| BrowserError::Section(err.to_string()))?
             .ok_or(BrowserError::NotConfigured)
     }
@@ -236,9 +306,10 @@ mod gui {
     fn browser_sign_in(
         app: AppHandle,
         paths: State<'_, Paths>,
+        mem: State<'_, SectionMem>,
         section_id: String,
     ) -> Result<(), BrowserError> {
-        let section = section_by_id(&paths, &section_id)?;
+        let section = section_by_id(&paths, &mem, &section_id)?;
         crate::browser::open(&app, &section, true).map(|_| ())
     }
 
@@ -248,9 +319,10 @@ mod gui {
     async fn browser_snapshot(
         app: AppHandle,
         paths: State<'_, Paths>,
+        mem: State<'_, SectionMem>,
         section_id: String,
     ) -> Result<Snapshot, BrowserError> {
-        let section = section_by_id(&paths, &section_id)?;
+        let section = section_by_id(&paths, &mem, &section_id)?;
         crate::browser::snapshot(&app, &section).await
     }
 
@@ -259,10 +331,11 @@ mod gui {
     async fn browser_capture(
         app: AppHandle,
         paths: State<'_, Paths>,
+        mem: State<'_, SectionMem>,
         auth_state: State<'_, Arc<AuthState>>,
         section_id: String,
     ) -> Result<(), BrowserError> {
-        let section = section_by_id(&paths, &section_id)?;
+        let section = section_by_id(&paths, &mem, &section_id)?;
         let found = crate::browser::snapshot(&app, &section).await?;
         let value =
             crate::browser::extract(&found, &section).ok_or(BrowserError::NothingCaptured)?;
@@ -317,7 +390,7 @@ mod gui {
                     follow_redirects: true,
                     accept_invalid_certs: false,
                     sensitive_header: None,
-                ..Default::default()
+                    ..Default::default()
                 };
 
                 let recapture = BrowserRecapture::new(app);
@@ -340,8 +413,13 @@ mod gui {
         })
     }
 
-    fn section_for_loader(paths: &Paths, id: &str) -> Result<Section, LoaderError> {
-        store::load_one(&paths.sections, id)
+    fn section_for_loader(
+        paths: &Paths,
+        sections: &SectionMem,
+        id: &str,
+    ) -> Result<Arc<Section>, LoaderError> {
+        sections
+            .get_or_load(&paths.sections, id)
             .map_err(|err| LoaderError::Section(err.to_string()))?
             .ok_or(LoaderError::NoUrl)
     }
@@ -354,9 +432,10 @@ mod gui {
         auth_state: State<'_, Arc<AuthState>>,
         paths: State<'_, Paths>,
         mem: State<'_, LoaderMem>,
+        sections: State<'_, SectionMem>,
         section_id: String,
     ) -> Result<LoaderRun, LoaderError> {
-        let section = section_for_loader(&paths, &section_id)?;
+        let section = section_for_loader(&paths, &sections, &section_id)?;
         let config = section.loader.clone().ok_or(LoaderError::NoUrl)?;
         let fetcher = loader_fetcher(&app, http_state.inner(), auth_state.inner(), &section);
 
@@ -395,9 +474,10 @@ mod gui {
         http_state: State<'_, Arc<HttpState>>,
         auth_state: State<'_, Arc<AuthState>>,
         paths: State<'_, Paths>,
+        sections: State<'_, SectionMem>,
         section_id: String,
     ) -> Result<serde_json::Value, LoaderError> {
-        let section = section_for_loader(&paths, &section_id)?;
+        let section = section_for_loader(&paths, &sections, &section_id)?;
         let config = section.loader.clone().ok_or(LoaderError::NoUrl)?;
         if config.url.trim().is_empty() {
             return Err(LoaderError::NoUrl);
@@ -504,12 +584,12 @@ mod gui {
     }
 
     #[tauri::command]
-    fn history_delete(log: State<'_, HistoryStore>, id: String) -> Result<(), HistoryError> {
+    async fn history_delete(log: State<'_, HistoryStore>, id: String) -> Result<(), HistoryError> {
         log.delete(&id)
     }
 
     #[tauri::command]
-    fn history_clear_request(
+    async fn history_clear_request(
         log: State<'_, HistoryStore>,
         request_id: String,
     ) -> Result<(), HistoryError> {
@@ -517,7 +597,7 @@ mod gui {
     }
 
     #[tauri::command]
-    fn history_clear_all(log: State<'_, HistoryStore>) -> Result<(), HistoryError> {
+    async fn history_clear_all(log: State<'_, HistoryStore>) -> Result<(), HistoryError> {
         log.clear_all()
     }
 
@@ -530,8 +610,12 @@ mod gui {
     /// by name — a corrupt file that only reached the log read exactly like
     /// the section having been deleted.
     #[tauri::command]
-    async fn list_sections(paths: State<'_, Paths>) -> Result<store::SectionLoad, StoreError> {
+    async fn list_sections(
+        paths: State<'_, Paths>,
+        sections: State<'_, SectionMem>,
+    ) -> Result<store::SectionLoad, StoreError> {
         let load = store::load_all_reporting(&paths.sections)?;
+        sections.replace(&load.sections);
         ::log::info!(
             "loaded {} section(s), {} unreadable, from {}",
             load.sections.len(),
@@ -542,24 +626,32 @@ mod gui {
     }
 
     #[tauri::command]
-    async fn save_section(paths: State<'_, Paths>, section: Section) -> Result<(), StoreError> {
-        store::save(&paths.sections, &section)
+    async fn save_section(
+        paths: State<'_, Paths>,
+        sections: State<'_, SectionMem>,
+        section: Section,
+    ) -> Result<(), StoreError> {
+        store::save(&paths.sections, &section)?;
+        sections.remember(section);
+        Ok(())
     }
 
     #[tauri::command]
-    fn delete_section(
+    async fn delete_section(
         paths: State<'_, Paths>,
         mem: State<'_, LoaderMem>,
+        sections: State<'_, SectionMem>,
         id: String,
     ) -> Result<(), StoreError> {
         // The loader cache is derived data; it has no business outliving its section.
         loader::forget_cache(&paths.loaders, &id);
         mem.forget(&id);
+        sections.forget(&id);
         store::delete(&paths.sections, &id)
     }
 
-    /// The UI previews and sends the string this returns, so what you see is
-    /// exactly what goes out.
+    /// Same join as the TypeScript preview. Kept so MCP and any other caller
+    /// can resolve without duplicating the slash-normalisation rules.
     #[tauri::command]
     fn resolve_url(base: String, path: String) -> String {
         store::join_url(&base, &path)
@@ -643,6 +735,7 @@ mod gui {
                     loaders: loader::loaders_dir(&app_data_dir),
                 });
                 app.manage(LoaderMem::new());
+                app.manage(SectionMem::new());
                 // `open_or_recover`: a corrupt history database is moved aside
                 // and replaced. Plain `open` here fed the `.expect` below —
                 // one bad file meant a panic on every launch thereafter.
@@ -667,7 +760,10 @@ mod gui {
                 // `None` exactly when the quit came from user interaction; our
                 // own `app.exit(0)` — `flush_complete`, or the fallback below
                 // — carries `Some`, and sails through this match untouched.
-                if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
+                if let tauri::RunEvent::ExitRequested {
+                    code: None, api, ..
+                } = &event
+                {
                     use std::sync::atomic::{AtomicBool, Ordering};
                     static FLUSH_ASKED: AtomicBool = AtomicBool::new(false);
                     // Asked once already: either the flush is in flight and

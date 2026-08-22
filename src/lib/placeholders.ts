@@ -28,6 +28,14 @@ export interface Slot {
 const WORD = /[A-Za-z]/;
 
 /**
+ * Above this, scanning for type-name placeholders is more expensive than the
+ * placeholders are worth. Generated OpenAPI skeletons sit well under it;
+ * a hand-written body this large has none, and walking every character of it
+ * on each keystroke is a freeze to highlight nothing.
+ */
+const SCAN_LIMIT = 64 * 1024;
+
+/**
  * Every unfilled field in `text`.
  *
  * A bare word cannot appear in valid JSON, so anything outside a string that
@@ -35,6 +43,7 @@ const WORD = /[A-Za-z]/;
  * reason: in `"note": "a number goes here"` the word is content, not a gap.
  */
 export function slots(text: string): Slot[] {
+	if (text.length > SCAN_LIMIT) return [];
 	const found: Slot[] = [];
 	let quoted = false;
 

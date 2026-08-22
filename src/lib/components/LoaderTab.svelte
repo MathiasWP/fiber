@@ -129,9 +129,19 @@
 		}${changes.length ? ` · ${changes.join(', ')}` : ''}`;
 	}
 
-	const documentPreview = $derived(
-		document === null ? '' : JSON.stringify(document, null, 2).slice(0, 20000)
-	);
+	const documentPreview = $derived(document === null ? '' : previewJson(document));
+
+	/**
+	 * Pretty-print is for reading. A compact stringify of a large OpenAPI
+	 * document is already a full walk; pretty-printing it just to keep the
+	 * first 20 KB is a second, much larger copy that froze the settings
+	 * drawer after "Fetch a sample".
+	 */
+	function previewJson(value: unknown, limit = 20_000): string {
+		const compact = JSON.stringify(value);
+		if (compact.length <= limit) return JSON.stringify(value, null, 2);
+		return compact.slice(0, limit);
+	}
 </script>
 
 {#if !section.loader}

@@ -46,6 +46,11 @@ export interface ResponseMeta {
 export interface ResponseData extends ResponseMeta {
 	/** UTF-8 text, or base64 when `isBinary`. */
 	body: string;
+	/**
+	 * The body already arrived over the streaming channel, so `body` may be
+	 * empty to avoid shipping the same bytes a second time over IPC.
+	 */
+	bodyStreamed?: boolean;
 }
 
 /** A stored history entry. Bodies come from `historyBody`. */
@@ -526,8 +531,27 @@ export function deleteSection(id: string): Promise<void> {
 }
 
 /**
+ * Joins a collection base URL and a request path.
+ *
+ * Same rules as Rust `store::join_url`: an `http(s)` path ignores the base, and
+ * the slash between the two sides is normalised. Kept here so the URL preview
+ * can update on every keystroke without a round trip through the IPC bridge —
+ * `resolve_url` is a synchronous Tauri command, so typing used to contend for
+ * the event-loop thread that paints the window.
+ */
+export function joinUrl(base: string, path: string): string {
+	base = base.trim();
+	path = path.trim();
+	if (path.startsWith('http://') || path.startsWith('https://')) return path;
+	if (!base) return path;
+	if (!path) return base.replace(/\/+$/, '');
+	return `${base.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
+}
+
+/**
  * Resolution lives in Rust so the app and the MCP server can never disagree
- * about where a request actually goes. The UI previews what this returns.
+ * about where a request actually goes. The preview uses {@link joinUrl}
+ * instead, which is the same function, so what you see is still what goes out.
  */
 export function resolveUrl(base: string, path: string): Promise<string> {
 	return invoke<string>('resolve_url', { base, path });

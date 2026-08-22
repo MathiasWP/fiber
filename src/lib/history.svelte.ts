@@ -156,10 +156,23 @@ class History {
 		entry.pending = false;
 		entry.error = result.error;
 		if (result.response) {
-			const { body, ...meta } = result.response;
+			const { body, bodyStreamed, ...meta } = result.response;
 			entry.response = meta;
-			entry.body = body;
-			entry.bodyLoaded = true;
+			if (bodyStreamed) {
+				// The chunks already on the entry *are* the body. An empty
+				// `body` here is deliberate — it was omitted so a large
+				// response does not cross the IPC bridge twice. If nothing
+				// streamed (the channel died), reload from history.
+				if (entry.body === undefined) {
+					entry.bodyLoaded = false;
+					void this.ensureBody(entry);
+				} else {
+					entry.bodyLoaded = true;
+				}
+			} else {
+				entry.body = body;
+				entry.bodyLoaded = true;
+			}
 		} else {
 			entry.response = undefined;
 			entry.bodyLoaded = true;

@@ -78,4 +78,9 @@ test.describe('validateJsonBody', () => {
 		expect(validateJsonBody({ type: 'object' }, '{')).toEqual([]);
 		expect(validateJsonBody(null, '{}')).toEqual([]);
 	});
+
+	test('oversized bodies are not parsed', () => {
+		const huge = `{"x":"${'a'.repeat(2 * 1024 * 1024)}"}`;
+		expect(validateJsonBody({ type: 'object' }, huge)).toEqual([]);
+	});
 });
