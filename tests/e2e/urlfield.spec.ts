@@ -72,18 +72,72 @@ test.describe('wired into a real field', () => {
 		const field = page.getByPlaceholder('https://api.example.com', { exact: true });
 		await expect(field).toBeVisible();
 		await field.fill('https://app.staging.example.com');
+		// `fill` returns once the DOM value is set and its events dispatched,
+		// but Svelte's own reactive write-back of that value (via `bind:value`)
+		// can still be pending under load, and can otherwise land in between
+		// this and a later `setSelectionRange` call, clobbering the selection
+		// it just set. Settling here — past a repaint, and past the write-back
+		// — is what keeps that race out of every test below.
+		await field.evaluate(() => new Promise(requestAnimationFrame));
+		await expect(field).toHaveValue('https://app.staging.example.com');
 		return field;
 	}
 
-	const selection = (field: import('@playwright/test').Locator) =>
-		field.evaluate((node: HTMLInputElement) => [node.selectionStart, node.selectionEnd]);
+	/**
+	 * Sets the selection and dispatches the keydown in one round trip to the
+	 * page. The attachment moves the caret itself (`preventDefault` plus a
+	 * manual `setSelectionRange`) rather than relying on the browser's native
+	 * handling, so a script-dispatched event exercises it exactly the same as
+	 * a real keypress — without the two separate `evaluate`/`press` calls
+	 * leaving a gap where Svelte's own reactivity could touch the field's
+	 * selection in between, and without routing modifier combinations like
+	 * Ctrl+Alt or Meta+Alt through `page.keyboard`, where a window manager
+	 * could intercept them as real shortcuts before the page ever sees them.
+	 */
+	async function pressAt(
+		field: import('@playwright/test').Locator,
+		start: number,
+		end: number,
+		key: 'ArrowLeft' | 'ArrowRight',
+		modifiers: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean } = {
+			altKey: true
+		},
+		direction?: 'forward' | 'backward'
+	): Promise<{ selection: [number | null, number | null]; defaultPrevented: boolean }> {
+		return field.evaluate(
+			(
+				node: HTMLInputElement,
+				arg: {
+					start: number;
+					end: number;
+					key: string;
+					modifiers: typeof modifiers;
+					direction?: 'forward' | 'backward';
+				}
+			) => {
+				node.focus();
+				node.setSelectionRange(arg.start, arg.end, arg.direction);
+				const event = new KeyboardEvent('keydown', {
+					key: arg.key,
+					bubbles: true,
+					cancelable: true,
+					...arg.modifiers
+				});
+				node.dispatchEvent(event);
+				return {
+					selection: [node.selectionStart, node.selectionEnd] as [number | null, number | null],
+					defaultPrevented: event.defaultPrevented
+				};
+			},
+			{ start, end, key, modifiers, direction }
+		);
+	}
 
 	test('Shift+Alt+ArrowRight extends the selection to the next boundary', async ({ page }) => {
 		const field = await urlField(page);
-		await field.evaluate((node: HTMLInputElement) => node.setSelectionRange(8, 8)); // after "https://"
-		await field.press('Shift+Alt+ArrowRight');
+		const result = await pressAt(field, 8, 8, 'ArrowRight', { shiftKey: true, altKey: true });
 		// Selection grows to cover "app", anchored where the caret started.
-		expect(await selection(field)).toEqual([8, 11]);
+		expect(result.selection).toEqual([8, 11]);
 	});
 
 	test('Shift+Alt+ArrowLeft from an existing forward selection shrinks it, not the far end', async ({
@@ -91,49 +145,48 @@ test.describe('wired into a real field', () => {
 	}) => {
 		const field = await urlField(page);
 		// Select "app.staging" (8..19), caret (focus) at the end, anchor at 8.
-		await field.evaluate((node: HTMLInputElement) => node.setSelectionRange(8, 19, 'forward'));
-		await field.press('Shift+Alt+ArrowLeft');
+		const result = await pressAt(
+			field,
+			8,
+			19,
+			'ArrowLeft',
+			{ shiftKey: true, altKey: true },
+			'forward'
+		);
 		// The focus end retreats one boundary; the anchor at 8 is untouched.
-		expect(await selection(field)).toEqual([8, 12]);
+		expect(result.selection).toEqual([8, 12]);
 	});
 
-	test('plain ArrowRight without Alt is left to the browser, landing right after the caret', async ({
+	test('plain ArrowRight without Alt is left alone — the guard does not preventDefault', async ({
 		page
 	}) => {
 		const field = await urlField(page);
-		await field.evaluate((node: HTMLInputElement) => node.setSelectionRange(0, 0));
-		await field.press('ArrowRight');
-		expect(await selection(field)).toEqual([1, 1]);
+		const result = await pressAt(field, 0, 0, 'ArrowRight', {});
+		expect(result.defaultPrevented).toBe(false);
 	});
 
 	test('Ctrl+Alt+ArrowRight is not intercepted — an extra modifier opts out', async ({ page }) => {
 		const field = await urlField(page);
-		await field.evaluate((node: HTMLInputElement) => node.setSelectionRange(0, 0));
-		await field.press('Control+Alt+ArrowRight');
-		// Whatever the browser does with this combination, it isn't the
-		// word-jump — the value is untouched either way.
-		await expect(field).toHaveValue('https://app.staging.example.com');
+		const result = await pressAt(field, 0, 0, 'ArrowRight', { ctrlKey: true, altKey: true });
+		expect(result.defaultPrevented).toBe(false);
 	});
 
 	test('Meta+Alt+ArrowRight is not intercepted either', async ({ page }) => {
 		const field = await urlField(page);
-		await field.evaluate((node: HTMLInputElement) => node.setSelectionRange(0, 0));
-		await field.press('Meta+Alt+ArrowRight');
-		await expect(field).toHaveValue('https://app.staging.example.com');
+		const result = await pressAt(field, 0, 0, 'ArrowRight', { metaKey: true, altKey: true });
+		expect(result.defaultPrevented).toBe(false);
 	});
 
 	test('Alt+ArrowLeft at position 0 does nothing, rather than throwing', async ({ page }) => {
 		const field = await urlField(page);
-		await field.evaluate((node: HTMLInputElement) => node.setSelectionRange(0, 0));
-		await field.press('Alt+ArrowLeft');
-		expect(await selection(field)).toEqual([0, 0]);
+		const result = await pressAt(field, 0, 0, 'ArrowLeft', { altKey: true });
+		expect(result.selection).toEqual([0, 0]);
 	});
 
 	test('Alt+ArrowRight at the end does nothing, rather than throwing', async ({ page }) => {
 		const field = await urlField(page);
 		const end = 'https://app.staging.example.com'.length;
-		await field.evaluate((node: HTMLInputElement, e: number) => node.setSelectionRange(e, e), end);
-		await field.press('Alt+ArrowRight');
-		expect(await selection(field)).toEqual([end, end]);
+		const result = await pressAt(field, end, end, 'ArrowRight', { altKey: true });
+		expect(result.selection).toEqual([end, end]);
 	});
 });

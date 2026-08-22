@@ -252,7 +252,7 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 			let settleSend: ((data: unknown) => void) | null = null;
 			let rejectSend: ((error: unknown) => void) | null = null;
 			let settleRefresh: (() => void) | null = null;
-			let settleSnapshot: ((data: unknown) => void) | null = null;
+			let settleSnapshot: (() => void) | null = null;
 			let rejectSnapshot: ((error: unknown) => void) | null = null;
 
 			let updateChannelId: number | null = null;

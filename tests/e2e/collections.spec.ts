@@ -173,7 +173,10 @@ test.describe('the collection context menu', () => {
 
 		await page.getByText('Acme', { exact: true }).click({ button: 'right' });
 		await page.getByRole('menuitem', { name: 'New request' }).click();
-		await expect(page.getByText('New request')).toBeVisible();
+		// The sidebar row, named by its path rather than the ambiguous "New
+		// request" text — the closing context menu can still hold a menuitem
+		// with that same name mid-animation.
+		await expect(page.getByTitle('/', { exact: true })).toBeVisible();
 		await expect(page.getByPlaceholder('/user/get')).toHaveValue('/');
 	});
 
