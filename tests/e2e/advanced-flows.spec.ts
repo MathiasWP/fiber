@@ -261,17 +261,16 @@ test.describe('history failures remain recoverable', () => {
 		await expect(page.getByText(/history database is locked/)).toBeVisible();
 	});
 
-	test('a body-load failure is reported and can be retried by reopening', async ({ page }) => {
+	test('a body-load failure is reported without taking history down', async ({ page }) => {
 		await install(page, {
 			history: [historyRecord()],
 			historyBodyError: 'body file is unreadable'
 		});
 		await page.goto('/');
 		await page.getByRole('button', { name: 'History' }).click();
-		await page
-			.locator('button')
-			.filter({ hasText: 'https://api.acme.com/users' })
-			.dispatchEvent('click');
+		await page.getByText('https://api.acme.com/users').evaluate((node) => {
+			(node.closest('[data-context-menu-trigger]') as HTMLElement | null)?.click();
+		});
 		await expect(page.getByText(/body file is unreadable/)).toBeVisible();
 	});
 
