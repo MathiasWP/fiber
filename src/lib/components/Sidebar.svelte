@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { ContextMenu, Dialog, Tooltip } from 'bits-ui';
 	import {
+		applyPathParams,
 		LOOSE_SECTION_ID,
 		methodColor,
 		normalizeBaseUrl,
@@ -55,7 +56,8 @@
 		total: number;
 	}
 
-	const label = (request: SavedRequest) => `${request.name} ${request.method} ${request.path}`;
+	const label = (request: SavedRequest) =>
+		`${request.name} ${request.method} ${request.path} ${request.tag ?? ''} ${request.description ?? ''}`;
 
 	// A search hides the collapsed state — matches are no use if you can't see them.
 	const searching = $derived(query.trim().length > 0);
@@ -156,6 +158,39 @@
 
 	function remainingEndpoints(section: Section, requests: SavedRequest[], rows: LoadedRow[]): number {
 		return Math.max(0, requests.length + rows.length - endpointLimit(section));
+	}
+
+	function groupedLoaded(rows: LoadedRow[]): { tag: string; rows: LoadedRow[] }[] {
+		const hasTags = rows.some((row) => row.request.tag);
+		if (!hasTags) return [{ tag: '', rows }];
+		const groups = new Map<string, LoadedRow[]>();
+		const order: string[] = [];
+		for (const row of rows) {
+			const tag = row.request.tag || '';
+			if (!groups.has(tag)) {
+				groups.set(tag, []);
+				order.push(tag);
+			}
+			groups.get(tag)!.push(row);
+		}
+		order.sort((a, b) => Number(Boolean(a)) - Number(Boolean(b)) || a.localeCompare(b));
+		return order.map((tag) => ({ tag, rows: groups.get(tag)! }));
+	}
+
+	let closedTags = $state<Record<string, boolean>>({});
+
+	function tagKey(sectionId: string, tag: string): string {
+		return `${sectionId}\0${tag}`;
+	}
+
+	function tagOpen(sectionId: string, tag: string): boolean {
+		if (searching || !tag) return true;
+		return !closedTags[tagKey(sectionId, tag)];
+	}
+
+	function toggleTag(sectionId: string, tag: string): void {
+		const key = tagKey(sectionId, tag);
+		closedTags[key] = !closedTags[key];
 	}
 
 	function loadMoreEndpoints(sectionId: string): void {
@@ -334,7 +369,7 @@
 
 	function copyUrl(section: Section, request: SavedRequest) {
 		const base = normalizeBaseUrl(section.baseUrl);
-		const path = request.path.trim();
+		const path = applyPathParams(request.path, request.pathParams);
 		const absolute = /^https?:\/\//.test(path);
 		navigator.clipboard.writeText(absolute ? path : `${base}/${path.replace(/^\/+/, '')}`);
 	}
@@ -557,6 +592,59 @@
 			</ContextMenu.Portal>
 		</ContextMenu.Root>
 	</div>
+{/snippet}
+
+{#snippet loadedRow(section: Section, row: LoadedRow, indent: string)}
+	<ContextMenu.Root>
+		<ContextMenu.Trigger
+			class="flex items-center gap-2 {indent} pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
+				{collections.selectedRequestId === row.request.id ? 'bg-raised' : ''}"
+			onclick={() => selectLoaded(section, row)}
+		>
+			<span
+				class="font-mono text-2.5 font-bold shrink-0 w-9 {methodColor(row.request.method)}"
+			>
+				{row.request.method}
+			</span>
+			<span
+				class="truncate text-xs flex-1 {row.missing ? 'text-muted line-through' : ''}"
+				title={row.missing
+					? `${row.request.path} — no longer reported by the loader`
+					: row.request.description || row.request.path}
+			>
+				{row.request.name}
+			</span>
+			{#if row.missing}
+				<span
+					class="i-lucide-unlink text-3 text-warn shrink-0"
+					title="No longer reported by the loader"
+				></span>
+			{/if}
+		</ContextMenu.Trigger>
+
+		<ContextMenu.Portal>
+			<ContextMenu.Content class="menu-content">
+				<ContextMenu.Item class="menu-item" onSelect={() => refresh(section)}>
+					<span class="i-lucide-refresh-cw text-3"></span>
+					Refresh endpoints
+				</ContextMenu.Item>
+				<ContextMenu.Item class="menu-item" onSelect={() => copyUrl(section, row.request)}>
+					<span class="i-lucide-link text-3"></span>
+					Copy URL
+				</ContextMenu.Item>
+				{#if row.missing}
+					<ContextMenu.Separator class="menu-separator" />
+					<ContextMenu.Item
+						class="menu-item-bad"
+						onSelect={() => dropOverlay(section, row.request.id)}
+					>
+						<span class="i-lucide-trash-2 text-3"></span>
+						Forget this endpoint
+					</ContextMenu.Item>
+				{/if}
+			</ContextMenu.Content>
+		</ContextMenu.Portal>
+	</ContextMenu.Root>
 {/snippet}
 
 <!-- Deleting a section throws away a file, so it asks first. Requests don't. -->
@@ -959,57 +1047,30 @@
 
 							<!-- Loader output. Regenerated on every refresh; the user's
 							     bodies live in the section's overlay and survive it. -->
-							{#each displayedRows as row (row.request.id)}
-								<ContextMenu.Root>
-									<ContextMenu.Trigger
-										class="flex items-center gap-2 pl-8 pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
-											{collections.selectedRequestId === row.request.id ? 'bg-raised' : ''}"
-										onclick={() => selectLoaded(section, row)}
+							{#each groupedLoaded(displayedRows) as group (group.tag || '__none')}
+								{#if group.tag}
+									<button
+										type="button"
+										class="flex items-center gap-1 pl-8 pr-4 py-1 w-full text-left text-2.5 text-muted hover:bg-raised/60 hover:text-text transition-colors"
+										onclick={() => toggleTag(section.id, group.tag)}
 									>
 										<span
-											class="font-mono text-2.5 font-bold shrink-0 w-9 {methodColor(row.request.method)}"
-										>
-											{row.request.method}
-										</span>
-										<span
-											class="truncate text-xs flex-1 {row.missing ? 'text-muted line-through' : ''}"
-											title={row.missing
-												? `${row.request.path} — no longer reported by the loader`
-												: row.request.path}
-										>
-											{row.request.name}
-										</span>
-										{#if row.missing}
-											<span
-												class="i-lucide-unlink text-3 text-warn shrink-0"
-												title="No longer reported by the loader"
-											></span>
-										{/if}
-									</ContextMenu.Trigger>
-
-									<ContextMenu.Portal>
-										<ContextMenu.Content class="menu-content">
-											<ContextMenu.Item class="menu-item" onSelect={() => refresh(section)}>
-												<span class="i-lucide-refresh-cw text-3"></span>
-												Refresh endpoints
-											</ContextMenu.Item>
-											<ContextMenu.Item class="menu-item" onSelect={() => copyUrl(section, row.request)}>
-												<span class="i-lucide-link text-3"></span>
-												Copy URL
-											</ContextMenu.Item>
-											{#if row.missing}
-												<ContextMenu.Separator class="menu-separator" />
-												<ContextMenu.Item
-													class="menu-item-bad"
-													onSelect={() => dropOverlay(section, row.request.id)}
-												>
-													<span class="i-lucide-trash-2 text-3"></span>
-													Forget this endpoint
-												</ContextMenu.Item>
-											{/if}
-										</ContextMenu.Content>
-									</ContextMenu.Portal>
-								</ContextMenu.Root>
+											class="i-lucide-chevron-right text-3 transition-transform shrink-0 {tagOpen(
+												section.id,
+												group.tag
+											)
+												? 'rotate-90'
+												: ''}"
+										></span>
+										<span class="truncate">{group.tag}</span>
+										<span class="ml-auto tabular-nums">{group.rows.length}</span>
+									</button>
+								{/if}
+								{#if !group.tag || tagOpen(section.id, group.tag)}
+									{#each group.rows as row (row.request.id)}
+										{@render loadedRow(section, row, group.tag ? 'pl-12' : 'pl-8')}
+									{/each}
+								{/if}
 							{/each}
 
 							{#if remaining > 0}

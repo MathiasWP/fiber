@@ -7,12 +7,14 @@
 //! MCP server can call it headlessly.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use futures_util::StreamExt;
 use reqwest::header::{HeaderName, HeaderValue, CONTENT_TYPE};
+use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
@@ -32,6 +34,37 @@ const MAX_REDIRECTS: usize = 10;
 pub struct Header {
     pub name: String,
     pub value: String,
+}
+
+/// How the request body is built. JSON remains the default so existing
+/// collections keep the editor they already have.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BodyKind {
+    #[default]
+    Json,
+    Text,
+    /// `application/x-www-form-urlencoded` from `form`.
+    Form,
+    /// `multipart/form-data` from `form`, including file fields.
+    Multipart,
+    /// Raw bytes of the file at `file`.
+    File,
+}
+
+/// One field of a form or multipart body.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FormField {
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+    /// Absolute path of a file to attach. Empty means this is a text field,
+    /// unless `is_file` is set and the user has not picked one yet.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_file: bool,
 }
 
 /// Headers that carry a credential. They must never travel back to a model
@@ -80,11 +113,22 @@ pub struct RequestSpec {
     #[serde(default)]
     pub body: Option<String>,
     #[serde(default)]
+    pub body_kind: BodyKind,
+    #[serde(default)]
+    pub form: Vec<FormField>,
+    /// Absolute path when `body_kind` is `file`.
+    #[serde(default)]
+    pub file: String,
+    #[serde(default)]
+    pub path_params: Vec<Header>,
+    #[serde(default)]
     pub timeout_ms: Option<u64>,
     #[serde(default = "yes")]
     pub follow_redirects: bool,
     #[serde(default)]
     pub accept_invalid_certs: bool,
+    #[serde(default)]
+    pub proxy: String,
     /// The name of the header `apply_auth` injected the section's credential
     /// into, if it did. Never set by the frontend — `skip` keeps it off the
     /// bridge — because it exists for one reason: reqwest strips
@@ -93,6 +137,29 @@ pub struct RequestSpec {
     /// header here is what lets the redirect handling below shed it too.
     #[serde(skip)]
     pub sensitive_header: Option<String>,
+}
+
+impl Default for RequestSpec {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            request_id: String::new(),
+            section_id: None,
+            method: "GET".into(),
+            url: String::new(),
+            headers: Vec::new(),
+            body: None,
+            body_kind: BodyKind::Json,
+            form: Vec::new(),
+            file: String::new(),
+            path_params: Vec::new(),
+            timeout_ms: None,
+            follow_redirects: true,
+            accept_invalid_certs: false,
+            proxy: String::new(),
+            sensitive_header: None,
+        }
+    }
 }
 
 fn yes() -> bool {
@@ -181,12 +248,16 @@ fn root_cause(err: &dyn std::error::Error) -> String {
 }
 
 /// Clients are cached because building one is expensive (TLS setup, connection
-/// pool) and these two options are the only things that change its shape today.
-/// Sections will widen this key when they bring their own proxy and cookie jar.
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+/// pool). The key is the section plus the options that actually change a
+/// client's shape: cookie jars are per-section so one API's session cookie
+/// cannot leak onto another, and proxy / TLS / redirect policy belong to the
+/// collection rather than the process.
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 struct ClientKey {
+    section_id: String,
     follow_redirects: bool,
     accept_invalid_certs: bool,
+    proxy: String,
 }
 
 #[derive(Default)]
@@ -215,12 +286,21 @@ impl HttpState {
             reqwest::redirect::Policy::none()
         };
 
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .user_agent(concat!("fiber/", env!("CARGO_PKG_VERSION")))
-            // One jar per client for now. Per-section jars arrive with sections.
+            // One jar per client, and one client per section — so a session
+            // cookie from collection A never rides along with collection B.
             .cookie_store(true)
             .redirect(redirect)
-            .danger_accept_invalid_certs(key.accept_invalid_certs)
+            .danger_accept_invalid_certs(key.accept_invalid_certs);
+
+        if !key.proxy.trim().is_empty() {
+            let proxy = reqwest::Proxy::all(key.proxy.trim())
+                .map_err(|e| HttpError::Client(format!("invalid proxy: {e}")))?;
+            builder = builder.proxy(proxy);
+        }
+
+        let client = builder
             .build()
             .map_err(|e| HttpError::Client(e.to_string()))?;
 
@@ -286,12 +366,23 @@ struct Outbound {
     method: reqwest::Method,
     url: reqwest::Url,
     headers: reqwest::header::HeaderMap,
-    body: Option<String>,
+    body: OutboundBody,
     timeout: Duration,
     /// Set only when redirects are followed here rather than by the client:
     /// the auth-injected header to shed the moment a hop leaves the original
     /// scheme+host+port.
     sensitive: Option<HeaderName>,
+}
+
+/// The body as it is actually sent. Multipart and files cannot be a `String`.
+#[derive(Clone)]
+enum OutboundBody {
+    None,
+    Text(String),
+    Bytes(Vec<u8>),
+    Form(Vec<(String, String)>),
+    /// Rebuilt on each hop because `reqwest::multipart::Form` is not `Clone`.
+    Multipart(Vec<FormField>),
 }
 
 pub async fn send_streaming(
@@ -301,7 +392,8 @@ pub async fn send_streaming(
 ) -> Result<ResponseData, HttpError> {
     let method = reqwest::Method::from_bytes(spec.method.trim().as_bytes())
         .map_err(|_| HttpError::Method(spec.method.clone()))?;
-    let url = reqwest::Url::parse(spec.url.trim()).map_err(|e| HttpError::Url(e.to_string()))?;
+    let url = crate::store::apply_path_params(spec.url.trim(), &spec.path_params);
+    let url = reqwest::Url::parse(&url).map_err(|e| HttpError::Url(e.to_string()))?;
 
     let mut headers = reqwest::header::HeaderMap::new();
     for header in &spec.headers {
@@ -328,16 +420,25 @@ pub async fn send_streaming(
         .and_then(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok());
 
     let client = state.client(ClientKey {
+        section_id: spec.section_id.clone().unwrap_or_default(),
         follow_redirects: spec.follow_redirects && sensitive.is_none(),
         accept_invalid_certs: spec.accept_invalid_certs,
+        proxy: spec.proxy.clone(),
     })?;
+
+    let body = prepare_body(&spec)?;
+    if matches!(body, OutboundBody::Multipart(_) | OutboundBody::Form(_)) {
+        // reqwest sets these Content-Types (multipart carries a boundary).
+        // A leftover application/json from the JSON editor would win.
+        headers.remove(CONTENT_TYPE);
+    }
 
     let outbound = Outbound {
         client,
         method,
         url,
         headers,
-        body: spec.body.filter(|b| !b.is_empty()),
+        body,
         timeout: Duration::from_millis(spec.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS)),
         sensitive,
     };
@@ -356,6 +457,125 @@ pub async fn send_streaming(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&spec.id);
     outcome
+}
+
+fn prepare_body(spec: &RequestSpec) -> Result<OutboundBody, HttpError> {
+    match spec.body_kind {
+        BodyKind::Json | BodyKind::Text => Ok(spec
+            .body
+            .as_ref()
+            .filter(|body| !body.is_empty())
+            .cloned()
+            .map(OutboundBody::Text)
+            .unwrap_or(OutboundBody::None)),
+        BodyKind::Form => {
+            let pairs: Vec<(String, String)> = spec
+                .form
+                .iter()
+                .filter(|field| !field.name.trim().is_empty() && field.file.is_empty() && !field.is_file)
+                .map(|field| (field.name.clone(), field.value.clone()))
+                .collect();
+            if pairs.is_empty() {
+                Ok(OutboundBody::None)
+            } else {
+                Ok(OutboundBody::Form(pairs))
+            }
+        }
+        BodyKind::Multipart => {
+            if spec.form.iter().all(|field| field.name.trim().is_empty()) {
+                Ok(OutboundBody::None)
+            } else {
+                Ok(OutboundBody::Multipart(spec.form.clone()))
+            }
+        }
+        BodyKind::File => {
+            let path = spec.file.trim();
+            if path.is_empty() {
+                return Ok(OutboundBody::None);
+            }
+            let bytes = std::fs::read(path).map_err(|err| {
+                HttpError::Transport(format!("could not read {}: {err}", Path::new(path).display()))
+            })?;
+            Ok(OutboundBody::Bytes(bytes))
+        }
+    }
+}
+
+async fn apply_body(
+    request: reqwest::RequestBuilder,
+    body: &OutboundBody,
+) -> Result<reqwest::RequestBuilder, HttpError> {
+    match body {
+        OutboundBody::None => Ok(request),
+        OutboundBody::Text(text) => Ok(request.body(text.clone())),
+        OutboundBody::Bytes(bytes) => Ok(request.body(bytes.clone())),
+        OutboundBody::Form(pairs) => {
+            let encoded = encode_form(pairs);
+            Ok(request
+                .header(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/x-www-form-urlencoded"),
+                )
+                .body(encoded))
+        }
+        OutboundBody::Multipart(fields) => Ok(request.multipart(multipart_form(fields).await?)),
+    }
+}
+
+fn encode_form(pairs: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (i, (key, value)) in pairs.iter().enumerate() {
+        if i > 0 {
+            out.push('&');
+        }
+        out.push_str(&form_encode(key));
+        out.push('=');
+        out.push_str(&form_encode(value));
+    }
+    out
+}
+
+fn form_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+async fn multipart_form(fields: &[FormField]) -> Result<Form, HttpError> {
+    let mut form = Form::new();
+    for field in fields {
+        let name = field.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if field.file.trim().is_empty() {
+            if field.is_file {
+                continue;
+            }
+            form = form.text(name.to_string(), field.value.clone());
+            continue;
+        }
+        let path = Path::new(field.file.trim());
+        let bytes = tokio::fs::read(path).await.map_err(|err| {
+            HttpError::Transport(format!("could not read {}: {err}", path.display()))
+        })?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("file")
+            .to_string();
+        let part = Part::bytes(bytes).file_name(file_name);
+        form = form.part(name.to_string(), part);
+    }
+    Ok(form)
 }
 
 async fn run(
@@ -381,9 +601,7 @@ async fn run(
             .request(method.clone(), url.clone())
             .headers(headers.clone())
             .timeout(timeout);
-        if let Some(body) = &body {
-            request = request.body(body.clone());
-        }
+        request = apply_body(request, &body).await?;
 
         let response = tokio::select! {
             biased;
@@ -424,7 +642,7 @@ async fn run(
         };
         if becomes_get {
             method = reqwest::Method::GET;
-            body = None;
+            body = OutboundBody::None;
             headers.remove(CONTENT_TYPE);
             headers.remove(reqwest::header::CONTENT_LENGTH);
         }
@@ -664,6 +882,7 @@ mod tests {
                 follow_redirects: true,
                 accept_invalid_certs: false,
                 sensitive_header: None,
+            ..Default::default()
             },
         )
         .await
@@ -713,6 +932,7 @@ mod tests {
                 follow_redirects: true,
                 accept_invalid_certs: false,
                 sensitive_header: None,
+            ..Default::default()
             },
         )
         .await
@@ -747,6 +967,7 @@ mod tests {
             follow_redirects: true,
             accept_invalid_certs: false,
             sensitive_header: None,
+        ..Default::default()
         };
 
         let sending = tokio::spawn({
@@ -851,6 +1072,7 @@ mod tests {
             follow_redirects: true,
             accept_invalid_certs: false,
             sensitive_header: Some("X-Api-Key".into()),
+            ..Default::default()
         }
     }
 
@@ -936,5 +1158,184 @@ mod tests {
         assert!(requests[0].starts_with("POST /submit"), "{}", requests[0]);
         assert!(requests[1].starts_with("GET /result"), "{}", requests[1]);
         assert!(!requests[1].contains("{\"a\":1}"), "the body should not replay");
+    }
+
+    #[tokio::test]
+    async fn sends_form_urlencoded_bodies() {
+        let (url, server) = one_shot_server(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok",
+        )
+        .await;
+
+        let state = HttpState::default();
+        let response = send(
+            &state,
+            RequestSpec {
+                id: "form-1".into(),
+                method: "POST".into(),
+                url: format!("{url}/form"),
+                body_kind: BodyKind::Form,
+                form: vec![
+                    FormField {
+                        name: "q".into(),
+                        value: "a b".into(),
+                        ..Default::default()
+                    },
+                    FormField {
+                        name: "n".into(),
+                        value: "1".into(),
+                        ..Default::default()
+                    },
+                ],
+                timeout_ms: Some(5_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("form post should succeed");
+        assert_eq!(response.status, 200);
+
+        let sent = server.await.unwrap();
+        assert!(sent.contains("q=a+b&n=1"), "{sent}");
+        assert!(
+            sent.to_lowercase()
+                .contains("content-type: application/x-www-form-urlencoded"),
+            "{sent}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sends_a_file_as_the_raw_body() {
+        let dir = std::env::temp_dir().join(format!("fiber-file-body-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("payload.bin");
+        std::fs::write(&path, b"hello file").unwrap();
+
+        let (url, server) = one_shot_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+        )
+        .await;
+
+        let state = HttpState::default();
+        send(
+            &state,
+            RequestSpec {
+                id: "file-1".into(),
+                method: "POST".into(),
+                url: format!("{url}/upload"),
+                body_kind: BodyKind::File,
+                file: path.to_string_lossy().into(),
+                timeout_ms: Some(5_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("file post should succeed");
+
+        let sent = server.await.unwrap();
+        assert!(sent.contains("hello file"), "{sent}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn cookie_jars_do_not_leak_across_sections() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 4096];
+                    let read = socket.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..read]).to_string();
+                    let response = if request.starts_with("GET /set") {
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: sid=secret\r\nContent-Length: 2\r\n\r\nok"
+                    } else if request.contains("sid=secret") {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nyes"
+                    } else {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nno"
+                    };
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+
+        let base = format!("http://{addr}");
+        let state = HttpState::default();
+        send(
+            &state,
+            RequestSpec {
+                id: "cookie-a".into(),
+                section_id: Some("section-a".into()),
+                method: "GET".into(),
+                url: format!("{base}/set"),
+                timeout_ms: Some(5_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let leaked = send(
+            &state,
+            RequestSpec {
+                id: "cookie-b".into(),
+                section_id: Some("section-b".into()),
+                method: "GET".into(),
+                url: format!("{base}/echo"),
+                timeout_ms: Some(5_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(leaked.body, "no", "another collection must not inherit the jar");
+
+        let kept = send(
+            &state,
+            RequestSpec {
+                id: "cookie-a2".into(),
+                section_id: Some("section-a".into()),
+                method: "GET".into(),
+                url: format!("{base}/echo"),
+                timeout_ms: Some(5_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(kept.body, "yes", "the same collection keeps its cookie");
+    }
+
+    #[tokio::test]
+    async fn substitutes_path_params_on_the_way_out() {
+        let (url, server) = one_shot_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+        )
+        .await;
+
+        let state = HttpState::default();
+        send(
+            &state,
+            RequestSpec {
+                id: "path-1".into(),
+                method: "GET".into(),
+                url: format!("{url}/pet/{{petId}}"),
+                path_params: vec![Header {
+                    name: "petId".into(),
+                    value: "a/b".into(),
+                }],
+                timeout_ms: Some(5_000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let sent = server.await.unwrap();
+        assert!(sent.starts_with("GET /pet/a%2Fb HTTP/1.1"), "{sent}");
     }
 }

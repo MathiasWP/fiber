@@ -16,9 +16,14 @@ export interface RequestSpec {
 	url: string;
 	headers: Header[];
 	body?: string | null;
+	bodyKind?: BodyKind;
+	form?: FormField[];
+	file?: string;
+	pathParams?: Header[];
 	timeoutMs?: number | null;
 	followRedirects?: boolean;
 	acceptInvalidCerts?: boolean;
+	proxy?: string;
 }
 
 export interface Timing {
@@ -75,13 +80,49 @@ export function historyClearAll(): Promise<void> {
 	return invoke<void>('history_clear_all');
 }
 
+export type BodyKind = 'json' | 'text' | 'form' | 'multipart' | 'file';
+
+export const BODY_KINDS: { value: BodyKind; label: string }[] = [
+	{ value: 'json', label: 'JSON' },
+	{ value: 'text', label: 'Text' },
+	{ value: 'form', label: 'Form URL-encoded' },
+	{ value: 'multipart', label: 'Multipart' },
+	{ value: 'file', label: 'File' }
+];
+
+/** One field of a form or multipart body. */
+export interface FormField {
+	name: string;
+	value: string;
+	/** Absolute path of a file to attach. Empty means a text field. */
+	file?: string;
+	isFile?: boolean;
+}
+
+/** A parameter declared by an OpenAPI operation. */
+export interface SpecParam {
+	name: string;
+	in: string;
+	required?: boolean;
+	description?: string;
+	example?: string;
+}
+
 /** A request saved inside a section. `path` is relative to the section's base URL. */
 export interface SavedRequest {
 	id: string;
 	name: string;
 	method: string;
 	path: string;
+	description?: string;
+	/** OpenAPI tag, used as a folder in the sidebar. Empty is ungrouped. */
+	tag?: string;
 	body: string;
+	bodyKind?: BodyKind;
+	form?: FormField[];
+	file?: string;
+	/** Values for `{name}` placeholders in `path`. Identity stays the template. */
+	pathParams?: Header[];
 	headers: Header[];
 }
 
@@ -194,8 +235,13 @@ export interface LoadedEndpoint {
 	path: string;
 	name: string;
 	description: string;
+	/** OpenAPI tag, used as a folder. Empty is ungrouped. */
+	tag?: string;
+	parameters?: SpecParam[];
 	/** A JSON body to start from, when the manifest was an OpenAPI document. */
 	body: string;
+	bodyKind?: BodyKind;
+	form?: FormField[];
 }
 
 export interface LoaderCache {
@@ -232,6 +278,11 @@ export interface Section {
 	auth: AuthConfig;
 	loader?: LoaderConfig | null;
 	mcp: McpAccess;
+	timeoutMs?: number;
+	followRedirects?: boolean;
+	acceptInvalidCerts?: boolean;
+	/** Empty means the system default. */
+	proxy?: string;
 	/** Hand-written requests. */
 	requests: SavedRequest[];
 	/** User data for *loaded* endpoints, keyed by `id` = `"GET /path"`. */
@@ -292,6 +343,55 @@ export function withQuery(path: string, params: QueryParam[]): string {
 	return query ? `${base}?${query}` : base;
 }
 
+/** Names of `{placeholder}` segments in a path, ignoring the query string. */
+export function pathParamNames(path: string): string[] {
+	const { base } = splitQuery(path);
+	const names: string[] = [];
+	for (const match of base.matchAll(/\{([^}]+)\}/g)) {
+		if (!names.includes(match[1])) names.push(match[1]);
+	}
+	return names;
+}
+
+/**
+ * Replaces `{name}` placeholders. Empty values are left as `{name}` so a
+ * half-filled template is obvious. Encoding matches the Rust sender: one
+ * path segment, uppercase hex, so a slash in a value does not become a
+ * new component.
+ */
+export function applyPathParams(path: string, params: Header[] | undefined): string {
+	if (!params?.length) return path;
+	let result = path;
+	for (const param of params) {
+		const name = param.name.trim();
+		if (!name || !param.value) continue;
+		result = result.replaceAll(`{${name}}`, encodePathSegment(param.value));
+	}
+	return result;
+}
+
+function encodePathSegment(value: string): string {
+	let out = '';
+	for (const char of value) {
+		const code = char.codePointAt(0) ?? 0;
+		if (
+			(code >= 0x41 && code <= 0x5a) ||
+			(code >= 0x61 && code <= 0x7a) ||
+			(code >= 0x30 && code <= 0x39) ||
+			char === '-' ||
+			char === '_' ||
+			char === '.' ||
+			char === '~'
+		) {
+			out += char;
+		} else {
+			const bytes = new TextEncoder().encode(char);
+			for (const byte of bytes) out += `%${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+		}
+	}
+	return out;
+}
+
 /** The stable identity that ties saved bodies and history to a loaded endpoint. */
 export function endpointKey(method: string, path: string): string {
 	return `${method.trim().toUpperCase()} ${path.trim()}`;
@@ -307,9 +407,14 @@ export function loaderCache(sectionId: string): Promise<LoaderCache> {
 	return invoke<LoaderCache>('loader_cache', { sectionId });
 }
 
-/** The OpenAPI request-body schema for one loaded endpoint, if it has one. */
-export function loaderSchema(sectionId: string, endpointId: string): Promise<unknown | null> {
-	return invoke<unknown | null>('loader_schema', { sectionId, endpointId });
+export interface EndpointSchemas {
+	request: unknown | null;
+	response: unknown | null;
+}
+
+/** The OpenAPI request- and response-body schemas for one loaded endpoint. */
+export function loaderSchema(sectionId: string, endpointId: string): Promise<EndpointSchemas> {
+	return invoke<EndpointSchemas>('loader_schema', { sectionId, endpointId });
 }
 
 /** Fetches the manifest untouched, for the filter editor to preview against. */
@@ -334,8 +439,12 @@ export interface ImportedEndpoint {
 	path: string;
 	name: string;
 	description: string;
+	tag?: string;
+	parameters?: SpecParam[];
 	/** A JSON body to start from, or empty when the operation takes none. */
 	body: string;
+	bodyKind?: BodyKind;
+	form?: FormField[];
 }
 
 export interface Import {

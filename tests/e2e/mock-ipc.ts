@@ -25,6 +25,10 @@ export function section(over: Partial<Section> = {}): Section {
 		auth: { kind: 'none' },
 		loader: null,
 		mcp: { enabled: true, allowWrites: false },
+		timeoutMs: 60_000,
+		followRedirects: true,
+		acceptInvalidCerts: false,
+		proxy: '',
 		requests: [],
 		overlay: [],
 		...over
@@ -63,6 +67,8 @@ export interface MockOptions {
 	loaded?: LoadedEndpoint[];
 	/** OpenAPI request-body schemas, keyed by endpoint id such as `POST /users`. */
 	schemas?: Record<string, unknown>;
+	/** OpenAPI response-body schemas, keyed the same way. */
+	responseSchemas?: Record<string, unknown>;
 	/** What a refresh reports instead. Defaults to `loaded` — no change. */
 	refreshed?: LoadedEndpoint[];
 	templates?: [string, string][];
@@ -161,7 +167,10 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 				case 'loader_cache':
 					return Promise.resolve({ loadedAt: 1, endpoints: opts.loaded ?? [] });
 				case 'loader_schema':
-					return Promise.resolve(opts.schemas?.[String(args.endpointId)] ?? null);
+					return Promise.resolve({
+						request: opts.schemas?.[String(args.endpointId)] ?? null,
+						response: opts.responseSchemas?.[String(args.endpointId)] ?? null
+					});
 
 				case 'run_loader': {
 					const endpoints = opts.refreshed ?? opts.loaded ?? [];

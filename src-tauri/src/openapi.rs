@@ -21,13 +21,42 @@ const OPERATIONS: &[&str] = &[
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct SpecParam {
+    pub name: String,
+    /// `path`, `query`, or `header`.
+    #[serde(rename = "in")]
+    pub location: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub description: String,
+    /// A default or example, used to seed the params table.
+    #[serde(default)]
+    pub example: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportedEndpoint {
     pub method: String,
     pub path: String,
     pub name: String,
     pub description: String,
+    /// First OpenAPI tag, used as a folder. Empty if the operation has none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tag: String,
+    #[serde(default)]
+    pub parameters: Vec<SpecParam>,
     /// A JSON body to start from, or empty when the operation takes none.
     pub body: String,
+    #[serde(default, skip_serializing_if = "is_json_kind")]
+    pub body_kind: crate::http::BodyKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub form: Vec<crate::http::FormField>,
+}
+
+fn is_json_kind(kind: &crate::http::BodyKind) -> bool {
+    *kind == crate::http::BodyKind::Json
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -100,16 +129,28 @@ pub fn parse(text: &str) -> Result<Import, ImportError> {
                 .unwrap_or_default()
                 .to_string();
 
-            let body = operation
-                .map(|operation| request_body(&document, operation))
-                .unwrap_or_default();
+            let tag = first_tag(operation);
+            let parameters = operation_params(&document, item, operation);
+            let (body, body_kind, form) = operation
+                .map(|operation| request_payload(&document, operation))
+                .unwrap_or_else(|| {
+                    (
+                        String::new(),
+                        crate::http::BodyKind::Json,
+                        Vec::new(),
+                    )
+                });
 
             endpoints.push(ImportedEndpoint {
                 method: method.to_ascii_uppercase(),
                 path: path.clone(),
                 name,
                 description,
+                tag,
+                parameters,
                 body,
+                body_kind,
+                form,
             });
         }
     }
@@ -189,6 +230,206 @@ pub(crate) fn request_schema(
 ) -> Option<serde_json::Value> {
     let schema = json_media(document, operation)?.get("schema")?;
     Some(resolve_schema(document, schema, &mut Vec::new()))
+}
+
+/// JSON Schema for the successful JSON response, when the operation has one.
+///
+/// Prefers 200, then any 2xx, then `default`. Used to lint the response the
+/// same way the request body is linted — after it arrives, not before.
+pub(crate) fn response_schema(
+    document: &serde_json::Value,
+    operation: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let responses = operation.get("responses").and_then(|value| value.as_object())?;
+    let picked = responses
+        .get("200")
+        .or_else(|| {
+            responses.iter().find_map(|(code, value)| {
+                code.parse::<u16>()
+                    .ok()
+                    .filter(|status| (200..300).contains(status))
+                    .map(|_| value)
+            })
+        })
+        .or_else(|| responses.get("default"))?;
+    let response = resolve(document, picked);
+    let content = response.get("content")?.as_object()?;
+    let media = content.get("application/json").or_else(|| {
+        content
+            .iter()
+            .find(|(kind, _)| kind.contains("json"))
+            .map(|(_, value)| value)
+    })?;
+    let schema = media.get("schema")?;
+    Some(resolve_schema(document, schema, &mut Vec::new()))
+}
+
+/// Body text, kind, and form fields for an operation — JSON skeleton, or a
+/// form built from `application/x-www-form-urlencoded` / `multipart/form-data`.
+pub(crate) fn request_payload(
+    document: &serde_json::Value,
+    operation: &serde_json::Map<String, serde_json::Value>,
+) -> (String, crate::http::BodyKind, Vec<crate::http::FormField>) {
+    if let Some(content) = request_content(document, operation) {
+        if content.contains_key("multipart/form-data") {
+            let fields = form_fields_from_media(document, content.get("multipart/form-data"));
+            return (String::new(), crate::http::BodyKind::Multipart, fields);
+        }
+        if content.contains_key("application/x-www-form-urlencoded") {
+            let fields =
+                form_fields_from_media(document, content.get("application/x-www-form-urlencoded"));
+            return (String::new(), crate::http::BodyKind::Form, fields);
+        }
+        if content.contains_key("application/octet-stream")
+            || content.keys().any(|kind| kind.starts_with("image/"))
+        {
+            return (String::new(), crate::http::BodyKind::File, Vec::new());
+        }
+    }
+    (
+        request_body(document, operation),
+        crate::http::BodyKind::Json,
+        Vec::new(),
+    )
+}
+
+fn request_content<'a>(
+    document: &'a serde_json::Value,
+    operation: &'a serde_json::Map<String, serde_json::Value>,
+) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+    operation
+        .get("requestBody")
+        .map(|body| resolve(document, body))
+        .and_then(|body| body.get("content"))
+        .and_then(|content| content.as_object())
+}
+
+fn form_fields_from_media(
+    document: &serde_json::Value,
+    media: Option<&serde_json::Value>,
+) -> Vec<crate::http::FormField> {
+    let Some(schema) = media.and_then(|media| media.get("schema")) else {
+        return Vec::new();
+    };
+    let resolved = resolve(document, schema);
+    let Some(properties) = resolved.get("properties").and_then(|value| value.as_object()) else {
+        return Vec::new();
+    };
+    properties
+        .iter()
+        .map(|(name, schema)| {
+            let schema = resolve(document, schema);
+            let is_file = schema
+                .get("format")
+                .and_then(|value| value.as_str())
+                .is_some_and(|format| format == "binary" || format == "byte");
+            crate::http::FormField {
+                name: name.clone(),
+                value: if is_file {
+                    String::new()
+                } else {
+                    example_string(schema)
+                },
+                file: String::new(),
+                is_file,
+            }
+        })
+        .collect()
+}
+
+fn example_string(schema: &serde_json::Value) -> String {
+    schema
+        .get("example")
+        .or_else(|| schema.get("default"))
+        .map(|value| match value {
+            serde_json::Value::String(text) => text.clone(),
+            other => other.to_string(),
+        })
+        .unwrap_or_default()
+}
+
+/// Path-item parameters plus operation parameters, operation winning on name.
+pub(crate) fn operation_params(
+    document: &serde_json::Value,
+    path_item: &serde_json::Map<String, serde_json::Value>,
+    operation: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Vec<SpecParam> {
+    let mut params = Vec::new();
+    collect_params(document, path_item.get("parameters"), &mut params);
+    if let Some(operation) = operation {
+        collect_params(document, operation.get("parameters"), &mut params);
+    }
+    params
+}
+
+fn collect_params(
+    document: &serde_json::Value,
+    raw: Option<&serde_json::Value>,
+    into: &mut Vec<SpecParam>,
+) {
+    let Some(items) = raw.and_then(|value| value.as_array()) else {
+        return;
+    };
+    for item in items {
+        let parameter = resolve(document, item);
+        let Some(name) = parameter.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let location = parameter
+            .get("in")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !matches!(location, "path" | "query" | "header") {
+            continue;
+        }
+        let required = parameter
+            .get("required")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(location == "path");
+        let description = parameter
+            .get("description")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string();
+        let example = parameter
+            .get("example")
+            .or_else(|| parameter.get("schema").and_then(|schema| {
+                let schema = resolve(document, schema);
+                schema.get("example").or_else(|| schema.get("default"))
+            }))
+            .map(|value| match value {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            })
+            .unwrap_or_default();
+
+        let parsed = SpecParam {
+            name: name.to_string(),
+            location: location.to_string(),
+            required,
+            description,
+            example,
+        };
+        if let Some(existing) = into
+            .iter_mut()
+            .find(|candidate| candidate.name == parsed.name && candidate.location == parsed.location)
+        {
+            *existing = parsed;
+        } else {
+            into.push(parsed);
+        }
+    }
+}
+
+pub(crate) fn first_tag(
+    operation: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> String {
+    operation
+        .and_then(|operation| operation.get("tags"))
+        .and_then(|tags| tags.as_array())
+        .and_then(|tags| tags.iter().find_map(|tag| tag.as_str()))
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Resolves local schema references recursively. A circular reference remains
@@ -556,6 +797,117 @@ mod tests {
     }
 
     #[test]
+    fn reads_tags_path_params_and_form_fields() {
+        let spec = r##"{
+            "openapi": "3.0.0",
+            "info": { "title": "Pets", "version": "1" },
+            "paths": {
+                "/pet/{petId}": {
+                    "get": {
+                        "tags": ["pet", "store"],
+                        "operationId": "getPet",
+                        "description": "Find a pet by id",
+                        "parameters": [
+                            {
+                                "name": "petId",
+                                "in": "path",
+                                "required": true,
+                                "description": "Pet id",
+                                "example": "123"
+                            },
+                            {
+                                "name": "pretty",
+                                "in": "query",
+                                "schema": { "type": "boolean", "default": true }
+                            }
+                        ]
+                    }
+                },
+                "/upload": {
+                    "post": {
+                        "tags": ["pet"],
+                        "requestBody": {
+                            "content": {
+                                "multipart/form-data": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "note": { "type": "string" },
+                                            "file": { "type": "string", "format": "binary" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let import = parse(spec).unwrap();
+        let get = import
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.method == "GET")
+            .unwrap();
+        assert_eq!(get.tag, "pet");
+        assert_eq!(get.description, "Find a pet by id");
+        assert_eq!(get.parameters[0].name, "petId");
+        assert_eq!(get.parameters[0].location, "path");
+        assert_eq!(get.parameters[0].example, "123");
+        assert_eq!(get.parameters[1].name, "pretty");
+        assert_eq!(get.parameters[1].location, "query");
+
+        let upload = import
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.path == "/upload")
+            .unwrap();
+        assert_eq!(upload.body_kind, crate::http::BodyKind::Multipart);
+        assert_eq!(upload.body, "");
+        let note = upload.form.iter().find(|field| field.name == "note").unwrap();
+        assert!(!note.is_file);
+        let file = upload.form.iter().find(|field| field.name == "file").unwrap();
+        assert!(file.is_file);
+    }
+
+    #[test]
+    fn response_schema_prefers_a_successful_json_response() {
+        let spec = serde_json::json!({
+            "paths": {
+                "/users": {
+                    "get": {
+                        "responses": {
+                            "500": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": { "type": "string" }
+                                    }
+                                }
+                            },
+                            "200": {
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": { "id": { "type": "integer" } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let paths = spec["paths"].as_object().unwrap();
+        let item = paths["/users"].as_object().unwrap();
+        let operation = item["get"].as_object().unwrap();
+        let schema = response_schema(&spec, operation).expect("200 schema");
+        assert_eq!(schema.pointer("/properties/id/type").and_then(|v| v.as_str()), Some("integer"));
+    }
+
+    #[test]
     fn reads_yaml_too() {
         // The form most specs are actually handed over in.
         let spec = "
@@ -632,6 +984,7 @@ paths:
                 name: String::new(),
                 description: String::new(),
                 body: String::new(),
+                ..Default::default()
             }
             .key()
         );
@@ -910,9 +1263,20 @@ paths:
         }"##;
 
         let import = parse(spec).unwrap();
-        for endpoint in &import.endpoints {
-            assert_eq!(endpoint.body, "", "{} should carry no body", endpoint.path);
-        }
+        let get = import
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.method == "GET")
+            .unwrap();
+        assert_eq!(get.body, "");
+        let upload = import
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.path == "/upload")
+            .unwrap();
+        assert_eq!(upload.body, "");
+        assert_eq!(upload.body_kind, crate::http::BodyKind::Form);
+        assert_eq!(upload.form[0].name, "file");
     }
 }
 
@@ -941,5 +1305,13 @@ mod real_world {
         );
         // `parameters` sits alongside operations in a path item and is not one.
         assert!(!import.endpoints.iter().any(|e| e.method == "PARAMETERS"));
+        assert!(
+            import.endpoints.iter().any(|e| !e.tag.is_empty()),
+            "petstore operations are tagged"
+        );
+        assert!(
+            import.endpoints.iter().any(|e| e.path.contains('{') && !e.parameters.is_empty()),
+            "path parameters land on the operations that declare them"
+        );
     }
 }

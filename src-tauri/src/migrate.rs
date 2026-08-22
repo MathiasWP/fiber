@@ -262,6 +262,7 @@ mod tests {
             mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
+        ..Default::default()
         };
         crate::store::save(&dir, &section).unwrap();
 

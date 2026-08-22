@@ -923,3 +923,120 @@ test.describe('what the collection header tells you', () => {
 		await expect(page.locator('.tooltip')).toContainText('Section settings');
 	});
 });
+
+test('query params are available on POST', async ({ page }) => {
+	await install(page, {
+		sections: [
+			section({
+				requests: [
+					{ id: 'r1', name: 'Create user', method: 'POST', path: '/users', body: '{}', headers: [] }
+				]
+			})
+		]
+	});
+	await page.goto('/');
+	await page.getByText('Create user').click();
+
+	await expect(page.getByText('Body', { exact: true })).toBeVisible();
+	await page.getByText('Params', { exact: true }).click();
+	await page.getByPlaceholder('Parameter').fill('pretty');
+	await page.getByPlaceholder('Value').fill('1');
+
+	await expect(page.locator('input[placeholder="/user/get"]')).toHaveValue('/users?pretty=1');
+});
+
+test('OpenAPI tags become folders and descriptions appear under the URL', async ({ page }) => {
+	await install(page, {
+		sections: [section({ loader })],
+		loaded: [
+			{
+				method: 'GET',
+				path: '/pet',
+				name: 'listPets',
+				description: 'All of the pets currently in the store',
+				tag: 'pet',
+				body: ''
+			},
+			{
+				method: 'GET',
+				path: '/store/inventory',
+				name: 'getInventory',
+				description: '',
+				tag: 'store',
+				body: ''
+			}
+		]
+	});
+	await page.goto('/');
+
+	await expect(page.getByText('pet', { exact: true })).toBeVisible();
+	await expect(page.getByText('store', { exact: true })).toBeVisible();
+	await expect(page.getByText('listPets')).toBeVisible();
+
+	await page.getByText('listPets').click();
+	await expect(page.getByText('All of the pets currently in the store')).toBeVisible();
+
+	await page.getByRole('button', { name: /^pet/ }).click();
+	await expect(page.getByText('listPets')).toBeHidden();
+	await expect(page.getByText('getInventory')).toBeVisible();
+});
+
+test('a collection has HTTP settings of its own', async ({ page }) => {
+	await install(page, { sections: [section()] });
+	await page.goto('/');
+	await page.getByLabel('Settings for Acme').click();
+
+	await expect(page.getByText('Timeout (ms)')).toBeVisible();
+	await expect(page.getByText('Follow redirects')).toBeVisible();
+	await expect(page.getByText('Allow invalid TLS certificates')).toBeVisible();
+	await expect(page.getByPlaceholder('http://127.0.0.1:8080')).toBeVisible();
+});
+
+test('form bodies can be chosen instead of JSON', async ({ page }) => {
+	await install(page, {
+		sections: [
+			section({
+				requests: [
+					{ id: 'r1', name: 'Create user', method: 'POST', path: '/users', body: '{}', headers: [] }
+				]
+			})
+		]
+	});
+	await page.goto('/');
+	await page.getByText('Create user').click();
+
+	await page.locator('select').selectOption('form');
+	await expect(page.getByPlaceholder('Field')).toBeVisible();
+	await expect(page.getByText('application/x-www-form-urlencoded')).toBeVisible();
+});
+
+test('an image response is shown as a picture', async ({ page }) => {
+	await install(page, {
+		sections: [
+			section({
+				requests: [
+					{ id: 'r1', name: 'Avatar', method: 'GET', path: '/avatar.png', body: '', headers: [] }
+				]
+			})
+		],
+		deferSend: true
+	});
+	await page.goto('/');
+	await page.getByText('Avatar').click();
+	await page.getByRole('button', { name: 'Send' }).click();
+	await page.evaluate(() =>
+		window.__FIBER_TEST__.settle({
+			status: 200,
+			statusText: 'OK',
+			finalUrl: 'https://api.acme.com/avatar.png',
+			headers: [{ name: 'content-type', value: 'image/png' }],
+			isBinary: true,
+			truncated: false,
+			sizeBytes: 70,
+			timing: { ttfbMs: 5, totalMs: 9 },
+			body: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+		})
+	);
+
+	await expect(page.getByRole('img', { name: 'Response' })).toBeVisible();
+});

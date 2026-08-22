@@ -109,6 +109,9 @@ struct EndpointSummary {
     method: String,
     path: String,
     name: String,
+    description: String,
+    tag: String,
+    parameters: Vec<crate::openapi::SpecParam>,
     /// True when a loader reported this rather than a person writing it.
     loaded: bool,
 }
@@ -121,7 +124,7 @@ struct SectionArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct SearchArgs {
-    /// Matched against endpoint name, method and path. Empty lists everything.
+    /// Matched against endpoint name, method, path, tag and description. Empty lists everything.
     #[serde(default)]
     query: String,
 }
@@ -202,6 +205,9 @@ impl FiberMcp {
                 method: request.method.clone(),
                 path: request.path.clone(),
                 name: request.name.clone(),
+                description: request.description.clone(),
+                tag: request.tag.clone(),
+                parameters: Vec::new(),
                 loaded: false,
             })
             .collect();
@@ -214,6 +220,9 @@ impl FiberMcp {
                 method: endpoint.method,
                 path: endpoint.path,
                 name: endpoint.name,
+                description: endpoint.description,
+                tag: endpoint.tag,
+                parameters: endpoint.parameters,
                 loaded: true,
             }));
         }
@@ -246,6 +255,7 @@ impl FiberMcp {
                     follow_redirects: true,
                     accept_invalid_certs: false,
                     sensitive_header: None,
+                ..Default::default()
                 };
 
                 // `None` for the app handle: there's no window here, so a
@@ -332,7 +342,7 @@ impl FiberMcp {
     }
 
     #[tool(
-        description = "Search endpoints across shared collections by name, method or path. Start here to find what to call."
+        description = "Search endpoints across shared collections by name, method, path, tag or description. Start here to find what to call."
     )]
     async fn search_endpoints(
         &self,
@@ -345,7 +355,10 @@ impl FiberMcp {
             .flat_map(|section| self.endpoints_of(section))
             .filter(|endpoint| {
                 needle.is_empty()
-                    || format!("{} {} {}", endpoint.name, endpoint.method, endpoint.path)
+                    || format!(
+                        "{} {} {} {} {}",
+                        endpoint.name, endpoint.method, endpoint.path, endpoint.description, endpoint.tag
+                    )
                         .to_lowercase()
                         .contains(&needle)
             })
@@ -402,6 +415,7 @@ impl FiberMcp {
             follow_redirects: true,
             accept_invalid_certs: false,
             sensitive_header: None,
+        ..Default::default()
         };
 
         let at = crate::history::now_millis();
@@ -481,7 +495,7 @@ impl FiberMcp {
             McpError::invalid_params("That section has no loader.".to_string(), None)
         })?;
 
-        let (endpoints, schemas, pages) = loader::run(&config, self.fetcher(&section))
+        let (endpoints, schemas, response_schemas, pages) = loader::run(&config, self.fetcher(&section))
             .await
             .map_err(|err| McpError::internal_error(err.to_string(), None))?;
 
@@ -494,6 +508,7 @@ impl FiberMcp {
                 loaded_at: crate::history::now_millis(),
                 endpoints: endpoints.clone(),
                 schemas,
+                response_schemas,
             },
         );
 
@@ -741,8 +756,10 @@ mod tests {
                 path: "/user/42".into(),
                 body: String::new(),
                 headers: vec![],
+                ..Default::default()
             }],
             overlay: vec![],
+        ..Default::default()
         }
     }
 
@@ -846,8 +863,10 @@ mod tests {
                     name: "createOrder".into(),
                     description: String::new(),
                     body: String::new(),
+                    ..Default::default()
                 }],
                 schemas: Default::default(),
+                response_schemas: Default::default(),
             },
         )
         .unwrap();

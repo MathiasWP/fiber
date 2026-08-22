@@ -10,17 +10,21 @@
 	import { listen } from '@tauri-apps/api/event';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import {
+		applyPathParams,
+		BODY_KINDS,
 		cancelRequest,
 		flushComplete,
 		formatBytes,
 		JSON_TOOLING_LIMIT,
 		loaderSchema,
 		parseQuery,
+		pathParamNames,
 		resolveUrl,
 		sendRequest,
 		statusColor,
 		tryFormatJson,
 		withQuery,
+		type BodyKind,
 		type QueryParam,
 		type SavedRequest,
 		type Section
@@ -43,6 +47,10 @@
 		method: 'GET',
 		path: '',
 		body: '{\n  "hello": "world"\n}',
+		bodyKind: 'json',
+		form: [],
+		file: '',
+		pathParams: [],
 		headers: []
 	});
 
@@ -63,11 +71,15 @@
 	/** The loader's generated body for the selected endpoint, if it has one. */
 	const manifestBody = $derived(selection ? collections.manifestBodyFor(selection) : null);
 	let bodySchema = $state<unknown | null>(null);
+	let responseSchema = $state<unknown | null>(null);
 	let schemaToken = 0;
 	/** Last section/request the schema effect armed for, so a loader refresh
 	 *  can refetch without flashing the banner off first. */
 	let schemaKey = '';
-	const bodySchemaErrors = $derived(validateJsonBody(bodySchema, draft.body));
+	const bodyKind = $derived<BodyKind>(draft.bodyKind ?? 'json');
+	const bodySchemaErrors = $derived(
+		bodyKind === 'json' ? validateJsonBody(bodySchema, draft.body) : []
+	);
 	const requestKey = $derived(selection?.request.id ?? SCRATCH_ID);
 	const baseUrl = $derived(selection?.section.baseUrl ?? '');
 	const bodilessMethod = $derived(draft.method === 'GET' || draft.method === 'HEAD');
@@ -76,13 +88,17 @@
 	/**
 	 * The request pane's visible tab.
 	 *
-	 * `requestTab` is what the user last asked for; `shownRequestTab` is what
-	 * actually has a trigger. A GET has no body tab and a POST has no params
-	 * tab, so the other of those two is shown instead — without an effect that
-	 * writes the user's choice back when the method changes.
+	 * Params is always available — query strings are not GET-only. Body is
+	 * hidden for GET/HEAD, which have nothing to send; if the last choice was
+	 * Body, Params is shown instead rather than writing the user's preference
+	 * back.
 	 */
 	const shownRequestTab = $derived(
-		requestTab === 'headers' ? 'headers' : bodilessMethod ? 'params' : 'body'
+		requestTab === 'headers'
+			? 'headers'
+			: requestTab === 'params' || bodilessMethod
+				? 'params'
+				: 'body'
 	);
 
 	// An entry opened from the History tab wins; otherwise a request shows its
@@ -114,12 +130,16 @@
 		if (key !== schemaKey) {
 			schemaKey = key;
 			bodySchema = null;
+			responseSchema = null;
 		}
 		if (!selected?.section.loader) return;
 		void loadedAt;
 		loaderSchema(selected.section.id, selected.request.id)
-			.then((schema) => {
-				if (token === schemaToken) bodySchema = schema;
+			.then((schemas) => {
+				if (token === schemaToken) {
+					bodySchema = schemas.request;
+					responseSchema = schemas.response;
+				}
 			})
 			.catch(() => {
 				// A loader schema is an enhancement. The request stays editable if
@@ -183,7 +203,7 @@
 	let resolveToken = 0;
 	$effect(() => {
 		const base = baseUrl;
-		const path = draft.path;
+		const path = applyPathParams(draft.path, draft.pathParams);
 		const token = ++resolveToken;
 		resolveUrl(base, path).then((value) => {
 			if (token === resolveToken) resolved = value;
@@ -279,6 +299,21 @@
 		commitParams();
 	}
 
+	function removePathParam(index: number): void {
+		const params = draft.pathParams ?? [];
+		if (index >= params.length) return;
+		params[index].value = '';
+	}
+
+	function removeFormField(index: number): void {
+		if (!draft.form) return;
+		if (index === draft.form.length - 1) {
+			draft.form[index] = { name: '', value: '', file: '', isFile: draft.form[index].isFile };
+			return;
+		}
+		draft.form.splice(index, 1);
+	}
+
 	/**
 	 * Whether a row is worth offering to delete.
 	 *
@@ -321,6 +356,30 @@
 		}
 	});
 
+	$effect(() => {
+		const names = pathParamNames(draft.path);
+		const current = draft.pathParams ?? [];
+		const held = new Map(current.map((param) => [param.name, param.value]));
+		const next = names.map((name) => ({ name, value: held.get(name) ?? '' }));
+		if (next.length === 0 && current.length === 0) return;
+		const same =
+			next.length === current.length &&
+			next.every((param, index) => {
+				const existing = current[index];
+				return existing?.name === param.name && existing.value === param.value;
+			});
+		if (!same) draft.pathParams = next;
+	});
+
+	$effect(() => {
+		if (bodyKind !== 'form' && bodyKind !== 'multipart') return;
+		if (!draft.form) draft.form = [];
+		const last = draft.form[draft.form.length - 1];
+		if (!last || last.name.trim() || last.value.trim() || last.file?.trim()) {
+			draft.form.push({ name: '', value: '', file: '', isFile: false });
+		}
+	});
+
 	function commitParams() {
 		const next = withQuery(draft.path, queryParams);
 		if (next === draft.path) return;
@@ -329,6 +388,9 @@
 	}
 
 	const filledParams = $derived(queryParams.filter((param) => param.name.trim().length > 0));
+	const filledPathParams = $derived(
+		(draft.pathParams ?? []).filter((param) => param.name.trim().length > 0)
+	);
 
 	const filledHeaders = $derived(draft.headers.filter((header) => header.name.trim().length > 0));
 
@@ -382,6 +444,22 @@
 	 */
 	const oversized = $derived(shownBody.length > JSON_TOOLING_LIMIT);
 
+	const responseSchemaErrors = $derived.by(() => {
+		if (!responseSchema || !shown?.response || shown.response.isBinary || oversized) return [];
+		return validateJsonBody(responseSchema, shownBody);
+	});
+
+	const responseImage = $derived.by(() => {
+		const response = shown?.response;
+		if (!response?.isBinary) return null;
+		const type =
+			response.headers.find((header) => header.name.toLowerCase() === 'content-type')?.value ??
+			'';
+		const mime = type.split(';')[0].trim() || 'application/octet-stream';
+		if (!mime.startsWith('image/')) return null;
+		return `data:${mime};base64,${shownBody}`;
+	});
+
 	/** Body streamed so far, while the request is still in flight. */
 	const streaming = $derived(shown?.pending ? (shown.body ?? '') : '');
 
@@ -402,8 +480,10 @@
 		// A JSON body with no declared type is almost always a mistake, so we
 		// fill it in — but only when the user hasn't said otherwise.
 		const hasContentType = outgoing.some((h) => h.name.toLowerCase() === 'content-type');
-		const sendBody = !bodilessMethod && draft.body.trim().length > 0;
-		if (sendBody && !hasContentType) {
+		const kind = bodyKind;
+		const sendTextBody =
+			!bodilessMethod && (kind === 'json' || kind === 'text') && draft.body.trim().length > 0;
+		if (sendTextBody && kind === 'json' && !hasContentType) {
 			outgoing.push({ name: 'Content-Type', value: 'application/json' });
 		}
 
@@ -415,7 +495,7 @@
 			at: Date.now(),
 			method: draft.method,
 			url,
-			requestBody: sendBody ? draft.body : ''
+			requestBody: sendTextBody ? draft.body : ''
 		});
 
 		// Chunks can land faster than the editor can usefully repaint, so they are
@@ -439,10 +519,17 @@
 					method: draft.method,
 					url,
 					headers: outgoing,
-					body: sendBody ? draft.body : null,
-					timeoutMs: 60_000,
-					followRedirects: true,
-					acceptInvalidCerts: false
+					body: sendTextBody ? draft.body : null,
+					bodyKind: kind,
+					form: (draft.form ?? [])
+						.filter((field) => field.name.trim().length > 0)
+						.map((field) => ({ ...field })),
+					file: draft.file ?? '',
+					pathParams: (draft.pathParams ?? []).map((param) => ({ ...param })),
+					timeoutMs: selection?.section.timeoutMs ?? 60_000,
+					followRedirects: selection?.section.followRedirects ?? true,
+					acceptInvalidCerts: selection?.section.acceptInvalidCerts ?? false,
+					proxy: selection?.section.proxy ?? ''
 				},
 				(event) => {
 					if (event.event === 'start') {
@@ -621,6 +708,14 @@
 						</button>
 					{/if}
 				</div>
+				{#if draft.description}
+					<p
+						class="px-3 py-1.5 text-2.5 text-muted leading-relaxed line-clamp-2 border-b border-border bg-panel"
+						title={draft.description}
+					>
+						{draft.description}
+					</p>
+				{/if}
 
 				<!-- Input | output. This split is the app. -->
 				<PaneGroup direction="horizontal" autoSaveId="fiber:main" class="min-h-0 min-w-0">
@@ -636,16 +731,15 @@
 								<Tabs.List
 									class="flex items-center gap-1 px-2 h-9 border-b border-border bg-panel shrink-0"
 								>
-									<!-- One or the other, never both: a GET has no body to edit and
-									 a POST's parameters belong in the URL bar. -->
-									{#if bodilessMethod}
-										<Tabs.Trigger
-											value="params"
-											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
-										>
-											Params{filledParams.length ? ` (${filledParams.length})` : ''}
-										</Tabs.Trigger>
-									{:else}
+									<Tabs.Trigger
+										value="params"
+										class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
+									>
+										Params{filledParams.length + filledPathParams.length
+											? ` (${filledParams.length + filledPathParams.length})`
+											: ''}
+									</Tabs.Trigger>
+									{#if !bodilessMethod}
 										<Tabs.Trigger
 											value="body"
 											class="px-2 py-1 rounded text-xs text-muted data-[state=active]:bg-raised data-[state=active]:text-text hover:text-text transition-colors"
@@ -661,13 +755,24 @@
 									</Tabs.Trigger>
 
 									{#if shownRequestTab === 'body'}
-										{#if manifestBody !== null}
+										<select
+											class="input-base ml-auto h-7 w-auto text-xs"
+											value={bodyKind}
+											onchange={(event) => {
+												draft.bodyKind = (event.currentTarget.value || 'json') as BodyKind;
+											}}
+										>
+											{#each BODY_KINDS as kind (kind.value)}
+												<option value={kind.value}>{kind.label}</option>
+											{/each}
+										</select>
+										{#if manifestBody !== null && bodyKind === 'json'}
 											<!-- Back to the generated skeleton, placeholders and all.
 											     Filling a body in is destructive to the gaps that guided
 											     it; this is the way back. Undo undoes it, so it need not
 											     ask first. -->
 											<button
-												class="btn-ghost ml-auto text-xs px-2 py-1"
+												class="btn-ghost text-xs px-2 py-1"
 												disabled={draft.body === manifestBody}
 												title={draft.body === manifestBody
 													? 'The body already matches the generated one'
@@ -678,7 +783,11 @@
 											</button>
 										{/if}
 										<button
-											class="btn-ghost text-xs px-2 py-1 {manifestBody === null ? 'ml-auto' : ''}"
+											class="btn-ghost text-xs px-2 py-1 {manifestBody === null ||
+											bodyKind !== 'json'
+												? 'ml-0'
+												: ''}"
+											disabled={bodyKind !== 'json' && bodyKind !== 'text'}
 											onclick={() => bodyEditor?.format()}
 										>
 											Format
@@ -687,32 +796,146 @@
 								</Tabs.List>
 
 								<Tabs.Content value="body" class="flex-1 min-h-0 flex flex-col">
-									{#key draft.id}
-										<div class="flex-1 min-h-0">
-											<Editor
-												bind:this={bodyEditor}
-												bind:value={draft.body}
-												placeholder={'{}'}
-												scope="request"
-												schema={bodySchema}
-											/>
-										</div>
-									{/key}
-									{#if bodySchemaErrors.length}
-										<div class="border-t border-bad/40 bg-bad/8 px-3 py-2 text-xs text-bad" role="alert">
-											<p class="font-medium">Request body does not match the OpenAPI schema</p>
-											<ul class="mt-1 list-disc pl-4 font-mono text-2.5 leading-relaxed">
-												{#each bodySchemaErrors as error (error)}
-													<li>{error}</li>
+									{#if bodyKind === 'form' || bodyKind === 'multipart'}
+										<div class="flex-1 min-h-0 overflow-y-auto p-2">
+											<div class="flex flex-col gap-1">
+												{#each draft.form ?? [] as field, index (field)}
+													<div class="flex gap-1 items-center">
+														<input
+															bind:value={field.name}
+															spellcheck="false"
+															placeholder="Field"
+															class="input-base flex-1 font-mono text-xs"
+														/>
+														{#if bodyKind === 'multipart'}
+															<label
+																class="flex items-center gap-1 text-2.5 text-muted shrink-0"
+																title="Send this field as a file"
+															>
+																<input type="checkbox" bind:checked={field.isFile} />
+																File
+															</label>
+														{/if}
+														{#if field.isFile && bodyKind === 'multipart'}
+															<input
+																bind:value={field.file}
+																spellcheck="false"
+																placeholder="/path/to/file"
+																class="input-base flex-[2] font-mono text-xs"
+															/>
+														{:else}
+															<input
+																bind:value={field.value}
+																spellcheck="false"
+																placeholder="Value"
+																class="input-base flex-[2] font-mono text-xs"
+															/>
+														{/if}
+														<span class="w-6 shrink-0">
+															{#if removable(draft.form ?? [], index)}
+																<button
+																	class="w-6 h-6 grid place-items-center rounded text-muted hover:bg-bad/10 hover:text-bad transition-colors"
+																	title={index === (draft.form?.length ?? 0) - 1
+																		? 'Clear'
+																		: 'Remove field'}
+																	onclick={() => removeFormField(index)}
+																>
+																	<span class="i-lucide-x text-3"></span>
+																</button>
+															{/if}
+														</span>
+													</div>
 												{/each}
-											</ul>
+											</div>
+											<p class="mt-2 text-2.5 text-muted">
+												{#if bodyKind === 'multipart'}
+													Multipart fields. Tick File and paste an absolute path — Fiber reads
+													the file when you send.
+												{:else}
+													Sent as <span class="font-mono">application/x-www-form-urlencoded</span>.
+												{/if}
+											</p>
 										</div>
+									{:else if bodyKind === 'file'}
+										<div class="flex-1 min-h-0 p-3 flex flex-col gap-2">
+											<label class="flex flex-col gap-1">
+												<span class="text-xs text-muted">File path</span>
+												<input
+													bind:value={draft.file}
+													spellcheck="false"
+													placeholder="/absolute/path/to/file"
+													class="input-base font-mono text-xs"
+												/>
+											</label>
+											<p class="text-2.5 text-muted leading-relaxed">
+												The file is read when you send, not stored in the collection. Paste an
+												absolute path.
+											</p>
+										</div>
+									{:else}
+										{#key draft.id}
+											<div class="flex-1 min-h-0">
+												<Editor
+													bind:this={bodyEditor}
+													bind:value={draft.body}
+													placeholder={bodyKind === 'json' ? '{}' : ''}
+													scope="request"
+													schema={bodyKind === 'json' ? bodySchema : null}
+												/>
+											</div>
+										{/key}
+										{#if bodySchemaErrors.length}
+											<div
+												class="border-t border-bad/40 bg-bad/8 px-3 py-2 text-xs text-bad"
+												role="alert"
+											>
+												<p class="font-medium">Request body does not match the OpenAPI schema</p>
+												<ul class="mt-1 list-disc pl-4 font-mono text-2.5 leading-relaxed">
+													{#each bodySchemaErrors as error (error)}
+														<li>{error}</li>
+													{/each}
+												</ul>
+											</div>
+										{/if}
 									{/if}
 								</Tabs.Content>
 
 								<!-- Editing a row rewrites the query on `draft.path`, so the URL
 								     bar above updates as you type and the two never disagree. -->
 								<Tabs.Content value="params" class="flex-1 min-h-0 overflow-y-auto p-2">
+									{#if filledPathParams.length || pathParamNames(draft.path).length}
+										<p class="mb-1 text-2.5 text-muted">Path</p>
+										<div class="flex flex-col gap-1 mb-3">
+											{#each draft.pathParams ?? [] as param, index (param.name)}
+												<div class="flex gap-1">
+													<input
+														value={param.name}
+														readonly
+														spellcheck="false"
+														class="input-base flex-1 font-mono text-xs opacity-70"
+													/>
+													<input
+														bind:value={param.value}
+														spellcheck="false"
+														placeholder="Value"
+														class="input-base flex-[2] font-mono text-xs"
+													/>
+													<span class="w-6 shrink-0">
+														{#if param.value}
+															<button
+																class="w-6 h-6 grid place-items-center rounded text-muted hover:bg-bad/10 hover:text-bad transition-colors"
+																title="Clear"
+																onclick={() => removePathParam(index)}
+															>
+																<span class="i-lucide-x text-3"></span>
+															</button>
+														{/if}
+													</span>
+												</div>
+											{/each}
+										</div>
+										<p class="mb-1 text-2.5 text-muted">Query</p>
+									{/if}
 									<div class="flex flex-col gap-1">
 										{#each queryParams as param, index (param)}
 											<div class="flex gap-1">
@@ -730,13 +953,13 @@
 													placeholder="Value"
 													class="input-base flex-[2] font-mono text-xs"
 												/>
-												<!-- Reserved whether or not it is drawn, so the inputs
-												     don't change width on the last row. -->
 												<span class="w-6 shrink-0">
 													{#if removable(queryParams, index)}
 														<button
 															class="w-6 h-6 grid place-items-center rounded text-muted hover:bg-bad/10 hover:text-bad transition-colors"
-															title={index === queryParams.length - 1 ? 'Clear' : 'Remove parameter'}
+															title={index === queryParams.length - 1
+																? 'Clear'
+																: 'Remove parameter'}
 															onclick={() => removeParam(index)}
 														>
 															<span class="i-lucide-x text-3"></span>
@@ -747,7 +970,8 @@
 										{/each}
 									</div>
 									<p class="mt-2 text-2.5 text-muted">
-										Appended to the URL as a query string. Values are encoded for you.
+										Query values are appended to the URL. Path values replace
+										{'{placeholders}'} when you send.
 									</p>
 								</Tabs.Content>
 
@@ -782,9 +1006,10 @@
 										{/each}
 									</div>
 									<p class="mt-2 text-2.5 text-muted">
-										Content-Type defaults to application/json when a body is present. A
-										collection's own auth header is added on the way out and is set in its
-										settings — a Cookie typed here joins it rather than replacing it.
+										Content-Type defaults to application/json for JSON bodies. Form and
+										multipart set their own. A collection's own auth header is added on the
+										way out and is set in its settings — a Cookie typed here joins it rather
+										than replacing it.
 									</p>
 								</Tabs.Content>
 							</Tabs.Root>
@@ -900,14 +1125,35 @@
 
 									<ContextMenu.Root>
 										<ContextMenu.Trigger class="flex-1 min-h-0 flex flex-col">
-											<Tabs.Content value="pretty" class="flex-1 min-h-0">
-												{#if response.isBinary}
+											<Tabs.Content value="pretty" class="flex-1 min-h-0 flex flex-col">
+												{#if responseImage}
+													<div class="h-full overflow-auto p-3 grid place-items-center">
+														<img
+															src={responseImage}
+															alt="Response"
+															class="max-h-full max-w-full object-contain"
+														/>
+													</div>
+												{:else if response.isBinary}
 													<p class="p-3 text-xs text-muted">
 														Binary response ({formatBytes(response.sizeBytes)}). Switch to Raw for
 														base64.
 													</p>
 												{:else}
 													<Editor value={responseText} readonly language={responseLanguage} scope="response" />
+												{/if}
+												{#if responseSchemaErrors.length}
+													<div
+														class="border-t border-bad/40 bg-bad/8 px-3 py-2 text-xs text-bad"
+														role="alert"
+													>
+														<p class="font-medium">Response does not match the OpenAPI schema</p>
+														<ul class="mt-1 list-disc pl-4 font-mono text-2.5 leading-relaxed">
+															{#each responseSchemaErrors as error (error)}
+																<li>{error}</li>
+															{/each}
+														</ul>
+													</div>
 												{/if}
 											</Tabs.Content>
 

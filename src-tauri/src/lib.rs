@@ -103,12 +103,13 @@ mod gui {
             dir: &Path,
             section_id: &str,
             endpoint_id: &str,
-        ) -> Option<serde_json::Value> {
+        ) -> EndpointSchemas {
             let mut map = self.lock();
-            Self::fill(&mut map, dir, section_id)
-                .schemas
-                .get(endpoint_id)
-                .cloned()
+            let cache = Self::fill(&mut map, dir, section_id);
+            EndpointSchemas {
+                request: cache.schemas.get(endpoint_id).cloned(),
+                response: cache.response_schemas.get(endpoint_id).cloned(),
+            }
         }
 
         fn endpoints(&self, dir: &Path, section_id: &str) -> Vec<loader::LoadedEndpoint> {
@@ -133,6 +134,13 @@ mod gui {
     struct LoaderCacheView {
         loaded_at: i64,
         endpoints: Vec<loader::LoadedEndpoint>,
+    }
+
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EndpointSchemas {
+        request: Option<serde_json::Value>,
+        response: Option<serde_json::Value>,
     }
 
     /// Sends, and records the outcome. History is written here rather than by the
@@ -309,6 +317,7 @@ mod gui {
                     follow_redirects: true,
                     accept_invalid_certs: false,
                     sensitive_header: None,
+                ..Default::default()
                 };
 
                 let recapture = BrowserRecapture::new(app);
@@ -351,7 +360,7 @@ mod gui {
         let config = section.loader.clone().ok_or(LoaderError::NoUrl)?;
         let fetcher = loader_fetcher(&app, http_state.inner(), auth_state.inner(), &section);
 
-        let (endpoints, schemas, pages) = loader::run(&config, fetcher).await?;
+        let (endpoints, schemas, response_schemas, pages) = loader::run(&config, fetcher).await?;
 
         let previous = mem.endpoints(&paths.loaders, &section_id);
         let (added, removed) = loader::diff(&previous, &endpoints);
@@ -361,6 +370,7 @@ mod gui {
             loaded_at,
             endpoints: endpoints.clone(),
             schemas,
+            response_schemas,
         };
         if let Err(err) = loader::write_cache(&paths.loaders, &section_id, &cache) {
             ::log::warn!("could not cache loader output: {err}");
@@ -439,20 +449,21 @@ mod gui {
         Ok(mem.view(&paths.loaders, &section_id))
     }
 
-    /// Retrieves one request-body schema only when its endpoint is opened.
+    /// Retrieves the request and response schemas for one endpoint, only when
+    /// it is opened — a large OpenAPI document repeats the same components
+    /// hundreds of times, and the editor only needs the open one.
     #[tauri::command]
     async fn loader_schema(
         paths: State<'_, Paths>,
         mem: State<'_, LoaderMem>,
         section_id: String,
         endpoint_id: String,
-    ) -> Result<Option<serde_json::Value>, LoaderError> {
+    ) -> Result<EndpointSchemas, LoaderError> {
         Ok(mem.schema(&paths.loaders, &section_id, &endpoint_id))
     }
 
-    /// Parses an OpenAPI or Swagger document. Pure — the frontend decides what to
-    /// do with the result, and nothing is written until the user confirms.
-    /// The document can be megabytes, so the parse happens off the event loop.
+    /// Native file picker. The path is stored on the request and read at send
+    /// time, so large files never cross the IPC bridge.
     #[tauri::command]
     async fn parse_openapi(text: String) -> Result<openapi::Import, openapi::ImportError> {
         openapi::parse(&text)
