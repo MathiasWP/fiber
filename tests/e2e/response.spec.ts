@@ -72,7 +72,7 @@ test.describe('a settled response', () => {
 				isBinary: true,
 				body: 'AAAA',
 				sizeBytes: 3,
-				headers: [{ name: 'content-type', value: 'image/png' }]
+				headers: [{ name: 'content-type', value: 'application/octet-stream' }]
 			}),
 			sections: [section({ requests: [users] })]
 		});
