@@ -1,5 +1,25 @@
 # fiber
 
+## 0.13.0
+
+### Minor Changes
+
+- [#59](https://github.com/MathiasWP/fiber/pull/59) [`68ab80c`](https://github.com/MathiasWP/fiber/commit/68ab80c6f03dc9265ceb5971ffc18b6f26be1685) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Richer OpenAPI (tags as folders, path and query parameters, operation descriptions, response-schema checks), per-collection HTTP identity (cookie jar, timeout, redirects, proxy, invalid certs), and non-JSON bodies (form, multipart, file). Query parameters are available on every method.
+
+### Patch Changes
+
+- [#66](https://github.com/MathiasWP/fiber/pull/66) [`d24f8d8`](https://github.com/MathiasWP/fiber/commit/d24f8d864bcc3590bf5b9a3c20cded4c46b1745e) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Harden MCP credential boundaries, concurrent request handling, response storage, endpoint discovery, and protocol validation.
+
+- [#60](https://github.com/MathiasWP/fiber/pull/60) [`33fdf99`](https://github.com/MathiasWP/fiber/commit/33fdf994d383cf8a7072ebbecea30706e2f911ab) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Creating a collection now shows its first request immediately. The new section was mutated as a plain object after `$state` had already proxied it, so the sidebar never saw the push.
+
+- [#60](https://github.com/MathiasWP/fiber/pull/60) [`33fdf99`](https://github.com/MathiasWP/fiber/commit/33fdf994d383cf8a7072ebbecea30706e2f911ab) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Importing an OpenAPI spec now reports how many endpoints were actually added. The count used to re-read a live list after those endpoints had already been pushed, so it always said zero.
+
+- [#63](https://github.com/MathiasWP/fiber/pull/63) [`bfbfcd0`](https://github.com/MathiasWP/fiber/commit/bfbfcd0d9a9561d7d61902f1d39f27e0a2977a3f) Thanks [@MathiasWP](https://github.com/MathiasWP)! - A few performance fixes: computing what a loader refresh added or removed was quadratic in the number of endpoints, sending a request whose body comes from a file blocked the async runtime instead of reading it off-thread, and the sidebar's "Move to" submenu recomputed its target list twice per request row.
+
+- [#64](https://github.com/MathiasWP/fiber/pull/64) [`749d148`](https://github.com/MathiasWP/fiber/commit/749d148d542d67a7364ac9359a502d36874f01e3) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Obvious performance wins on both sides of the glass. The URL preview no longer round-trips to Rust on every keystroke. ⌘K and collapsed collections stop rebuilding every loaded endpoint in the background. Schema validation and placeholder highlighting skip bodies too large to be worth it. Loader samples are no longer pretty-printed whole just to show the first 20 KB. Streamed chunks are joined rather than concatenated, and a large response is not shipped over IPC a second time after it has already streamed. Collections stay in memory after the first read so a send does not re-parse every saved body; the MCP server does the same across tool calls. History deletes and section deletes no longer run on the UI event-loop thread. A send with static auth no longer clones the request body just in case a 401 retry needed it.
+
+- [#56](https://github.com/MathiasWP/fiber/pull/56) [`94f8b39`](https://github.com/MathiasWP/fiber/commit/94f8b39c7801f5dcd9f4ee61a990e02aaf707b10) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Svelte 5 best practices: `$state.raw` for wholesale-replaced data (loader caches, OpenAPI samples, browser snapshots), `{@attach}` in place of actions and the CodeMirror mount effect, and window listeners on `<svelte:window>` rather than inside `$effect`.
+
 ## 0.12.0
 
 ### Minor Changes
