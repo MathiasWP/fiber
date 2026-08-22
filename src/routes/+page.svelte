@@ -12,6 +12,7 @@
 	import {
 		applyPathParams,
 		BODY_KINDS,
+		browserClose,
 		cancelRequest,
 		flushComplete,
 		formatBytes,
@@ -36,6 +37,7 @@
 	import { history, SCRATCH_ID, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
 	import { urlField } from '$lib/urlfield';
+	import { untrack } from 'svelte';
 
 	/**
 	 * The unsaved request you get before picking anything from the sidebar.
@@ -96,6 +98,20 @@
 	const baseUrl = $derived(selection?.section.baseUrl ?? '');
 	const bodilessMethod = $derived(draft.method === 'GET' || draft.method === 'HEAD');
 	const canSend = $derived(resolved.trim().length > 0 && !inflightId);
+
+	/**
+	 * The sidebar remains usable while its settings drawer is open. Persist the
+	 * section being left before replacing it; otherwise only the newly opened
+	 * section is flushed when the drawer eventually closes.
+	 */
+	async function openSettings(next: Section) {
+		const previous = settingsFor;
+		if (previous && previous.id !== next.id) {
+			await collections.flush(previous);
+			await browserClose(previous.id);
+		}
+		settingsFor = next;
+	}
 
 	/**
 	 * The request pane's visible tab.
@@ -190,7 +206,14 @@
 	// Bodies aren't loaded with the history list; pull one in when it's about
 	// to be shown.
 	$effect(() => {
-		if (shown) history.ensureBody(shown);
+		/*
+		 * `ensureBody` flips `bodyLoaded` while it works and resets it when the
+		 * read fails. Those are implementation details, not reasons to run this
+		 * effect again: tracking them turns a failed read into a tight retry
+		 * loop. A different `shown` entry still re-runs the effect, so leaving
+		 * and reopening an entry remains the deliberate retry path.
+		 */
+		if (shown) untrack(() => history.ensureBody(shown));
 	});
 
 	/**
@@ -495,6 +518,15 @@
 		const kind = bodyKind;
 		const sendTextBody =
 			!bodilessMethod && (kind === 'json' || kind === 'text') && draft.body.trim().length > 0;
+		const outgoingForm = bodilessMethod
+			? []
+			: (draft.form ?? [])
+					.filter((field) => field.name.trim().length > 0)
+					.map((field) =>
+						kind === 'form'
+							? { ...field, file: '', isFile: false }
+							: { ...field }
+					);
 		if (sendTextBody && kind === 'json' && !hasContentType) {
 			outgoing.push({ name: 'Content-Type', value: 'application/json' });
 		}
@@ -533,10 +565,8 @@
 					headers: outgoing,
 					body: sendTextBody ? draft.body : null,
 					bodyKind: kind,
-					form: (draft.form ?? [])
-						.filter((field) => field.name.trim().length > 0)
-						.map((field) => ({ ...field })),
-					file: draft.file ?? '',
+					form: outgoingForm,
+					file: bodilessMethod ? '' : (draft.file ?? ''),
 					pathParams: (draft.pathParams ?? []).map((param) => ({ ...param })),
 					timeoutMs: selection?.section.timeoutMs ?? 60_000,
 					followRedirects: selection?.section.followRedirects ?? true,
@@ -608,6 +638,9 @@
 	function onKeydown(event: KeyboardEvent) {
 		const meta = event.metaKey || event.ctrlKey;
 		if (meta && event.key === 'Enter') {
+			// Enter belongs to the open dialog (create, settings, picker, palette),
+			// not to the request hidden behind it.
+			if ((event.target as Element | null)?.closest?.('[role="dialog"]')) return;
 			event.preventDefault();
 			send();
 		} else if (meta && event.key.toLowerCase() === 'k') {
@@ -651,7 +684,7 @@
 	<PaneGroup direction="horizontal" autoSaveId="fiber:sidebar">
 		<Pane defaultSize={20} minSize={12} maxSize={40}>
 			<Sidebar
-				onOpenSettings={(section) => (settingsFor = section)}
+				onOpenSettings={openSettings}
 				onPickHistory={openHistory}
 			/>
 		</Pane>

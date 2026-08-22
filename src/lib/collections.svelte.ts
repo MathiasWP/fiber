@@ -55,6 +55,15 @@ class Collections {
 	error = $state<string | null>(null);
 
 	#timers = new Map<string, ReturnType<typeof setTimeout>>();
+	/**
+	 * The last disk write queued for each section.
+	 *
+	 * Writes are serialized per file: overlapping saves used the same temporary
+	 * path on the Rust side, and quitting only knew about debounce timers. Keeping
+	 * the promise here both prevents those overlaps and lets the quit path await a
+	 * write that has already started.
+	 */
+	#writes = new Map<string, Promise<boolean>>();
 
 	/**
 	 * The corrupt-file report from the last load, if there was one.
@@ -411,9 +420,12 @@ class Collections {
 		try {
 			const run = await runLoader(section.id);
 			this.#setCache(section.id, { loadedAt: run.loadedAt, endpoints: run.endpoints });
+			this.error = this.#loadError;
 			return run;
 		} catch (error) {
-			return String(error);
+			const message = String(error);
+			this.error = message;
+			return message;
 		} finally {
 			this.loading[section.id] = false;
 		}
@@ -517,9 +529,9 @@ class Collections {
 		);
 	}
 
-	/** Whether any section has an edit waiting on its debounce timer. */
+	/** Whether any section has an edit queued or already being written. */
 	get pending(): boolean {
-		return this.#timers.size > 0;
+		return this.#timers.size > 0 || this.#writes.size > 0;
 	}
 
 	/**
@@ -536,22 +548,23 @@ class Collections {
 		for (const timer of this.#timers.values()) clearTimeout(timer);
 		this.#timers.clear();
 
-		await Promise.allSettled(
-			waiting.map((id) => {
-				const section = this.sections.find((candidate) => candidate.id === id);
-				return section ? this.#write(section) : Promise.resolve();
-			})
-		);
+		const started = waiting.map((id) => {
+			const section = this.sections.find((candidate) => candidate.id === id);
+			return section ? this.#write(section) : Promise.resolve(true);
+		});
+		// Include writes whose debounce fired before quit. `started` also covers
+		// any new snapshots queued behind one of those active writes.
+		await Promise.allSettled([...new Set([...this.#writes.values(), ...started])]);
 	}
 
 	/** Skips the debounce — for structural changes the user expects to stick. */
-	async flush(section: Section): Promise<void> {
+	async flush(section: Section): Promise<boolean> {
 		clearTimeout(this.#timers.get(section.id));
 		this.#timers.delete(section.id);
-		await this.#write(section);
+		return this.#write(section);
 	}
 
-	async #write(section: Section): Promise<void> {
+	async #write(section: Section): Promise<boolean> {
 		const snapshot = $state.snapshot(section) as Section;
 		// The header table keeps a trailing blank row for editing; it has no
 		// business in a file someone might read or diff.
@@ -567,13 +580,24 @@ class Collections {
 			}
 		}
 
+		const prior = this.#writes.get(section.id);
+		const write = (prior ?? Promise.resolve(true)).then(async () => {
+			try {
+				await saveSection(snapshot);
+				// Back to the standing load warning, if there is one — a save that
+				// worked says nothing about the files that never loaded.
+				this.error = this.#loadError;
+				return true;
+			} catch (error) {
+				this.error = String(error);
+				return false;
+			}
+		});
+		this.#writes.set(section.id, write);
 		try {
-			await saveSection(snapshot);
-			// Back to the standing load warning, if there is one — a save that
-			// worked says nothing about the files that never loaded.
-			this.error = this.#loadError;
-		} catch (error) {
-			this.error = String(error);
+			return await write;
+		} finally {
+			if (this.#writes.get(section.id) === write) this.#writes.delete(section.id);
 		}
 	}
 

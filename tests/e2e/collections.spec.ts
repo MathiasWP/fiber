@@ -176,7 +176,7 @@ test.describe('the collection context menu', () => {
 		// The sidebar row, named by its path rather than the ambiguous "New
 		// request" text — the closing context menu can still hold a menuitem
 		// with that same name mid-animation.
-		await expect(page.getByTitle('/', { exact: true })).toBeVisible();
+		await expect(page.getByTitle('/', { exact: true })).toHaveText('New request');
 		await expect(page.getByPlaceholder('/user/get')).toHaveValue('/');
 	});
 
