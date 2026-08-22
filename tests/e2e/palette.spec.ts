@@ -39,7 +39,7 @@ test('⌘K searches every collection and Enter picks the highlighted row', async
 
 	const search = palette.getByPlaceholder('Search endpoints…');
 	await search.fill('invo');
-	await expect(palette.getByText('Invoices')).toBeVisible();
+	await expect(palette.getByText('Invoices', { exact: true })).toBeVisible();
 	await expect(palette.getByText('List users')).toBeHidden();
 	await search.press('Enter');
 
