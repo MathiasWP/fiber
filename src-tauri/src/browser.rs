@@ -716,6 +716,7 @@ mod tests {
             mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
+        ..Default::default()
         }
     }
 

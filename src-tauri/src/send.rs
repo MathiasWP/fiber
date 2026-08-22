@@ -78,6 +78,8 @@ where
         return http::send_streaming(http_state, spec, sink).await;
     };
 
+    let spec = apply_section_http(section, spec);
+
     let prepared = apply_auth(http_state, auth_state, section, spec.clone(), lookup).await?;
     let first = http::send_streaming(http_state, prepared, sink).await;
 
@@ -182,6 +184,22 @@ where
     Ok(spec)
 }
 
+/// The collection's HTTP identity: timeout, redirects, TLS, proxy, and which
+/// cookie jar to use. Applied here rather than in the window so the MCP server
+/// and the app cannot disagree.
+fn apply_section_http(section: &Section, mut spec: RequestSpec) -> RequestSpec {
+    spec.section_id = Some(section.id.clone());
+    spec.timeout_ms = Some(if section.timeout_ms == 0 {
+        60_000
+    } else {
+        section.timeout_ms
+    });
+    spec.follow_redirects = section.follow_redirects;
+    spec.accept_invalid_certs = section.accept_invalid_certs;
+    spec.proxy = section.proxy.clone();
+    spec
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +283,7 @@ mod tests {
             mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
+        ..Default::default()
         }
     }
 
@@ -281,6 +300,7 @@ mod tests {
             follow_redirects: true,
             accept_invalid_certs: false,
             sensitive_header: None,
+        ..Default::default()
         }
     }
 
@@ -458,5 +478,23 @@ mod tests {
 
         assert_eq!(response.status, 401);
         assert_eq!(calls.logins.load(Ordering::SeqCst), 0, "never logged in");
+    }
+
+    #[test]
+    fn collection_http_settings_win_over_the_spec() {
+        let section = Section {
+            id: "sec-http".into(),
+            timeout_ms: 12_000,
+            follow_redirects: false,
+            accept_invalid_certs: true,
+            proxy: "http://127.0.0.1:8888".into(),
+            ..section_with_login("https://api.example.com")
+        };
+        let applied = apply_section_http(&section, spec_for("https://api.example.com"));
+        assert_eq!(applied.section_id.as_deref(), Some("sec-http"));
+        assert_eq!(applied.timeout_ms, Some(12_000));
+        assert!(!applied.follow_redirects);
+        assert!(applied.accept_invalid_certs);
+        assert_eq!(applied.proxy, "http://127.0.0.1:8888");
     }
 }

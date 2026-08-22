@@ -8,6 +8,8 @@ import {
 	normalizeBaseUrl,
 	runLoader,
 	saveSection,
+	splitQuery,
+	withQuery,
 	type LoadedEndpoint,
 	type LoaderCache,
 	type LoaderRun,
@@ -154,22 +156,7 @@ class Collections {
 			const id = endpointKey(endpoint.method, endpoint.path);
 			const held = saved.get(id);
 			return {
-				request: {
-					id,
-					name: endpoint.name || endpoint.path,
-					method: endpoint.method,
-					path: endpoint.path,
-					// The manifest's body, never the overlay's. The overlay entry is
-					// what the editor is actually handed once an endpoint is opened —
-					// see `select` — so the merged row's body only matters twice: at
-					// promotion, where the manifest body is the right starting point,
-					// and at adoption, which only happens when the saved body is empty
-					// and the manifest body would have won the merge anyway. Reading
-					// `held.body` here did nothing but subscribe every sidebar row to
-					// every keystroke typed into a loaded endpoint's body.
-					body: endpoint.body || '',
-					headers: held?.headers ?? []
-				},
+				request: fromEndpoint(endpoint, held),
 				missing: false
 			};
 		});
@@ -224,6 +211,26 @@ class Collections {
 			held.body = request.body;
 			this.touch(section);
 		}
+		if (held && !(held.form?.length) && request.form?.length) {
+			held.form = request.form.map((field) => ({ ...field }));
+			this.touch(section);
+		}
+		if (held && !held.bodyKind && request.bodyKind && request.bodyKind !== 'json') {
+			held.bodyKind = request.bodyKind;
+			this.touch(section);
+		}
+		if (held && !held.description && request.description) {
+			held.description = request.description;
+			this.touch(section);
+		}
+		if (held && !held.tag && request.tag) {
+			held.tag = request.tag;
+			this.touch(section);
+		}
+		if (held && !(held.pathParams?.length) && request.pathParams?.length) {
+			held.pathParams = request.pathParams.map((param) => ({ ...param }));
+			this.touch(section);
+		}
 
 		if (!held) {
 			section.overlay.push({ ...request });
@@ -269,6 +276,10 @@ class Collections {
 			order: -1,
 			auth: { kind: 'none' },
 			mcp: { enabled: false, allowWrites: false },
+			timeoutMs: 60_000,
+			followRedirects: true,
+			acceptInvalidCerts: false,
+			proxy: '',
 			requests: [],
 			overlay: []
 		};
@@ -402,6 +413,7 @@ class Collections {
 			this.sections = sections;
 			for (const section of this.sections) {
 				this.#adopt(section);
+				this.#httpDefaults(section);
 			}
 			// A file that couldn't be read is skipped, not deleted — and saying so
 			// is the difference between "my collection is corrupt" and "my
@@ -440,6 +452,14 @@ class Collections {
 				this.#following.add(request.id);
 			}
 		}
+	}
+
+	/** Fields omitted from disk because they match the default still need a value in the UI. */
+	#httpDefaults(section: Section): void {
+		if (section.timeoutMs == null) section.timeoutMs = 60_000;
+		if (section.followRedirects == null) section.followRedirects = true;
+		if (section.acceptInvalidCerts == null) section.acceptInvalidCerts = false;
+		if (section.proxy == null) section.proxy = '';
 	}
 
 	/**
@@ -525,6 +545,14 @@ class Collections {
 		// business in a file someone might read or diff.
 		for (const request of [...snapshot.requests, ...snapshot.overlay]) {
 			request.headers = request.headers.filter((header) => header.name.trim().length > 0);
+			if (request.form) {
+				request.form = request.form.filter(
+					(field) => field.name.trim().length > 0 || Boolean(field.file?.trim())
+				);
+			}
+			if (request.pathParams) {
+				request.pathParams = request.pathParams.filter((param) => param.name.trim().length > 0);
+			}
 		}
 
 		try {
@@ -551,6 +579,10 @@ class Collections {
 			// and callable with GET/HEAD/OPTIONS, but writes stay behind their own
 			// switch. Hide it entirely by turning the top switch off in settings.
 			mcp: { enabled: true, allowWrites: false },
+			timeoutMs: 60_000,
+			followRedirects: true,
+			acceptInvalidCerts: false,
+			proxy: '',
 			requests: [],
 			overlay: []
 		};
@@ -595,6 +627,10 @@ class Collections {
 			method: 'GET',
 			path,
 			body: '',
+			bodyKind: 'json',
+			form: [],
+			file: '',
+			pathParams: [],
 			headers: []
 		};
 		// Only a request that arrived with the placeholder follows its path; one
@@ -639,4 +675,71 @@ export function allRequests(sections: Section[]): Selection[] {
 		...section.requests.map((request) => ({ section, request })),
 		...collections.rowsFor(section).map((row) => ({ section, request: row.request }))
 	]);
+}
+
+/**
+ * A loaded endpoint as the editor sees it on first open: identity and naming
+ * from the manifest, plus any overlay the user has already written.
+ *
+ * Query and path parameters from the spec are seeded here so opening an
+ * operation is enough to have somewhere to type — the path template itself
+ * stays `{petId}`, which is the identity a refresh re-attaches to.
+ */
+function fromEndpoint(endpoint: LoadedEndpoint, held?: SavedRequest): SavedRequest {
+	const id = endpointKey(endpoint.method, endpoint.path);
+	if (held) {
+		return {
+			id,
+			name: endpoint.name || endpoint.path,
+			method: endpoint.method,
+			path: held.path || endpoint.path,
+			description: held.description || endpoint.description || '',
+			tag: held.tag || endpoint.tag || '',
+			body: endpoint.body || '',
+			bodyKind: held.bodyKind ?? endpoint.bodyKind ?? 'json',
+			form: (held.form?.length ? held.form : endpoint.form)?.map((field) => ({ ...field })) ?? [],
+			file: held.file ?? '',
+			pathParams: held.pathParams?.length
+				? held.pathParams.map((param) => ({ ...param }))
+				: pathParamsFrom(endpoint.parameters),
+			headers: held.headers ?? []
+		};
+	}
+
+	const seeded = seedParams(endpoint, endpoint.path);
+	return {
+		id,
+		name: endpoint.name || endpoint.path,
+		method: endpoint.method,
+		path: seeded.path,
+		description: endpoint.description || '',
+		tag: endpoint.tag || '',
+		body: endpoint.body || '',
+		bodyKind: endpoint.bodyKind ?? 'json',
+		form: endpoint.form?.map((field) => ({ ...field })) ?? [],
+		file: '',
+		pathParams: seeded.pathParams,
+		headers: []
+	};
+}
+
+function pathParamsFrom(parameters: LoadedEndpoint['parameters']): { name: string; value: string }[] {
+	return (parameters ?? [])
+		.filter((param) => param.in === 'path')
+		.map((param) => ({ name: param.name, value: param.example || '' }));
+}
+
+function seedParams(
+	endpoint: LoadedEndpoint,
+	path: string
+): { path: string; pathParams: { name: string; value: string }[] } {
+	const parameters = endpoint.parameters ?? [];
+	const pathParams = pathParamsFrom(parameters);
+	const query = parameters
+		.filter((param) => param.in === 'query')
+		.map((param) => ({ name: param.name, value: param.example || '' }));
+	if (!splitQuery(path).query && query.some((param) => param.name)) {
+		path = withQuery(path, query);
+	}
+	return { path, pathParams };
 }

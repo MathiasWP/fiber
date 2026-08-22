@@ -280,6 +280,7 @@ async fn log_in(
         follow_redirects: true,
         accept_invalid_certs: false,
         sensitive_header: None,
+    ..Default::default()
     };
 
     let response = crate::http::send(http, spec)
@@ -348,6 +349,7 @@ mod tests {
             mcp: Default::default(),
             requests: vec![],
             overlay: vec![],
+        ..Default::default()
         }
     }
 

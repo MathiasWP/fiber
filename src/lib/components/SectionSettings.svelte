@@ -300,6 +300,61 @@
 
 						<div class="rounded border border-border p-3 flex flex-col gap-2">
 							<div class="flex items-center gap-2">
+								<span class="i-lucide-globe text-3 text-muted"></span>
+								<span class="text-xs font-medium">HTTP</span>
+							</div>
+
+							<label class="flex flex-col gap-1">
+								<span class="text-xs text-muted">Timeout (ms)</span>
+								<input
+									type="number"
+									min="0"
+									bind:value={section.timeoutMs}
+									class="input-base text-xs font-mono"
+								/>
+								<span class="text-2.5 text-muted">0 uses the default of 60 seconds.</span>
+							</label>
+
+							<label class="flex items-center gap-1.5 text-xs">
+								<input
+									type="checkbox"
+									checked={section.followRedirects !== false}
+									onchange={(event) => {
+										section.followRedirects = event.currentTarget.checked;
+									}}
+								/>
+								Follow redirects
+							</label>
+							<label class="flex items-center gap-1.5 text-xs">
+								<input
+									type="checkbox"
+									checked={section.acceptInvalidCerts === true}
+									onchange={(event) => {
+										section.acceptInvalidCerts = event.currentTarget.checked;
+									}}
+								/>
+								Allow invalid TLS certificates
+							</label>
+
+							<label class="flex flex-col gap-1">
+								<span class="text-xs text-muted">Proxy</span>
+								<input
+									bind:value={section.proxy}
+									spellcheck="false"
+									placeholder="http://127.0.0.1:8080"
+									class="input-base text-xs font-mono"
+								/>
+								<span class="text-2.5 text-muted">Empty uses the system default.</span>
+							</label>
+
+							<p class="text-2.5 text-muted leading-relaxed">
+								Each collection has its own cookie jar, so a session cookie from one API never
+								rides along with another.
+							</p>
+						</div>
+
+						<div class="rounded border border-border p-3 flex flex-col gap-2">
+							<div class="flex items-center gap-2">
 								<span class="i-lucide-bot text-3 text-muted"></span>
 								<span class="text-xs font-medium">Share with agents (MCP)</span>
 							</div>

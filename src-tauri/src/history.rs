@@ -403,6 +403,7 @@ mod tests {
             follow_redirects: true,
             accept_invalid_certs: false,
             sensitive_header: None,
+        ..Default::default()
         }
     }
 

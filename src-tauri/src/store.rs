@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthConfig;
 use crate::loader::LoaderConfig;
-use crate::http::Header;
+use crate::http::{BodyKind, FormField, Header};
 
 /// A group of requests that share a base URL. Auth and loaders attach here too,
 /// in later steps.
@@ -32,6 +32,16 @@ pub struct Section {
     /// left no way to express an order you'd chosen by dragging.
     #[serde(default)]
     pub order: i32,
+    /// Applied to every send from this collection. 0 means the HTTP default (60s).
+    #[serde(default = "default_timeout_ms", skip_serializing_if = "is_default_timeout")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub follow_redirects: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accept_invalid_certs: bool,
+    /// Empty means no proxy — the system default, not "don't connect".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub proxy: String,
     // Tables and array-of-tables must come after the scalars, or the TOML is
     // invalid. `auth` holds only a keychain reference, never a credential.
     #[serde(default)]
@@ -57,6 +67,43 @@ pub struct Section {
     pub overlay: Vec<SavedRequest>,
 }
 
+fn default_timeout_ms() -> u64 {
+    60_000
+}
+
+fn is_default_timeout(value: &u64) -> bool {
+    *value == 60_000
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+impl Default for Section {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            base_url: String::new(),
+            collapsed: false,
+            order: 0,
+            timeout_ms: 60_000,
+            follow_redirects: true,
+            accept_invalid_certs: false,
+            proxy: String::new(),
+            auth: AuthConfig::None,
+            loader: None,
+            mcp: McpAccess::default(),
+            requests: Vec::new(),
+            overlay: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct McpAccess {
@@ -76,10 +123,49 @@ pub struct SavedRequest {
     pub method: String,
     /// Relative to the section's base URL. An absolute URL here wins outright.
     pub path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// OpenAPI tag, used as a folder in the sidebar. Empty is ungrouped.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tag: String,
     #[serde(default)]
     pub body: String,
+    #[serde(default, skip_serializing_if = "is_json_body")]
+    pub body_kind: BodyKind,
+    /// Form or multipart fields. Ignored when `body_kind` is json/text/file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub form: Vec<FormField>,
+    /// Absolute path of a file to send as the raw body. `body_kind` is `file`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub file: String,
+    /// Values for `{name}` placeholders in `path`. Identity stays the template.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_params: Vec<Header>,
     #[serde(default)]
     pub headers: Vec<Header>,
+}
+
+fn is_json_body(kind: &BodyKind) -> bool {
+    *kind == BodyKind::Json
+}
+
+impl Default for SavedRequest {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            method: "GET".into(),
+            path: String::new(),
+            description: String::new(),
+            tag: String::new(),
+            body: String::new(),
+            body_kind: BodyKind::Json,
+            form: Vec::new(),
+            file: String::new(),
+            path_params: Vec::new(),
+            headers: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -310,6 +396,38 @@ pub fn join_url(base: &str, path: &str) -> String {
     )
 }
 
+/// Replaces `{name}` placeholders in a path with the given values.
+///
+/// Empty values are left as `{name}` so a half-filled template is obvious
+/// rather than silently sending `/pet/` for `/pet/{petId}`. Values are percent-
+/// encoded as a single path segment — slashes in a value do not become extra
+/// path components.
+pub fn apply_path_params(path: &str, params: &[Header]) -> String {
+    let mut result = path.to_string();
+    for param in params {
+        let name = param.name.trim();
+        if name.is_empty() || param.value.is_empty() {
+            continue;
+        }
+        let needle = format!("{{{name}}}");
+        result = result.replace(&needle, &encode_path_segment(&param.value));
+    }
+    result
+}
+
+fn encode_path_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// `<app data>/sections`
 pub fn sections_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("sections")
@@ -329,6 +447,26 @@ mod tests {
             join_url("https://a.com", "/user?expand=orders"),
             "https://a.com/user?expand=orders"
         );
+    }
+
+    #[test]
+    fn substitutes_path_params_without_inventing_slashes() {
+        assert_eq!(
+            apply_path_params("/pet/{petId}", &[Header {
+                name: "petId".into(),
+                value: "123".into(),
+            }]),
+            "/pet/123"
+        );
+        assert_eq!(
+            apply_path_params("/pet/{petId}/uploadImage", &[Header {
+                name: "petId".into(),
+                value: "a/b".into(),
+            }]),
+            "/pet/a%2Fb/uploadImage"
+        );
+        // Unfilled placeholders stay visible rather than collapsing the path.
+        assert_eq!(apply_path_params("/pet/{petId}", &[]), "/pet/{petId}");
     }
 
     #[test]
@@ -379,8 +517,10 @@ mod tests {
                     name: "Accept".into(),
                     value: "application/json".into(),
                 }],
+                ..Default::default()
             }],
             overlay: vec![],
+        ..Default::default()
         };
 
         save(&dir, &section).unwrap();
@@ -395,6 +535,10 @@ mod tests {
         assert_eq!(loaded[0].requests.len(), 1);
         assert_eq!(loaded[0].requests[0].path, "/user/42");
         assert_eq!(loaded[0].requests[0].headers[0].name, "Accept");
+        assert_eq!(loaded[0].timeout_ms, 60_000);
+        assert!(loaded[0].follow_redirects);
+        assert!(!loaded[0].accept_invalid_certs);
+        assert!(loaded[0].proxy.is_empty());
 
         delete(&dir, "acme").unwrap();
         assert!(load_all(&dir).unwrap().is_empty());
@@ -424,6 +568,7 @@ mod tests {
                 mcp: Default::default(),
                 requests: vec![],
                 overlay: vec![],
+            ..Default::default()
             },
         )
         .unwrap();
@@ -457,6 +602,7 @@ mod tests {
                 mcp: Default::default(),
                 requests: vec![],
                 overlay: vec![],
+            ..Default::default()
             },
         )
         .unwrap();

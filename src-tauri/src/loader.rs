@@ -111,11 +111,39 @@ pub struct LoadedEndpoint {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tag: String,
+    #[serde(default)]
+    pub parameters: Vec<crate::openapi::SpecParam>,
     /// A JSON body to start from. Derived from the manifest when it is an
     /// OpenAPI document; `default` so a cache written before this existed, and
     /// a filter that says nothing about bodies, both still read.
     #[serde(default)]
     pub body: String,
+    #[serde(default, skip_serializing_if = "is_json_kind")]
+    pub body_kind: crate::http::BodyKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub form: Vec<crate::http::FormField>,
+}
+
+fn is_json_kind(kind: &crate::http::BodyKind) -> bool {
+    *kind == crate::http::BodyKind::Json
+}
+
+impl Default for LoadedEndpoint {
+    fn default() -> Self {
+        Self {
+            method: String::new(),
+            path: String::new(),
+            name: String::new(),
+            description: String::new(),
+            tag: String::new(),
+            parameters: Vec::new(),
+            body: String::new(),
+            body_kind: crate::http::BodyKind::Json,
+            form: Vec::new(),
+        }
+    }
 }
 
 impl LoadedEndpoint {
@@ -147,6 +175,11 @@ pub struct LoaderCache {
     /// hundreds of times, and the editor only needs one schema at a time.
     #[serde(default)]
     pub schemas: BTreeMap<String, serde_json::Value>,
+    /// Successful-response schemas, keyed the same way. Separate so a collection
+    /// whose request schemas already fill the cache does not grow a second copy
+    /// of every component for the response pane that is not yet open.
+    #[serde(default)]
+    pub response_schemas: BTreeMap<String, serde_json::Value>,
 }
 
 /// What a run produced, including what changed since last time.
@@ -318,7 +351,15 @@ fn kind_of(value: &serde_json::Value) -> &'static str {
 pub async fn run(
     config: &LoaderConfig,
     fetcher: Fetcher,
-) -> Result<(Vec<LoadedEndpoint>, BTreeMap<String, serde_json::Value>, usize), LoaderError> {
+) -> Result<
+    (
+        Vec<LoadedEndpoint>,
+        BTreeMap<String, serde_json::Value>,
+        BTreeMap<String, serde_json::Value>,
+        usize,
+    ),
+    LoaderError,
+> {
     if config.url.trim().is_empty() {
         return Err(LoaderError::NoUrl);
     }
@@ -335,12 +376,15 @@ pub async fn run(
         let mut url = config.url.trim().to_string();
         let mut endpoints = Vec::new();
         let mut schemas = BTreeMap::new();
+        let mut response_schemas = BTreeMap::new();
         let mut pages = 0;
 
         loop {
             let document = fetch_json(&fetcher, &url, &method).await?;
             let mut mapped = to_endpoints(&apply(&config.query, &document)?)?;
-            schemas.extend(fill_bodies(&document, &mut mapped));
+            let (request, response) = enrich_openapi(&document, &mut mapped);
+            schemas.extend(request);
+            response_schemas.extend(response);
             endpoints.extend(mapped);
             pages += 1;
 
@@ -354,7 +398,7 @@ pub async fn run(
             }
         }
 
-        Ok((endpoints, schemas, pages))
+        Ok((endpoints, schemas, response_schemas, pages))
     })
     .await
     .map_err(|_| LoaderError::Timeout)?
@@ -378,48 +422,71 @@ async fn fetch_json(
     serde_json::from_str(&response.body).map_err(|err| LoaderError::NotJson(err.to_string()))
 }
 
-/// Fills in request bodies, when the manifest turns out to be OpenAPI.
+/// Fills in bodies, tags, descriptions, parameters and schemas when the
+/// manifest turns out to be OpenAPI.
 ///
 /// A jq filter maps a document to endpoints, and that is all it should do:
 /// walking a JSON Schema into an example is not something anyone should have to
-/// write in jq. So the body comes from here instead, off the same document the
-/// filter just read, through the importer's own schema walk — which means a
-/// collection filled by a loader and one filled by importing the file end up
-/// with the same bodies.
+/// write in jq. So the rest comes from here instead, off the same document the
+/// filter just read — which means a collection filled by a loader and one
+/// filled by importing the file end up with the same endpoints.
 ///
 /// Anything else — a routes array, a bespoke manifest — has no `paths`, so this
-/// does nothing and every endpoint keeps the empty body it arrived with.
-fn fill_bodies(
+/// does nothing and every endpoint keeps what the filter produced.
+fn enrich_openapi(
     document: &serde_json::Value,
     endpoints: &mut [LoadedEndpoint],
-) -> BTreeMap<String, serde_json::Value> {
+) -> (
+    BTreeMap<String, serde_json::Value>,
+    BTreeMap<String, serde_json::Value>,
+) {
     let Some(paths) = document.get("paths").and_then(|paths| paths.as_object()) else {
-        return BTreeMap::new();
+        return (BTreeMap::new(), BTreeMap::new());
     };
 
     let mut schemas = BTreeMap::new();
+    let mut response_schemas = BTreeMap::new();
 
     for endpoint in endpoints {
-        let Some(operation) = paths
-            .get(&endpoint.path)
-            .and_then(|item| item.get(endpoint.method.to_ascii_lowercase()))
+        let Some(item) = paths.get(&endpoint.path).and_then(|item| item.as_object()) else {
+            continue;
+        };
+        let Some(operation) = item
+            .get(&endpoint.method.to_ascii_lowercase())
             .and_then(|operation| operation.as_object())
         else {
             continue;
         };
 
-        // A filter that supplies its own body outranks anything derived — but
-        // the schema still governs the editor, so a custom example does not
-        // silence OpenAPI feedback.
-        if endpoint.body.is_empty() {
-            endpoint.body = crate::openapi::request_body(document, operation);
+        if endpoint.description.is_empty() {
+            endpoint.description = operation
+                .get("description")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+        }
+        if endpoint.tag.is_empty() {
+            endpoint.tag = crate::openapi::first_tag(Some(operation));
+        }
+        if endpoint.parameters.is_empty() {
+            endpoint.parameters = crate::openapi::operation_params(document, item, Some(operation));
+        }
+
+        let (body, body_kind, form) = crate::openapi::request_payload(document, operation);
+        if endpoint.body.is_empty() && endpoint.form.is_empty() {
+            endpoint.body = body;
+            endpoint.body_kind = body_kind;
+            endpoint.form = form;
         }
         if let Some(schema) = crate::openapi::request_schema(document, operation) {
             schemas.insert(endpoint.key(), schema);
         }
+        if let Some(schema) = crate::openapi::response_schema(document, operation) {
+            response_schemas.insert(endpoint.key(), schema);
+        }
     }
 
-    schemas
+    (schemas, response_schemas)
 }
 
 /// `<app data>/loaders`
@@ -518,7 +585,7 @@ mod tests {
     #[tokio::test]
     async fn maps_a_route_manifest() {
         let routes = TEMPLATES.iter().find(|(name, _)| *name == "Array of routes").unwrap().1;
-        let (endpoints, _schemas, pages) = run(
+        let (endpoints, _schemas, _responses, pages) = run(
             &config(routes),
             answering(
                 r#"{"routes":[
@@ -610,7 +677,7 @@ mod tests {
         let mut settings = config(".routes | map({method: .verb, path: .url})");
         settings.next = ".links.next".to_string();
 
-        let (endpoints, _schemas, pages) = run(&settings, fetcher).await.unwrap();
+        let (endpoints, _schemas, _responses, pages) = run(&settings, fetcher).await.unwrap();
         assert_eq!(pages, 2);
         assert_eq!(
             endpoints.iter().map(LoadedEndpoint::key).collect::<Vec<_>>(),
@@ -634,7 +701,7 @@ mod tests {
         let mut settings = config(".routes | map({method: .verb, path: .url})");
         settings.next = ".links.next".to_string();
 
-        let (endpoints, _schemas, pages) = run(&settings, fetcher).await.unwrap();
+        let (endpoints, _schemas, _responses, pages) = run(&settings, fetcher).await.unwrap();
         assert_eq!(pages, MAX_PAGES);
         assert_eq!(endpoints.len(), MAX_PAGES);
     }
@@ -687,7 +754,7 @@ mod tests {
         }"##;
 
         let openapi = TEMPLATES.iter().find(|(name, _)| *name == "OpenAPI").unwrap().1;
-        let (endpoints, schemas, _) = run(&config(openapi), answering(manifest)).await.unwrap();
+        let (endpoints, schemas, _responses, _) = run(&config(openapi), answering(manifest)).await.unwrap();
 
         let post = endpoints.iter().find(|e| e.method == "POST").unwrap();
         // Type names rather than empty values — the editor turns these into
@@ -737,7 +804,7 @@ mod tests {
         let settings = config(
             r#".paths | to_entries | map(.key as $path | .value | to_entries | map({method: .key, path: $path, body: "{\"enabled\": true}"})) | flatten"#,
         );
-        let (endpoints, schemas, _) = run(&settings, answering(manifest)).await.unwrap();
+        let (endpoints, schemas, _, _) = run(&settings, answering(manifest)).await.unwrap();
 
         let post = endpoints.iter().find(|e| e.method == "POST").unwrap();
         assert_eq!(post.body, "{\"enabled\": true}");
@@ -755,7 +822,7 @@ mod tests {
     #[tokio::test]
     async fn a_routes_manifest_is_left_alone() {
         let routes = TEMPLATES.iter().find(|(name, _)| *name == "Array of routes").unwrap().1;
-        let (endpoints, _schemas, _) = run(
+        let (endpoints, _schemas, _, _) = run(
             &config(routes),
             answering(r#"{"routes":[{"verb":"post","url":"/user","handler":"createUser"}]}"#),
         )
@@ -875,6 +942,7 @@ mod tests {
                 name: "a".into(),
                 description: String::new(),
                 body: String::new(),
+                ..Default::default()
             },
             LoadedEndpoint {
                 method: "GET".into(),
@@ -882,6 +950,7 @@ mod tests {
                 name: "gone".into(),
                 description: String::new(),
                 body: String::new(),
+                ..Default::default()
             },
         ];
         let after = vec![
@@ -892,6 +961,7 @@ mod tests {
                 name: "renamed".into(),
                 description: String::new(),
                 body: String::new(),
+                ..Default::default()
             },
             LoadedEndpoint {
                 method: "POST".into(),
@@ -899,6 +969,7 @@ mod tests {
                 name: "new".into(),
                 description: String::new(),
                 body: String::new(),
+                ..Default::default()
             },
         ];
 

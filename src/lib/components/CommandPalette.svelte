@@ -23,7 +23,7 @@
 			.map((item) => ({
 				item,
 				score: fuzzyScore(
-					`${item.section.name} ${item.request.name} ${item.request.method} ${item.request.path}`,
+					`${item.section.name} ${item.request.name} ${item.request.method} ${item.request.path} ${item.request.tag ?? ''} ${item.request.description ?? ''}`,
 					needle
 				)
 			}))

@@ -21,18 +21,32 @@ a list of requests. A request is a method and a path.
 The files are plain text in a stable order, so they diff cleanly if you keep
 them in git. Edits save themselves.
 
+Each collection has its own cookie jar, timeout, redirect policy, optional
+proxy and TLS setting — so a session cookie from one API never rides along
+with another.
+
 There are no variables. If one request needs a different host, type a full URL
 in its path. That is the only way around the base URL.
 
 A request can also belong to no collection at all — the **new request** button
 makes a loose one that takes a full URL.
 
+Bodies are JSON by default. A request can also send plain text, form-urlencoded
+fields, multipart (including files, by path) or a raw file. Query parameters
+are a tab on every method, not only GET. Path parameters from `{name}`
+placeholders are filled in when you send.
+
 You get endpoints into a collection in three ways, and they mix:
 
 1. **Type them.**
 2. **Import an OpenAPI or Swagger file** — JSON or YAML, 3.x or 2.0. Operations
-   become ordinary requests, so nothing goes stale and it works offline.
-3. **Point a loader at the API** — see below.
+   become ordinary requests, so nothing goes stale and it works offline. Tags
+   become folders, path and query parameters are filled in from the spec, and
+   each operation's description is kept (handy for agents talking to Fiber over
+   MCP).
+3. **Point a loader at the API** — see below. When the manifest is OpenAPI,
+   Fiber also derives the same folders, parameters, example bodies and response
+   schemas a file import would.
 
 ## Auth
 
@@ -116,7 +130,7 @@ that turns that JSON into endpoints.
 .routes | map({method: .verb, path: .url, name: .handler})
 ```
 
-Each result needs a `method` and a `path`. `name` and `description` are
+Each result needs a `method` and a `path`. `name`, `description` and `tag` are
 optional. The editor ships starting points for common shapes, OpenAPI included.
 
 **Why a jq filter and not a script.** A filter cannot do anything except turn
@@ -158,7 +172,9 @@ For any other client, that is the same two things in its own config file:
 The binary lives at `/Applications/Fiber.app/Contents/MacOS/fiber` on macOS,
 `/usr/bin/fiber` on Linux, and `Fiber.exe` in the install directory on Windows.
 
-It reads the same files and needs no running app. A new collection is **shared
+It reads the same files and needs no running app. Search results include each
+operation's description and tag, so an agent can tell endpoints apart the same
+way a person reading the spec would. A new collection is **shared
 read-only** — visible and callable with GET/HEAD/OPTIONS — with a second switch
 for anything more. Turn sharing off and the collection is hidden completely, not
 just read-only. Credentials are applied on the way out and stripped from

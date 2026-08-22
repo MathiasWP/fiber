@@ -1,5 +1,12 @@
 <script lang="ts">
-	import { endpointKey, methodColor, parseOpenApi, type Import, type Section } from '$lib/api';
+	import {
+		endpointKey,
+		methodColor,
+		parseOpenApi,
+		withQuery,
+		type Import,
+		type Section
+	} from '$lib/api';
 	import { collections } from '$lib/collections.svelte';
 
 	interface Props {
@@ -47,12 +54,26 @@
 		if (!parsed) return;
 
 		for (const endpoint of fresh) {
+			const query = (endpoint.parameters ?? [])
+				.filter((param) => param.in === 'query')
+				.map((param) => ({ name: param.name, value: param.example || '' }));
+			const path = query.some((param) => param.name)
+				? withQuery(endpoint.path, query)
+				: endpoint.path;
 			section.requests.push({
 				id: crypto.randomUUID(),
 				name: endpoint.name || endpoint.path,
 				method: endpoint.method,
-				path: endpoint.path,
+				path,
+				description: endpoint.description || '',
+				tag: endpoint.tag || '',
 				body: endpoint.body,
+				bodyKind: endpoint.bodyKind ?? 'json',
+				form: endpoint.form?.map((field) => ({ ...field })) ?? [],
+				file: '',
+				pathParams: (endpoint.parameters ?? [])
+					.filter((param) => param.in === 'path')
+					.map((param) => ({ name: param.name, value: param.example || '' })),
 				headers: []
 			});
 		}
