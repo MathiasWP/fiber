@@ -90,6 +90,7 @@ export function historyRecord(over: Partial<HistoryRecord> = {}): HistoryRecord 
 	return {
 		id: 'h1',
 		requestId: 'r1',
+		sectionId: null,
 		at: 1_700_000_000_000,
 		method: 'GET',
 		url: 'https://api.acme.com/users',

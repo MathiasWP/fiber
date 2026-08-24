@@ -607,8 +607,9 @@ mod gui {
     async fn history_clear_request(
         log: State<'_, HistoryStore>,
         request_id: String,
+        section_id: Option<String>,
     ) -> Result<(), HistoryError> {
-        log.clear_request(&request_id)
+        log.clear_request(&request_id, section_id.as_deref())
     }
 
     #[tauri::command]

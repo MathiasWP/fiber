@@ -96,6 +96,14 @@
 		bodyKind === 'json' ? validateJsonBody(bodySchema, draft.body) : []
 	);
 	const requestKey = $derived(selection?.request.id ?? SCRATCH_ID);
+	/**
+	 * Which collection the history bucket belongs to.
+	 *
+	 * `requestKey` alone is not a bucket: a loaded endpoint's id is the same in
+	 * every collection describing the same API, so staging and production shared
+	 * one list and each showed whichever was sent last.
+	 */
+	const requestSection = $derived(selection?.section.id ?? null);
 	const baseUrl = $derived(selection?.section.baseUrl ?? '');
 	const bodilessMethod = $derived(draft.method === 'GET' || draft.method === 'HEAD');
 	/**
@@ -141,7 +149,7 @@
 
 	// An entry opened from the History tab wins; otherwise a request shows its
 	// own most recent response and never another request's.
-	const shown = $derived(history.viewing ?? history.selectedFor(requestKey));
+	const shown = $derived(history.viewing ?? history.selectedFor(requestKey, requestSection));
 
 	/**
 	 * The section to sign back into, when the shown response reads as the API
@@ -554,6 +562,7 @@
 		history.start({
 			id,
 			requestId: requestKey,
+			sectionId: requestSection,
 			at: Date.now(),
 			method: draft.method,
 			url,
@@ -1318,7 +1327,7 @@
 												<ContextMenu.Separator class="menu-separator" />
 												<ContextMenu.Item
 													class="menu-item-bad"
-													onSelect={() => history.clearFor(requestKey)}
+													onSelect={() => history.clearFor(requestKey, requestSection)}
 												>
 													<span class="i-lucide-trash-2 text-3"></span>
 													Clear this request's history

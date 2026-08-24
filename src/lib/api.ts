@@ -57,6 +57,8 @@ export interface ResponseData extends ResponseMeta {
 export interface HistoryRecord {
 	id: string;
 	requestId: string;
+	/** The collection it was sent from. Null for scratch, and for old entries. */
+	sectionId: string | null;
 	at: number;
 	method: string;
 	url: string;
@@ -77,8 +79,8 @@ export function historyDelete(id: string): Promise<void> {
 	return invoke<void>('history_delete', { id });
 }
 
-export function historyClearRequest(requestId: string): Promise<void> {
-	return invoke<void>('history_clear_request', { requestId });
+export function historyClearRequest(requestId: string, sectionId?: string | null): Promise<void> {
+	return invoke<void>('history_clear_request', { requestId, sectionId: sectionId ?? null });
 }
 
 export function historyClearAll(): Promise<void> {
