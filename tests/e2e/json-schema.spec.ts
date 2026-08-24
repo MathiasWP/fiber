@@ -73,6 +73,91 @@ test.describe('validateJsonBody', () => {
 		).toEqual(['$["content-type"] must be number, not boolean.']);
 	});
 
+	/**
+	 * Pinned because it surprises everyone, including me: `additionalProperties`
+	 * is scoped to the `properties` beside it and deliberately does not see what
+	 * an `allOf` branch introduces. So this really is two disallowed fields, and
+	 * a spec written this way rejects its own documents. Asserted so nobody
+	 * later "fixes" it into a leniency the standard does not have.
+	 */
+	test('additionalProperties does not see an allOf branch, per the spec', () => {
+		const schema = {
+			allOf: [
+				{ type: 'object', properties: { id: { type: 'string' } } },
+				{ type: 'object', properties: { name: { type: 'string' } } }
+			],
+			type: 'object',
+			additionalProperties: false
+		};
+		expect(validateJsonBody(schema, '{ "id": "a", "name": "b" }')).toEqual([
+			'$.id is not allowed.',
+			'$.name is not allowed.'
+		]);
+	});
+
+	/** `$ref` inside the document, which the walker ignored outright. */
+	test('a local $ref is followed', () => {
+		const schema = {
+			type: 'object',
+			properties: { child: { $ref: '#/$defs/leaf' } },
+			$defs: { leaf: { type: 'number' } }
+		};
+		expect(validateJsonBody(schema, '{ "child": "no" }')).toEqual([
+			'$.child must be number, not string.'
+		]);
+	});
+
+	/** Keywords the subset never covered at all. */
+	test('constraints beyond the old subset are enforced', () => {
+		expect(validateJsonBody({ type: 'integer', minimum: 1 }, '0')).toEqual([
+			'$ must be >= 1.'
+		]);
+		expect(validateJsonBody({ type: 'array', items: { type: 'number' }, uniqueItems: true }, '[1, 1]')).not.toEqual([]);
+		expect(validateJsonBody({ type: 'string', pattern: '^a' }, '"b"')).not.toEqual([]);
+	});
+
+	/**
+	 * A real 3.1 document reaches us with `"type": "undefined"` 310 times. Ajv
+	 * throws on a type that does not exist, which would cost the schema all of
+	 * its linting rather than just that field's.
+	 */
+	test('an invented type does not disable the rest of the schema', () => {
+		const schema = {
+			type: 'object',
+			required: ['id'],
+			properties: { ignored: { type: 'undefined' }, id: { type: 'string' } }
+		};
+		expect(validateJsonBody(schema, '{ "ignored": 1, "id": 2 }')).toEqual([
+			'$.id must be string, not number.'
+		]);
+		expect(validateJsonBody(schema, '{ "ignored": "anything", "id": "ok" }')).toEqual([]);
+	});
+
+	/** OpenAPI 3.1's literal union, which is what `const` is for. */
+	test('a choice of consts reports the composition, not each branch', () => {
+		const schema = {
+			anyOf: [
+				{ type: 'string', const: 'once' },
+				{ type: 'string', const: 'always' }
+			]
+		};
+		expect(validateJsonBody(schema, '"once"')).toEqual([]);
+		expect(validateJsonBody(schema, '"twice"')).toEqual([
+			'$ does not match any allowed schema.'
+		]);
+	});
+
+	/** A property literally called "type" is a name, not a keyword. */
+	test('a property named type is not read as one', () => {
+		const schema = {
+			type: 'object',
+			properties: { type: { type: 'string' } }
+		};
+		expect(validateJsonBody(schema, '{ "type": 1 }')).toEqual([
+			'$.type must be string, not number.'
+		]);
+	});
+
 	test('invalid or empty JSON is not a schema error', () => {
 		expect(validateJsonBody({ type: 'object' }, '')).toEqual([]);
 		expect(validateJsonBody({ type: 'object' }, '{')).toEqual([]);

@@ -77,6 +77,7 @@ rmcp = { version = "3.1.4", features = ["server", "macros", "transport-io", "sch
 dirs = "6.0.0"
 schemars = "1.2.2"
 serde_norway = "0.9.42"
+serde_json_path = "0.7.2"
 
 # Asking whether a keychain item exists, without reading it. keyring has no such
 # call — its `has` fetches the password — and on macOS that difference is a
