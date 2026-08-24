@@ -316,10 +316,11 @@ fn load_json(path: &Path) -> Result<serde_json::Value, ClientError> {
     // Comments are the common cause here — VS Code's own `mcp.json` allows
     // them and serde_json does not. The message says the file was left alone,
     // which is the part that matters.
-    let value: serde_json::Value = serde_json::from_str(&text).map_err(|err| ClientError::Corrupt {
-        path: pretty(path),
-        message: err.to_string(),
-    })?;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|err| ClientError::Corrupt {
+            path: pretty(path),
+            message: err.to_string(),
+        })?;
     if !value.is_object() {
         return Err(ClientError::Corrupt {
             path: pretty(path),
@@ -400,7 +401,10 @@ fn uninstall_json(shape: Shape, path: &Path) -> Result<(), ClientError> {
         .as_object_mut()
         .expect("load_json returns an object or an error");
 
-    let Some(map) = root.get_mut(shape.map_key()).and_then(|map| map.as_object_mut()) else {
+    let Some(map) = root
+        .get_mut(shape.map_key())
+        .and_then(|map| map.as_object_mut())
+    else {
         // Nothing to take out. Not writing at all keeps a "remove" that had no
         // work to do from reformatting the file.
         return Ok(());
@@ -512,7 +516,11 @@ fn install_toml(path: &Path, binary: &str) -> Result<(), ClientError> {
         block
     } else {
         // Appended, so every comment and every other table stays where it is.
-        let separator = if existing.ends_with('\n') { "\n" } else { "\n\n" };
+        let separator = if existing.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
         format!("{existing}{separator}{block}")
     };
     write_atomically(path, &text)
@@ -612,7 +620,10 @@ mod tests {
 
         let value: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(value["mcpServers"]["fiber"]["command"], "/Applications/Fiber.app/f");
+        assert_eq!(
+            value["mcpServers"]["fiber"]["command"],
+            "/Applications/Fiber.app/f"
+        );
         assert_eq!(value["mcpServers"]["fiber"]["args"][0], "mcp");
         assert_eq!(value["mcpServers"].as_object().unwrap().len(), 1);
     }
@@ -662,7 +673,11 @@ mod tests {
     #[test]
     fn uninstalling_leaves_the_other_servers_behind() {
         let path = temp_dir("uninstall").join("mcp.json");
-        fs::write(&path, r#"{"mcpServers": {"other": {"command": "elsewhere"}}}"#).unwrap();
+        fs::write(
+            &path,
+            r#"{"mcpServers": {"other": {"command": "elsewhere"}}}"#,
+        )
+        .unwrap();
         install_json(Shape::McpServers, &path, "/bin/fiber").unwrap();
         uninstall_json(Shape::McpServers, &path).unwrap();
 
@@ -723,7 +738,10 @@ mod tests {
         assert!(text.contains("[mcp_servers.other]"), "{text}");
         assert!(!text.contains("/old/fiber"), "{text}");
         let table: toml::Table = toml::from_str(&text).unwrap();
-        assert_eq!(table["mcp_servers"]["other"]["command"].as_str(), Some("keep"));
+        assert_eq!(
+            table["mcp_servers"]["other"]["command"].as_str(),
+            Some("keep")
+        );
         assert_eq!(
             table["mcp_servers"]["fiber"]["command"].as_str(),
             Some("/new/fiber")
