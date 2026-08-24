@@ -78,23 +78,62 @@ test.describe('the MCP tab', () => {
 		await expect(page.getByText('could not be parsed')).toBeVisible();
 		await expect(page.getByRole('button', { name: 'Add' })).toHaveCount(0);
 
-		await page.getByRole('button', { name: 'Copy JSON' }).first().click();
+		await page.getByRole('button', { name: 'Copy entry' }).first().click();
 		await expect
 			.poll(() => page.evaluate(() => navigator.clipboard.readText()))
 			.toContain('"command": "/Applications/Fiber.app/Contents/MacOS/fiber"');
 	});
 
-	test('a client that is not installed is still listed, marked as not found', async ({ page }) => {
-		await openMcp(page, { mcpClients: [mcpClient({ id: 'windsurf', name: 'Windsurf', detected: false })] });
+	test('a client Fiber cannot find is kept out of the list until asked for', async ({ page }) => {
+		await openMcp(page, {
+			mcpClients: [
+				mcpClient(),
+				mcpClient({ id: 'windsurf', name: 'Windsurf', path: '~/.codeium/windsurf/mcp_config.json', detected: false })
+			]
+		});
 
-		await expect(page.getByText('not found')).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Add' })).toBeEnabled();
+		await expect(page.getByText('Claude Code')).toBeVisible();
+		await expect(page.getByText('Windsurf', { exact: true })).toBeHidden();
+
+		// Detection is a heuristic, so the rest are one click away rather than
+		// gone for good.
+		await page.getByRole('button', { name: "Show 1 more client Fiber didn't find" }).click();
+		await expect(page.getByText('Windsurf', { exact: true })).toBeVisible();
+		await expect(page.getByText('not found', { exact: true })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Add' }).nth(1)).toBeEnabled();
+
+		await page.getByRole('button', { name: 'Hide the ones that were not found' }).click();
+		await expect(page.getByText('Windsurf', { exact: true })).toBeHidden();
+	});
+
+	test('a client that already has an entry is shown even when it looks absent', async ({
+		page
+	}) => {
+		// Something wrote that entry, so the guess about the client not being
+		// here is the thing that is wrong.
+		await openMcp(page, {
+			mcpClients: [mcpClient({ id: 'codex', name: 'Codex CLI', state: 'installed', detected: false })]
+		});
+
+		await expect(page.getByText('Codex CLI')).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Remove' })).toBeVisible();
+	});
+
+	test('with nothing found, the list says so and still offers the snippet', async ({ page }) => {
+		await openMcp(page, {
+			mcpClients: [mcpClient({ detected: false }), mcpClient({ id: 'cursor', name: 'Cursor', detected: false })]
+		});
+
+		await expect(page.getByText('None of the clients Fiber knows about')).toBeVisible();
+		await expect(page.getByRole('button', { name: "Show 2 more clients Fiber didn't find" })).toBeVisible();
+		await expect(page.getByText('The same entry, in its own config file')).toBeVisible();
 	});
 
 	test('the snippet carries this binary, and the path copies on its own', async ({ page }) => {
 		await openMcp(page, { mcpClients: [], mcpBinary: '/opt/fiber/fiber' });
 
-		await expect(page.getByText('"args": [')).toBeVisible();
+		await expect(page.getByText('"args": ["mcp"]')).toBeVisible();
+
 		await page.getByRole('button', { name: 'Copy path' }).click();
 		await expect
 			.poll(() => page.evaluate(() => navigator.clipboard.readText()))
@@ -106,7 +145,7 @@ test.describe('the MCP tab', () => {
 
 		// It needs ToolHive and a container runtime, so the tab hands over the
 		// command rather than pretending it can run it.
-		await expect(page.getByText('runs as a container under ToolHive')).toBeVisible();
+		await expect(page.getByText('Fiber runs as a container under ToolHive')).toBeVisible();
 		await page.getByRole('button', { name: 'Copy command' }).click();
 		await expect
 			.poll(() => page.evaluate(() => navigator.clipboard.readText()))
