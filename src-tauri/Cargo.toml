@@ -1,6 +1,6 @@
 [package]
 name = "fiber"
-version = "0.14.6"
+version = "0.14.7"
 description = "A local-first API client"
 authors = ["Mathias Picker"]
 license = "MIT"
