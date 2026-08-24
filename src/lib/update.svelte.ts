@@ -1,5 +1,7 @@
 import { relaunch } from '@tauri-apps/plugin-process';
 import { check, type Update } from '@tauri-apps/plugin-updater';
+import { collections } from './collections.svelte';
+import { session } from './session.svelte';
 
 /** Long enough that a machine left running still notices within a day. */
 const INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -131,6 +133,14 @@ class Updates {
 		}
 
 		try {
+			// Everything the app defers has to land first. A restart nobody asked
+			// for is the one exit that can arrive mid-sentence, and it does not go
+			// through the Cmd+Q path: Rust only holds an exit it did not ask for
+			// itself, and this one carries a restart code straight past that
+			// handler. So the debounced writes are flushed here instead.
+			session.flush();
+			await collections.flushAll();
+
 			// The new version is on disk; this process is still the old one.
 			await relaunch();
 		} catch (error) {
