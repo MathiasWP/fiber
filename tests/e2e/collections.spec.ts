@@ -351,3 +351,68 @@ test('right-clicking the empty list offers to create either kind of thing', asyn
 	await expect(page.getByRole('menuitem', { name: 'New collection' })).toBeVisible();
 	await expect(page.getByRole('menuitem', { name: 'New request' })).toBeVisible();
 });
+
+/**
+ * Two collections describing the same API — staging and production — give every
+ * loaded endpoint the same id, because a loaded id is `METHOD /path` and carries
+ * no section. Selecting by that id alone lit both rows, resolved to whichever
+ * collection sorted first, and left the second one unopenable: clicking it set
+ * an id already held, so nothing changed.
+ */
+test('the same endpoint in two collections selects independently', async ({ page }) => {
+	await install(page, {
+		sections: [
+			section({
+				id: 'staging',
+				name: 'Staging',
+				baseUrl: 'https://staging.acme.com',
+				order: 0,
+				loader: {
+					enabled: true,
+					url: '/openapi.json',
+					method: 'GET',
+					query: '.',
+					next: '',
+					ttlSeconds: 0
+				}
+			}),
+			section({
+				id: 'prod',
+				name: 'Production',
+				baseUrl: 'https://api.acme.com',
+				order: 1,
+				loader: {
+					enabled: true,
+					url: '/openapi.json',
+					method: 'GET',
+					query: '.',
+					next: '',
+					ttlSeconds: 0
+				}
+			})
+		],
+		loaded: [{ method: 'GET', path: '/users', name: 'List users', description: '', body: '' }]
+	});
+	await page.goto('/');
+
+	const rows = page.getByText('List users', { exact: true });
+	await expect(rows).toHaveCount(2);
+
+	// Selecting in staging must not light up production's copy. `bg-raised` is
+	// what marks the selected row, so exactly one of the two carries it.
+	const highlighted = page.locator('.cursor-default.bg-raised', { hasText: 'List users' });
+
+	await rows.nth(0).click();
+	await expect(page.getByText('https://staging.acme.com', { exact: true })).toBeVisible();
+	await expect(highlighted).toHaveCount(1);
+
+	// And production is still reachable, which it was not when the id alone
+	// decided: the click set a value the store already held.
+	await rows.nth(1).click();
+	await expect(page.getByText('https://api.acme.com', { exact: true })).toBeVisible();
+	await expect(highlighted).toHaveCount(1);
+
+	// Back again, to prove it is not one-way.
+	await rows.nth(0).click();
+	await expect(page.getByText('https://staging.acme.com', { exact: true })).toBeVisible();
+});
