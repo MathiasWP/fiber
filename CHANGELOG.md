@@ -1,5 +1,11 @@
 # fiber
 
+## 0.14.10
+
+### Patch Changes
+
+- [#90](https://github.com/MathiasWP/fiber/pull/90) [`576eada`](https://github.com/MathiasWP/fiber/commit/576eadae7216d55e158b08e6620a85a610ac7555) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Keep the refresh spinner on its axis — it was sized 11.7px, and the rotated mask landed on a slightly different centre at each angle, so it wobbled rather than spun.
+
 ## 0.14.9
 
 ### Patch Changes
