@@ -22,7 +22,7 @@ Thumbs.db
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# Release scratch — see scripts/changelog.mjs
+# Release scratch — see scripts/release-notes.mjs
 .release-notes.md
 .pr-body.md
 

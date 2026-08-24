@@ -13,7 +13,6 @@ mod history;
 mod http;
 mod loader;
 pub mod mcp;
-mod migrate;
 mod openapi;
 mod secrets;
 mod send;
@@ -41,7 +40,6 @@ mod gui {
     use crate::history::{self, HistoryError, HistoryRecord, HistoryStore};
     use crate::http::{BodyEvent, ChunkSink, HttpError, HttpState, RequestSpec, ResponseData};
     use crate::loader::{self, LoaderError, LoaderRun};
-    use crate::migrate;
     use crate::openapi;
     use crate::secrets::{self, SecretError};
     use crate::send::{send_authenticated, send_authenticated_streaming};
@@ -766,13 +764,6 @@ mod gui {
                 }
 
                 let app_data_dir = app.path().app_data_dir()?;
-                // The app used to be called Fetch. Carry its collections and
-                // credentials across before anything reads them. The keychain
-                // copy keys on its own marker rather than on the directory
-                // move, so a move that failed once doesn't strand it forever.
-                migrate::data_dir(&app_data_dir);
-                migrate::secrets_once(&app_data_dir);
-
                 app.manage(Paths {
                     sections: store::sections_dir(&app_data_dir),
                     loaders: loader::loaders_dir(&app_data_dir),

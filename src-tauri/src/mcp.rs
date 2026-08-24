@@ -1083,11 +1083,6 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let data = app_data_dir();
     secrets::validate_injected()
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-    // Whichever of the app or this server starts first does the rename
-    // migration; the other finds it already done. The keychain copy keys on
-    // its own marker, so a directory move that failed doesn't strand it.
-    crate::migrate::data_dir(&data);
-    crate::migrate::secrets_once(&data);
     let server = FiberMcp {
         sections_dir: store::sections_dir(&data),
         loaders_dir: loader::loaders_dir(&data),
