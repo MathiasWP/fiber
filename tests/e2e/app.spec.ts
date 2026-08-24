@@ -971,16 +971,22 @@ test('OpenAPI tags become folders and descriptions appear under the URL', async 
 	});
 	await page.goto('/');
 
+	// Folders start closed: the tag names are the map, the endpoints arrive
+	// when you open the one you want.
 	await expect(page.getByText('pet', { exact: true })).toBeVisible();
 	await expect(page.getByText('store', { exact: true })).toBeVisible();
+	await expect(page.getByText('listPets')).toBeHidden();
+	await expect(page.getByText('getInventory')).toBeHidden();
+
+	await page.getByRole('button', { name: /^pet/ }).click();
 	await expect(page.getByText('listPets')).toBeVisible();
+	await expect(page.getByText('getInventory')).toBeHidden();
 
 	await page.getByText('listPets').click();
 	await expect(page.getByText('All of the pets currently in the store')).toBeVisible();
 
 	await page.getByRole('button', { name: /^pet/ }).click();
 	await expect(page.getByText('listPets')).toBeHidden();
-	await expect(page.getByText('getInventory')).toBeVisible();
 });
 
 test('a collection has HTTP settings of its own', async ({ page }) => {

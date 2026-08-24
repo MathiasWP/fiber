@@ -162,16 +162,35 @@
 		return requests.slice(0, endpointLimit(section));
 	}
 
-	function shownLoadedRows(
+	/**
+	 * The loader's endpoints as the sidebar shows them: grouped into folders,
+	 * with the page budget spent only on the folders that are open.
+	 *
+	 * Grouping runs over every row, not just the mounted page, so a folder
+	 * header carries the true count of what it holds — a collapsed folder
+	 * costs one header and no rows. `remaining` is what a mounted folder still
+	 * has waiting, which is what the load-more marker is for; rows hidden
+	 * inside a closed folder are not waiting on anything.
+	 */
+	function pagedGroups(
 		section: Section,
 		requests: SavedRequest[],
 		rows: LoadedRow[]
-	): LoadedRow[] {
-		return rows.slice(0, Math.max(0, endpointLimit(section) - requests.length));
-	}
+	): { groups: { tag: string; count: number; rows: LoadedRow[] }[]; remaining: number } {
+		let budget = Math.max(0, endpointLimit(section) - requests.length);
+		let remaining = Math.max(0, requests.length - endpointLimit(section));
 
-	function remainingEndpoints(section: Section, requests: SavedRequest[], rows: LoadedRow[]): number {
-		return Math.max(0, requests.length + rows.length - endpointLimit(section));
+		const groups = groupedLoaded(rows).map((group) => {
+			if (!tagOpen(section.id, group.tag)) {
+				return { tag: group.tag, count: group.rows.length, rows: [] as LoadedRow[] };
+			}
+			const shown = group.rows.slice(0, budget);
+			budget -= shown.length;
+			remaining += group.rows.length - shown.length;
+			return { tag: group.tag, count: group.rows.length, rows: shown };
+		});
+
+		return { groups, remaining };
 	}
 
 	function groupedLoaded(rows: LoadedRow[]): { tag: string; rows: LoadedRow[] }[] {
@@ -191,7 +210,13 @@
 		return order.map((tag) => ({ tag, rows: groups.get(tag)! }));
 	}
 
-	let closedTags = $state<Record<string, boolean>>({});
+	/**
+	 * Folders the user has opened. Closed is the default: a loader can report
+	 * hundreds of endpoints across a dozen tags, and opening a collection to a
+	 * wall of them is no better than not grouping at all. The folder names are
+	 * the map; you open the one you want.
+	 */
+	let openTags = $state<Record<string, boolean>>({});
 
 	function tagKey(sectionId: string, tag: string): string {
 		return `${sectionId}\0${tag}`;
@@ -199,12 +224,12 @@
 
 	function tagOpen(sectionId: string, tag: string): boolean {
 		if (searching || !tag) return true;
-		return !closedTags[tagKey(sectionId, tag)];
+		return openTags[tagKey(sectionId, tag)] ?? false;
 	}
 
 	function toggleTag(sectionId: string, tag: string): void {
 		const key = tagKey(sectionId, tag);
-		closedTags[key] = !closedTags[key];
+		openTags[key] = !openTags[key];
 	}
 
 	function loadMoreEndpoints(sectionId: string): void {
@@ -876,8 +901,8 @@
 						? !closedWhileSearching[section.id]
 						: !section.collapsed}
 					{@const displayedRequests = shownRequests(section, requests)}
-					{@const displayedRows = shownLoadedRows(section, requests, rows)}
-					{@const remaining = remainingEndpoints(section, requests, rows)}
+					{@const paged = pagedGroups(section, requests, rows)}
+					{@const remaining = paged.remaining}
 					<div class="border-b border-border/50">
 						<div
 							{@attach sectionHeader({ sectionId: section.id })}
@@ -1071,7 +1096,7 @@
 
 							<!-- Loader output. Regenerated on every refresh; the user's
 							     bodies live in the section's overlay and survive it. -->
-							{#each groupedLoaded(displayedRows) as group (group.tag || '__none')}
+							{#each paged.groups as group (group.tag || '__none')}
 								{#if group.tag}
 									<button
 										type="button"
@@ -1087,14 +1112,12 @@
 												: ''}"
 										></span>
 										<span class="truncate">{group.tag}</span>
-										<span class="ml-auto tabular-nums">{group.rows.length}</span>
+										<span class="ml-auto tabular-nums">{group.count}</span>
 									</button>
 								{/if}
-								{#if !group.tag || tagOpen(section.id, group.tag)}
-									{#each group.rows as row (row.request.id)}
-										{@render loadedRow(section, row, group.tag ? 'pl-12' : 'pl-8')}
-									{/each}
-								{/if}
+								{#each group.rows as row (row.request.id)}
+									{@render loadedRow(section, row, group.tag ? 'pl-12' : 'pl-8')}
+								{/each}
 							{/each}
 
 							{#if remaining > 0}
