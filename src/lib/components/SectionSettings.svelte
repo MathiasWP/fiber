@@ -172,12 +172,17 @@
 	async function signIn() {
 		if (!section) return;
 		authError = null;
+		// Held from before the window opens until the credential is captured or
+		// the drawer closes: opening it moves focus off the main window, and
+		// focus coming back is what triggers a background loader refresh.
+		collections.beginSignIn(section.id);
 		// The window is opened from the section on disk, so persist first.
 		await collections.flush(section);
 		try {
 			await browserSignIn(section.id);
 		} catch (failure) {
 			authError = String(failure);
+			collections.endSignIn(section.id);
 		}
 	}
 
@@ -202,11 +207,19 @@
 			await browserCapture(section.id);
 			stored = true;
 			secretSaved = true;
+			collections.endSignIn(section.id);
 			// The no-credential-to-credential transition, which is precisely what
 			// the sidebar's shield is reporting.
 			await collections.refreshCredential(section);
+			// A loader that failed on the old credential stays failed on screen
+			// otherwise: nothing else re-runs it, so signing in appeared to fix
+			// nothing. Only worth doing if there was a failure to clear.
+			if (section.loader?.enabled && collections.loaderFailure?.sectionId === section.id) {
+				await collections.refresh(section);
+			}
 		} catch (failure) {
 			authError = String(failure);
+			collections.endSignIn(section.id);
 		}
 	}
 
@@ -232,6 +245,7 @@
 
 	function close(persist = true) {
 		if (section) {
+			collections.endSignIn(section.id);
 			collections.refreshCredential(section);
 			if (persist) collections.flush(section);
 			browserClose(section.id);

@@ -138,6 +138,25 @@
 	// own most recent response and never another request's.
 	const shown = $derived(history.viewing ?? history.selectedFor(requestKey));
 
+	/**
+	 * The section to sign back into, when the shown response reads as the API
+	 * turning the credential down — otherwise null.
+	 *
+	 * Only browser auth: it is the one kind that cannot re-fetch itself from a
+	 * stored secret, so it is the one where a person has to do something. 403 is
+	 * included because a rejected session is at least as likely to arrive as a
+	 * 403 as a 401, and unlike a 401 nothing has already retried it.
+	 *
+	 * Resolved from the entry's own request rather than the selection: history
+	 * outlives requests and the pane can be showing an entry from elsewhere.
+	 */
+	const rejectedCredential = $derived.by(() => {
+		const status = shown?.response?.status;
+		if (status !== 401 && status !== 403) return null;
+		const section = collections.findRequest(shown?.requestId ?? null)?.section;
+		return section?.auth.kind === 'browser' ? section : null;
+	});
+
 	$effect(() => {
 		// Loaders with a TTL refresh after the cached endpoints are on screen,
 		// never before — a slow discovery endpoint mustn't delay startup.
@@ -1169,6 +1188,31 @@
 										>
 											Response truncated at 32 MB — {formatBytes(response.sizeBytes)} received.
 										</p>
+									{/if}
+
+									<!--
+										A 401 already retried once behind the scenes, and a 403 never
+										tried at all — so by the time either reaches this pane the
+										credential is the thing to look at, and the only way to act on
+										it was to know that and go find the drawer yourself.
+									-->
+									{#if rejectedCredential}
+										<div
+											class="px-3 py-1 flex items-center gap-2 text-2.5 text-warn bg-warn/10 border-b border-border shrink-0"
+										>
+											<span>
+												{response.status === 401
+													? 'The API rejected the credential.'
+													: 'The API refused this request — an expired session is a common cause.'}
+											</span>
+											<button
+												class="btn-ghost text-2.5 ml-auto"
+												onclick={() => (settingsFor = rejectedCredential)}
+											>
+												<span class="i-lucide-log-in"></span>
+												Sign in again
+											</button>
+										</div>
 									{/if}
 
 									<ContextMenu.Root>

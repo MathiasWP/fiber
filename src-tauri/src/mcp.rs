@@ -466,7 +466,11 @@ impl FiberMcp {
         .map_err(|err| McpError::internal_error(err, None))?;
         if !(200..300).contains(&response.status) {
             return Err(McpError::internal_error(
-                format!("manifest request returned {}", response.status),
+                loader::LoaderError::Status {
+                    status: response.status,
+                    detail: loader::detail_from(&response.body),
+                }
+                .to_string(),
                 None,
             ));
         }
