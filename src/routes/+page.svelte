@@ -35,29 +35,23 @@
 	import { collections, type Selection } from '$lib/collections.svelte';
 	import { editorFont } from '$lib/editor.svelte';
 	import { history, SCRATCH_ID, type HistoryEntry } from '$lib/history.svelte';
+	import { session, type RequestTab } from '$lib/session.svelte';
 	import { theme } from '$lib/theme.svelte';
 	import { urlField } from '$lib/urlfield';
 	import { untrack } from 'svelte';
 
-	/**
-	 * The unsaved request you get before picking anything from the sidebar.
-	 * Its `path` is a full URL — there's no section to hang a base off.
-	 */
-	let scratch = $state<SavedRequest>({
-		id: SCRATCH_ID,
-		name: 'Scratch',
-		method: 'GET',
-		path: '',
-		body: '{\n  "hello": "world"\n}',
-		bodyKind: 'json',
-		form: [],
-		file: '',
-		pathParams: [],
-		headers: []
-	});
+	// Where the last run left off, read before anything renders from it: the
+	// sidebar's tab and both panes' tabs come out of the session, and restoring
+	// from an effect would show the defaults for a frame first.
+	session.restore();
 
-	let requestTab = $state('body');
-	let responseTab = $state('pretty');
+	/**
+	 * The unsaved request you get before picking anything from the sidebar, and
+	 * the two panes' tabs. All three live in `session` rather than here because
+	 * they are part of where you left off, and are restored on the next launch.
+	 */
+	const scratch = session.scratch;
+
 	let inflightId = $state<string | null>(null);
 	let paletteOpen = $state(false);
 
@@ -140,9 +134,9 @@
 	 * back.
 	 */
 	const shownRequestTab = $derived(
-		requestTab === 'headers'
+		session.requestTab === 'headers'
 			? 'headers'
-			: requestTab === 'params' || bodilessMethod
+			: session.requestTab === 'params' || bodilessMethod
 				? 'params'
 				: 'body'
 	);
@@ -173,13 +167,24 @@
 	$effect(() => {
 		// Loaders with a TTL refresh after the cached endpoints are on screen,
 		// never before — a slow discovery endpoint mustn't delay startup.
-		collections.load().then(() => collections.refreshStale());
+		collections.load().then(() => {
+			// Only now is there anything to check the restored selection against.
+			session.verify();
+			return collections.refreshStale();
+		});
 		history.load();
 		editorFont.init();
 
 		const stopTheme = theme.init();
 		return stopTheme;
 	});
+
+	/**
+	 * Writes the session back whenever any of it moves.
+	 *
+	 * The write itself is debounced inside `persist`; this only has to notice.
+	 */
+	$effect(() => session.persist());
 
 	// Schemas are deliberately fetched endpoint-by-endpoint rather than with the
 	// loader cache. A large OpenAPI document often repeats the same component
@@ -225,10 +230,15 @@
 	 */
 	$effect(() => {
 		const stopFlush = listen('flush-before-exit', async () => {
+			session.flush();
 			await collections.flushAll();
 			await flushComplete();
 		});
 		const stopClose = getCurrentWindow().onCloseRequested(async (event) => {
+			// Unconditionally, and before the early return below: the session is
+			// debounced too, and it has its own pending write to land whether or
+			// not a collection does.
+			session.flush();
 			if (!collections.pending) return;
 			event.preventDefault();
 			await collections.flushAll();
@@ -528,7 +538,7 @@
 		if (!shown?.response || shown.response.isBinary) return '';
 		// `tryFormatJson` refuses oversized input on its own; skipping the call
 		// keeps this from even branching on a string that large.
-		return responseTab === 'pretty' && !oversized ? tryFormatJson(shownBody) : shownBody;
+		return session.responseTab === 'pretty' && !oversized ? tryFormatJson(shownBody) : shownBody;
 	});
 
 	async function send() {
@@ -714,7 +724,17 @@
 	}
 </script>
 
-<svelte:window onkeydown={onKeydown} onfocus={() => collections.refreshStale()} />
+<!--
+	`pagehide` is the last moment the webview is guaranteed to still be there.
+	The quit paths above already flush, and so does the update restart; this
+	covers the ways out that route through none of them — a reload from the
+	devtools, or the webview being torn down and brought back after a crash.
+-->
+<svelte:window
+	onkeydown={onKeydown}
+	onfocus={() => collections.refreshStale()}
+	onpagehide={() => session.flush()}
+/>
 
 <CommandPalette
 	bind:open={paletteOpen}
@@ -821,7 +841,7 @@
 							<Tabs.Root
 								value={shownRequestTab}
 								onValueChange={(next) => {
-									if (next) requestTab = next;
+									if (next) session.requestTab = next as RequestTab;
 								}}
 								class="flex flex-col h-full min-h-0"
 							>
@@ -1168,7 +1188,7 @@
 								</div>
 							{:else if shown.response}
 								{@const response = shown.response}
-								<Tabs.Root bind:value={responseTab} class="flex flex-col h-full min-h-0">
+								<Tabs.Root bind:value={session.responseTab} class="flex flex-col h-full min-h-0">
 									<Tabs.List
 										class="flex items-center gap-1 px-2 h-9 border-b border-border bg-panel shrink-0"
 									>
@@ -1260,7 +1280,7 @@
 														Binary response ({formatBytes(response.sizeBytes)}). Switch to Raw for
 														base64.
 													</p>
-												{:else if responseTab === 'pretty'}
+												{:else if session.responseTab === 'pretty'}
 													<Editor value={responseText} readonly language={responseLanguage} scope="response" />
 												{/if}
 												{#if responseSchemaErrors.length}
@@ -1279,7 +1299,7 @@
 											</Tabs.Content>
 
 											<Tabs.Content value="raw" class="flex-1 min-h-0">
-												{#if responseTab === 'raw'}
+												{#if session.responseTab === 'raw'}
 													<Editor value={shownBody} readonly language="text" scope="response" />
 												{/if}
 											</Tabs.Content>

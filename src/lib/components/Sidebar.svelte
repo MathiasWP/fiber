@@ -18,6 +18,7 @@
 		type DragHint
 	} from '$lib/dnd.svelte';
 	import { history, type HistoryEntry } from '$lib/history.svelte';
+	import { session } from '$lib/session.svelte';
 	import { theme } from '$lib/theme.svelte';
 	import DotLoader from '$lib/components/DotLoader.svelte';
 	import McpTab from '$lib/components/McpTab.svelte';
@@ -31,8 +32,6 @@
 	}
 
 	let { onOpenSettings, onPickHistory }: Props = $props();
-
-	let tab = $state<'collections' | 'history' | 'mcp'>('collections');
 
 	// Read from the bundle rather than package.json, so what the footer shows is
 	// the version that is actually running — which is the number to quote when
@@ -211,26 +210,27 @@
 		return order.map((tag) => ({ tag, rows: groups.get(tag)! }));
 	}
 
+	function tagKey(sectionId: string, tag: string): string {
+		return `${sectionId}\0${tag}`;
+	}
+
 	/**
 	 * Folders the user has opened. Closed is the default: a loader can report
 	 * hundreds of endpoints across a dozen tags, and opening a collection to a
 	 * wall of them is no better than not grouping at all. The folder names are
 	 * the map; you open the one you want.
+	 *
+	 * Which ones are open is kept in the session rather than here, so the
+	 * folders you had open are still open the next time the app starts.
 	 */
-	let openTags = $state<Record<string, boolean>>({});
-
-	function tagKey(sectionId: string, tag: string): string {
-		return `${sectionId}\0${tag}`;
-	}
-
 	function tagOpen(sectionId: string, tag: string): boolean {
 		if (searching || !tag) return true;
-		return openTags[tagKey(sectionId, tag)] ?? false;
+		return session.openTags[tagKey(sectionId, tag)] ?? false;
 	}
 
 	function toggleTag(sectionId: string, tag: string): void {
 		const key = tagKey(sectionId, tag);
-		openTags[key] = !openTags[key];
+		session.openTags[key] = !session.openTags[key];
 	}
 
 	function loadMoreEndpoints(sectionId: string): void {
@@ -303,7 +303,7 @@
 	 * kept showing that entry rather than the request's own current response.
 	 */
 	function showCollections() {
-		tab = 'collections';
+		session.sidebarTab = 'collections';
 		history.stopViewing();
 	}
 
@@ -312,7 +312,7 @@
 	 * were looking at stops overriding the response pane.
 	 */
 	function showMcp() {
-		tab = 'mcp';
+		session.sidebarTab = 'mcp';
 		history.stopViewing();
 	}
 
@@ -807,7 +807,7 @@
 <aside class="flex flex-col border-r border-border bg-panel min-h-0 h-full">
 	<header class="flex items-center gap-1 px-2 h-11 border-b border-border shrink-0">
 		<button
-			class="px-2 py-1 rounded text-xs transition-colors {tab === 'collections'
+			class="px-2 py-1 rounded text-xs transition-colors {session.sidebarTab === 'collections'
 				? 'bg-raised text-text'
 				: 'text-muted hover:text-text'}"
 			onclick={() => showCollections()}
@@ -815,10 +815,10 @@
 			Collections
 		</button>
 		<button
-			class="px-2 py-1 rounded text-xs transition-colors {tab === 'history'
+			class="px-2 py-1 rounded text-xs transition-colors {session.sidebarTab === 'history'
 				? 'bg-raised text-text'
 				: 'text-muted hover:text-text'}"
-			onclick={() => (tab = 'history')}
+			onclick={() => (session.sidebarTab = 'history')}
 		>
 			History
 		</button>
@@ -828,14 +828,14 @@
 			rows.
 		-->
 		<button
-			class="px-2 py-1 rounded text-xs transition-colors {tab === 'mcp'
+			class="px-2 py-1 rounded text-xs transition-colors {session.sidebarTab === 'mcp'
 				? 'bg-raised text-text'
 				: 'text-muted hover:text-text'}"
 			onclick={() => showMcp()}
 		>
 			MCP
 		</button>
-		{#if tab === 'history'}
+		{#if session.sidebarTab === 'history'}
 			<button
 				class="ml-auto p-1 rounded text-muted hover:bg-raised hover:text-text transition-colors"
 				title="Clear history"
@@ -843,7 +843,7 @@
 			>
 				<span class="i-lucide-trash-2"></span>
 			</button>
-		{:else if tab === 'collections'}
+		{:else if session.sidebarTab === 'collections'}
 			<!--
 				square-plus and folder-plus rather than file-plus and folder-plus: the
 				geometric pair reads better at 24px, and it happens to solve the
@@ -888,9 +888,9 @@
 		{/if}
 	</header>
 
-	{#if tab === 'mcp'}
+	{#if session.sidebarTab === 'mcp'}
 		<McpTab />
-	{:else if tab === 'collections'}
+	{:else if session.sidebarTab === 'collections'}
 		<div class="px-2 py-2 shrink-0">
 			<div class="relative">
 				<span
