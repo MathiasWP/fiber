@@ -26,7 +26,7 @@
 	import { urlField } from '$lib/urlfield';
 
 	interface Props {
-		onOpenSettings: (section: Section) => void;
+		onOpenSettings: (section: Section, intent?: 'sign-in' | null) => void;
 		onPickHistory: (entry: HistoryEntry) => void;
 	}
 
@@ -1237,7 +1237,7 @@
 							class="btn-ghost text-2.5"
 							onclick={() => {
 								const section = collections.sections.find((it) => it.id === failure.sectionId);
-								if (section) onOpenSettings(section);
+								if (section) onOpenSettings(section, 'sign-in');
 							}}
 						>
 							<span class="i-lucide-log-in"></span>
