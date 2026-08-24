@@ -1,5 +1,13 @@
 # fiber
 
+## 0.14.2
+
+### Patch Changes
+
+- [#72](https://github.com/MathiasWP/fiber/pull/72) [`276d629`](https://github.com/MathiasWP/fiber/commit/276d6297177d43d9e636ba9c24adaf7b6e17bcdd) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Fix the credential picker crashing with `each_key_duplicate`. Rows were keyed on the capture rule — source, key and path — which isn't unique: a session holding the same cookie name on two domains (`sid` on `.example.com` and on `api.example.com`) produced two rows with the same key, and Svelte threw instead of rendering the list. Each row now carries its own id.
+
+- [#72](https://github.com/MathiasWP/fiber/pull/72) [`276d629`](https://github.com/MathiasWP/fiber/commit/276d6297177d43d9e636ba9c24adaf7b6e17bcdd) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Make the crash banner and the update toast usable while a dialog is open. An open modal dialog sets `pointer-events: none` on `<body>`, which both of them inherited: a click on Copy, Hide or Update passed straight through and landed on the dialog, which read it as an outside click and closed itself. With dialogs stacked, the banner stayed out of reach until every one of them had been dismissed. Both now take pointer events of their own and keep the click from reaching the dialog underneath.
+
 ## 0.14.1
 
 ### Patch Changes
