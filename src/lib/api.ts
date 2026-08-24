@@ -561,6 +561,47 @@ export function sectionsPath(): Promise<string> {
 	return invoke<string>('sections_path');
 }
 
+/**
+ * What a client's MCP config says about Fiber.
+ *
+ * `outdated` is the interesting one: the entry is there but points at another
+ * binary, which is what happens when the app is moved or a second copy takes
+ * over. `unreadable` means the file didn't parse and Fiber refused to rewrite
+ * it — the snippet is the way out.
+ */
+export type McpClientState = 'installed' | 'outdated' | 'absent' | 'unreadable';
+
+export interface McpClient {
+	id: string;
+	name: string;
+	/** The config file, with the home directory shortened to `~`. */
+	path: string;
+	state: McpClientState;
+	/** Whether the client looks installed at all. A hint, not a guarantee. */
+	detected: boolean;
+	/** What that config runs today, when it isn't this binary. */
+	command: string | null;
+	/** Why the file couldn't be read, when `state` is `unreadable`. */
+	message: string | null;
+}
+
+export function mcpClients(): Promise<McpClient[]> {
+	return invoke<McpClient[]>('mcp_clients');
+}
+
+/** This binary — what a client has to spawn to get `fiber mcp`. */
+export function mcpBinary(): Promise<string> {
+	return invoke<string>('mcp_binary');
+}
+
+export function mcpInstall(id: string): Promise<McpClient> {
+	return invoke<McpClient>('mcp_install', { id });
+}
+
+export function mcpUninstall(id: string): Promise<McpClient> {
+	return invoke<McpClient>('mcp_uninstall', { id });
+}
+
 export const METHODS = [
 	'GET',
 	'POST',
