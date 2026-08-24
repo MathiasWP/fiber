@@ -1,5 +1,23 @@
 # fiber
 
+## 0.14.5
+
+### Patch Changes
+
+- [#79](https://github.com/MathiasWP/fiber/pull/79) [`5ee2e66`](https://github.com/MathiasWP/fiber/commit/5ee2e6626d849ef0289293b4c8895588723d78f9) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Stop "Pick credential…" timing out when no sign-in window is open yet.
+  
+  Reading `localStorage` means evaluating script in the page, which fails until the page has loaded. That failure was propagated, discarding the cookies along with it — even though cookies are read from the Rust side, need no script, and are there immediately. So opening the picker straight from a closed window reported "timed out reading the sign-in window" while the session cookie sat in hand; opening the window first, then picking, worked.
+  
+  Cookies are now kept when the page can't be read, and the timeout is only reported when there is genuinely nothing to show. The retry loop still waits for a complete read before settling, so a credential kept in `localStorage` isn't missed by returning the cookies-only snapshot the instant the window opens.
+
+- [#79](https://github.com/MathiasWP/fiber/pull/79) [`5ee2e66`](https://github.com/MathiasWP/fiber/commit/5ee2e6626d849ef0289293b4c8895588723d78f9) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Stop two loader requests cancelling each other, and say when a rejection came from somewhere else.
+  
+  Every loader request for a section used the same id, and `HttpState` keys in-flight requests by that id — inserting a second under a key already there drops the first's cancel sender, which *is* the cancel signal. So a "Fetch a sample" while a background refresh was out came back "request cancelled", and which of the two died depended on timing. Loader requests now get a unique handle each; nothing cancels them by id, so there was never a reason for it to be predictable.
+  
+  A rejected manifest now also reports where the response actually came from, when that left the origin the request was aimed at. A Cookie or Authorization credential is dropped on a cross-host redirect, so "403" and "403, having ended up on a different host" are different problems wearing the same status — and only one of them is your API's fault.
+  
+  The sidebar's loader error is selectable and has a Copy button, because the first thing anyone does with an error they can't act on is send it to someone who can.
+
 ## 0.14.4
 
 ### Patch Changes
