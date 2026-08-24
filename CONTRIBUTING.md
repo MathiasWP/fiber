@@ -34,6 +34,7 @@ src/
   lib/history.svelte.ts           history, bucketed per request
   lib/components/LoaderTab.svelte jq filter editor with live preview
   lib/components/Sidebar.svelte   sections, search, history
+  lib/components/McpTab.svelte    installing Fiber into an AI client
   lib/components/CommandPalette.svelte   ⌘K search across every endpoint
   lib/components/Editor.svelte    CodeMirror 6 wrapper
 src-tauri/
@@ -43,6 +44,7 @@ src-tauri/
   src/browser.rs                  browser session capture
   src/loader.rs                   jq-based endpoint discovery
   src/mcp.rs                      the MCP server
+  src/clients.rs                  editing each AI client's MCP config
   src/lib.rs                      Tauri commands
 www/
   index.html                      the landing page — one file, no build step

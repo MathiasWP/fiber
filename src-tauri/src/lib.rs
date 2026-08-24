@@ -7,6 +7,8 @@
 mod auth;
 #[cfg(feature = "gui")]
 mod browser;
+#[cfg(feature = "gui")]
+mod clients;
 mod history;
 mod http;
 mod loader;
@@ -35,6 +37,7 @@ mod gui {
 
     use crate::auth::AuthState;
     use crate::browser::{BrowserError, BrowserRecapture, Snapshot};
+    use crate::clients::{self, ClientError, Status};
     use crate::history::{self, HistoryError, HistoryRecord, HistoryStore};
     use crate::http::{BodyEvent, ChunkSink, HttpError, HttpState, RequestSpec, ResponseData};
     use crate::loader::{self, LoaderError, LoaderRun};
@@ -669,6 +672,31 @@ mod gui {
     }
 
     /// Where the collection files are, for the "reveal in Finder" affordance.
+    /// Every AI client Fiber knows how to install itself into, and what each
+    /// one's config says right now. Read on demand — the MCP tab asks when it
+    /// opens, so a session that never opens it never touches these files.
+    #[tauri::command]
+    fn mcp_clients() -> Vec<Status> {
+        clients::statuses()
+    }
+
+    /// The path a client should spawn: this binary. Shown beside the snippet
+    /// for the clients Fiber cannot write to.
+    #[tauri::command]
+    fn mcp_binary() -> String {
+        clients::binary()
+    }
+
+    #[tauri::command]
+    fn mcp_install(id: String) -> Result<Status, ClientError> {
+        clients::install(&id)
+    }
+
+    #[tauri::command]
+    fn mcp_uninstall(id: String) -> Result<Status, ClientError> {
+        clients::uninstall(&id)
+    }
+
     #[tauri::command]
     fn sections_path(paths: State<'_, Paths>) -> String {
         paths.sections.display().to_string()
@@ -716,6 +744,10 @@ mod gui {
                 default_loader,
                 parse_openapi,
                 loader_templates,
+                mcp_clients,
+                mcp_binary,
+                mcp_install,
+                mcp_uninstall,
                 flush_complete
             ])
             .plugin(tauri_plugin_opener::init())

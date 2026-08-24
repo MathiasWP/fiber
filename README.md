@@ -158,12 +158,23 @@ The app you already installed *is* the MCP server — `fiber mcp` is the same
 binary with a different first argument. There is nothing else to install, and
 nothing to build.
 
+The **MCP** tab, beside Collections and History, is the short way in. It lists
+Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex CLI and Gemini
+CLI with the config file each one uses, and **Add** writes the entry — pointing
+at wherever this copy of Fiber actually lives, which is the part that is
+tedious to find by hand. An entry left behind by a copy that moved shows as
+*Update*. Fiber only ever adds or removes its own key: other servers, other
+settings and (in Codex's TOML) every comment stay exactly as they were, and a
+config file that doesn't parse is left alone with the snippet offered instead.
+
+By hand, it is one command for Claude Code:
+
 ```sh
-# macOS, Claude Code
+# macOS
 claude mcp add fiber -- /Applications/Fiber.app/Contents/MacOS/fiber mcp
 ```
 
-For any other client, that is the same two things in its own config file:
+and the same two things in any other client's config file:
 
 ```jsonc
 { "fiber": { "command": "/Applications/Fiber.app/Contents/MacOS/fiber", "args": ["mcp"] } }
@@ -185,6 +196,9 @@ manifest, and `try_loader_filter` tests a filter against it. So you can ask an
 agent to write a loader filter instead of learning jq first.
 
 ### Without the app
+
+The MCP tab links to this, and hands over the command below — it needs ToolHive
+and a container runtime, which is a terminal's job rather than a button's.
 
 It also builds without the desktop app at all, as a ~30MB static image for a
 container manager — for a collections repo on a server, or to put ToolHive's

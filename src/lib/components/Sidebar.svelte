@@ -20,6 +20,7 @@
 	import { history, type HistoryEntry } from '$lib/history.svelte';
 	import { theme } from '$lib/theme.svelte';
 	import DotLoader from '$lib/components/DotLoader.svelte';
+	import McpTab from '$lib/components/McpTab.svelte';
 	import { getVersion } from '@tauri-apps/api/app';
 	import type { Attachment } from 'svelte/attachments';
 	import { urlField } from '$lib/urlfield';
@@ -31,7 +32,7 @@
 
 	let { onOpenSettings, onPickHistory }: Props = $props();
 
-	let tab = $state<'collections' | 'history'>('collections');
+	let tab = $state<'collections' | 'history' | 'mcp'>('collections');
 
 	// Read from the bundle rather than package.json, so what the footer shows is
 	// the version that is actually running — which is the number to quote when
@@ -303,6 +304,15 @@
 	 */
 	function showCollections() {
 		tab = 'collections';
+		history.stopViewing();
+	}
+
+	/**
+	 * Same reason as above: the MCP tab isn't History either, so the entry you
+	 * were looking at stops overriding the response pane.
+	 */
+	function showMcp() {
+		tab = 'mcp';
 		history.stopViewing();
 	}
 
@@ -797,6 +807,19 @@
 		>
 			History
 		</button>
+		<!--
+			MCP is a setup tab rather than a place you keep coming back to, so it
+			sits last and carries no actions of its own — the buttons live on the
+			rows.
+		-->
+		<button
+			class="px-2 py-1 rounded text-xs transition-colors {tab === 'mcp'
+				? 'bg-raised text-text'
+				: 'text-muted hover:text-text'}"
+			onclick={() => showMcp()}
+		>
+			MCP
+		</button>
 		{#if tab === 'history'}
 			<button
 				class="ml-auto p-1 rounded text-muted hover:bg-raised hover:text-text transition-colors"
@@ -805,7 +828,7 @@
 			>
 				<span class="i-lucide-trash-2"></span>
 			</button>
-		{:else}
+		{:else if tab === 'collections'}
 			<!--
 				square-plus and folder-plus rather than file-plus and folder-plus: the
 				geometric pair reads better at 24px, and it happens to solve the
@@ -850,7 +873,9 @@
 		{/if}
 	</header>
 
-	{#if tab === 'collections'}
+	{#if tab === 'mcp'}
+		<McpTab />
+	{:else if tab === 'collections'}
 		<div class="px-2 py-2 shrink-0">
 			<div class="relative">
 				<span

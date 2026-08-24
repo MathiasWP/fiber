@@ -3,6 +3,7 @@ import type {
 	HistoryRecord,
 	Import,
 	LoadedEndpoint,
+	McpClient,
 	ResponseData,
 	SavedRequest,
 	Section,
@@ -52,6 +53,20 @@ export function savedRequest(over: Partial<SavedRequest> = {}): SavedRequest {
 		path: '/users',
 		body: '',
 		headers: [],
+		...over
+	};
+}
+
+/** One row of the MCP tab, defaulted to a client with nothing configured. */
+export function mcpClient(over: Partial<McpClient> = {}): McpClient {
+	return {
+		id: 'claude-code',
+		name: 'Claude Code',
+		path: '~/.claude.json',
+		state: 'absent',
+		detected: true,
+		command: null,
+		message: null,
 		...over
 	};
 }
@@ -201,6 +216,13 @@ export interface MockOptions {
 	setSecretError?: string;
 	deleteSecretError?: string;
 	forgetTokenError?: string;
+	/** The rows the MCP tab shows. Read only when that tab is opened. */
+	mcpClients?: McpClient[];
+	mcpClientsError?: string;
+	/** Rejection for `mcp_install` and `mcp_uninstall`. */
+	mcpWriteError?: string;
+	/** What the binary path copies as. */
+	mcpBinary?: string;
 	/** When set, startup's updater check offers this version. */
 	update?: MockUpdate;
 }
@@ -262,6 +284,7 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 			let nextCallbackId = 1;
 
 			const secrets = new Map<string, boolean>();
+			const mcpState = new Map<string, McpClient>();
 			const runtimeHistoryBodies = new Map<string, string>();
 			let lastSaved: unknown = null;
 
@@ -385,6 +408,10 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 						return Promise.resolve('0.0.0-test');
 					case 'plugin:resources|close':
 						return Promise.resolve(null);
+					// The ToolHive guide link — the one place the app hands a URL to
+					// the real browser.
+					case 'plugin:opener|open_url':
+						return Promise.resolve(null);
 				case 'plugin:updater|check': {
 					if (!opts.update) return Promise.resolve(null);
 					const versions = opts.update.versions;
@@ -435,6 +462,33 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 							return Promise.reject(new Error(opts.update.restartError));
 						}
 						return Promise.resolve(null);
+
+					// The MCP tab. `install` flips the row the way Rust does: it
+					// returns the client's new state, and nothing re-reads.
+					case 'mcp_clients':
+						if (opts.mcpClientsError) return Promise.reject(new Error(opts.mcpClientsError));
+						return Promise.resolve(
+							(opts.mcpClients ?? []).map((client) => mcpState.get(client.id) ?? client)
+						);
+					case 'mcp_binary':
+						return Promise.resolve(opts.mcpBinary ?? '/Applications/Fiber.app/Contents/MacOS/fiber');
+					case 'mcp_install':
+					case 'mcp_uninstall': {
+						if (opts.mcpWriteError) return Promise.reject(new Error(opts.mcpWriteError));
+						const id = String(args.id ?? '');
+						const before =
+							mcpState.get(id) ?? (opts.mcpClients ?? []).find((client) => client.id === id);
+						if (!before) return Promise.reject(new Error(`no such client: ${id}`));
+						const after = {
+							...before,
+							state: cmd === 'mcp_install' ? ('installed' as const) : ('absent' as const),
+							detected: true,
+							command: null,
+							message: null
+						};
+						mcpState.set(id, after);
+						return Promise.resolve(after);
+					}
 
 					case 'loader_cache':
 						if (opts.loaderCacheError) return Promise.reject(new Error(opts.loaderCacheError));
