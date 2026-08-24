@@ -1048,11 +1048,18 @@
 									<Tooltip.Root>
 										<Tooltip.Trigger>
 											{#snippet child({ props })}
+												<!--
+													Sized in whole pixels instead of `text-3`, which every other
+													icon here uses: an icon box is 1.2em, and against the 13px root
+													that comes out 11.7px. A mask that size resamples to a slightly
+													different centre at each angle, so the spin wobbles instead of
+													turning in place. A whole-pixel box holds still.
+												-->
 												<span
 													{...props}
 													role="img"
 													aria-label="Refreshing endpoints"
-													class="i-lucide-refresh-cw text-3 text-muted shrink-0 animate-spin"
+													class="i-lucide-refresh-cw w-12px h-12px text-muted shrink-0 animate-spin"
 												></span>
 											{/snippet}
 										</Tooltip.Trigger>
@@ -1103,8 +1110,11 @@
 									</ContextMenu.Item>
 									{#if section.loader}
 										<ContextMenu.Item class="menu-item" onSelect={() => refresh(section)}>
+											<!-- Whole-pixel box so the spin doesn't wobble — see above. -->
 											<span
-												class="i-lucide-refresh-cw text-3 {collections.loading[section.id]
+												class="i-lucide-refresh-cw w-12px h-12px {collections.loading[
+													section.id
+												]
 													? 'animate-spin'
 													: ''}"
 											></span>
