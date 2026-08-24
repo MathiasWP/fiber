@@ -396,8 +396,9 @@ impl FiberMcp {
             Box::pin(async move {
                 let url = store::join_url_scoped(&section.base_url, &request.url)
                     .map_err(|err| format!("loader URL rejected: {err}"))?;
+                let requested_url = url.clone();
                 let spec = RequestSpec {
-                    id: format!("mcp-loader:{}", section.id),
+                    id: loader::request_id(&section.id),
                     request_id: format!("loader:{}", section.id),
                     section_id: Some(section.id.clone()),
                     method: request.method,
@@ -430,6 +431,8 @@ impl FiberMcp {
                 Ok(loader::LoaderResponse {
                     status: response.status,
                     body: response.body,
+                    requested_url,
+                    final_url: response.final_url,
                 })
             })
         })
@@ -466,11 +469,7 @@ impl FiberMcp {
         .map_err(|err| McpError::internal_error(err, None))?;
         if !(200..300).contains(&response.status) {
             return Err(McpError::internal_error(
-                loader::LoaderError::Status {
-                    status: response.status,
-                    detail: loader::detail_from(&response.body),
-                }
-                .to_string(),
+                loader::rejected(&response).to_string(),
                 None,
             ));
         }

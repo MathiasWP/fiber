@@ -387,8 +387,9 @@ mod gui {
             Box::pin(async move {
                 let url = store::join_url_scoped(&section.base_url, &request.url)
                     .map_err(|err| format!("loader URL rejected: {err}"))?;
+                let requested_url = url.clone();
                 let spec = RequestSpec {
-                    id: format!("loader:{}", section.id),
+                    id: loader::request_id(&section.id),
                     request_id: format!("loader:{}", section.id),
                     section_id: Some(section.id.clone()),
                     method: request.method,
@@ -420,6 +421,8 @@ mod gui {
                 Ok(loader::LoaderResponse {
                     status: response.status,
                     body: response.body,
+                    requested_url,
+                    final_url: response.final_url,
                 })
             })
         })
@@ -509,10 +512,7 @@ mod gui {
         .map_err(LoaderError::Fetch)?;
 
         if !(200..300).contains(&response.status) {
-            return Err(LoaderError::Status {
-                status: response.status,
-                detail: loader::detail_from(&response.body),
-            });
+            return Err(loader::rejected(&response));
         }
         serde_json::from_str(&response.body).map_err(|err| LoaderError::NotJson(err.to_string()))
     }

@@ -206,24 +206,37 @@ pub async fn snapshot(app: &AppHandle, section: &Section) -> Result<Snapshot, Br
         None => open(app, section, false)?,
     };
 
-    let found = if borrowed {
-        read_session(&window, section).await
-    } else {
-        // Freshly opened: give the page time to load before believing an empty
-        // result, but stop as soon as there's anything there.
-        let mut last = Ok(Snapshot::default());
-        for _ in 0..LOAD_ATTEMPTS {
-            tokio::time::sleep(LOAD_INTERVAL).await;
-            last = read_session(&window, section).await;
-            if matches!(&last, Ok(found) if !found.is_empty()) {
-                break;
-            }
-        }
-        let _ = window.close();
-        last
-    };
+    if borrowed {
+        return read_session(&window, section)
+            .await
+            .map(|reading| reading.snapshot);
+    }
 
-    found
+    // Freshly opened: give the page time to load before believing an empty
+    // result, but stop as soon as there's a complete one.
+    //
+    // "Complete" rather than "non-empty", because cookies arrive before the
+    // page does. Stopping at the first non-empty read would hand back a
+    // cookies-only snapshot the moment the window opened — fine for a session
+    // cookie, and missing the credential entirely for anything kept in
+    // `localStorage`. A cookies-only read is still kept, so if the page never
+    // answers we return what we have rather than nothing.
+    let mut last = Ok(Snapshot::default());
+    for _ in 0..LOAD_ATTEMPTS {
+        tokio::time::sleep(LOAD_INTERVAL).await;
+        match read_session(&window, section).await {
+            Ok(reading) => {
+                let settled = reading.complete && !reading.snapshot.is_empty();
+                last = Ok(reading.snapshot);
+                if settled {
+                    break;
+                }
+            }
+            Err(failure) => last = Err(failure),
+        }
+    }
+    let _ = window.close();
+    last
 }
 
 /// Reading IndexedDB is asynchronous, and a script that returns a Promise is no
@@ -463,18 +476,63 @@ fn merge_decrypted(entries: &mut Vec<StorageEntry>, decrypted: Vec<StorageEntry>
 }
 
 /// Reads `localStorage` and every cookie visible to an open window.
-async fn read_session(window: &WebviewWindow, section: &Section) -> Result<Snapshot, BrowserError> {
+async fn read_session(window: &WebviewWindow, section: &Section) -> Result<Reading, BrowserError> {
     let (login_url, ..) = browser_config(section)?;
 
-    let mut local_storage = read_local_storage(window).await?;
-    // MSAL entries arrive as ciphertext; put the plaintext in their place.
-    merge_decrypted(
-        &mut local_storage,
-        read_parked(window, MSAL_DECRYPT_JS).await,
-    );
+    // Best-effort, deliberately.
+    //
+    // Reading `localStorage` means evaluating script in the page, which fails
+    // until the page has loaded — so on a window we just opened, the first
+    // attempts time out. Propagating that discarded the cookies with it, and
+    // cookies are read from *here* rather than from the page: they need no
+    // script and are available immediately. So opening the picker without a
+    // sign-in window already up reported "timed out reading the sign-in
+    // window" while holding a perfectly good session cookie.
+    //
+    // The failure is kept rather than dropped: if nothing at all can be read it
+    // is still the honest answer, and it is reported below.
+    let eval_failure = match read_local_storage(window).await {
+        Ok(mut local_storage) => {
+            // MSAL entries arrive as ciphertext; put the plaintext in their place.
+            merge_decrypted(
+                &mut local_storage,
+                read_parked(window, MSAL_DECRYPT_JS).await,
+            );
+            let snapshot = read_cookies(window, section, login_url, local_storage).await?;
+            return Ok(Reading {
+                snapshot,
+                complete: true,
+            });
+        }
+        Err(failure) => failure,
+    };
 
-    // Cookies for both origins: the API we'll be calling, and the identity
-    // provider we just signed in to. Often they differ.
+    let snapshot = read_cookies(window, section, login_url, Vec::new()).await?;
+    if snapshot.cookies.is_empty() {
+        return Err(eval_failure);
+    }
+    Ok(Reading {
+        snapshot,
+        complete: false,
+    })
+}
+
+/// A read of the session, and whether the page itself answered.
+struct Reading {
+    snapshot: Snapshot,
+    /// False when evaluating script failed — the page had not loaded — so this
+    /// holds cookies only. Worth using, and worth retrying: a credential kept
+    /// in `localStorage` would not be in it yet.
+    complete: bool,
+}
+
+/// The cookie half of a snapshot, which needs nothing of the page.
+async fn read_cookies(
+    window: &WebviewWindow,
+    section: &Section,
+    login_url: &str,
+    local_storage: Vec<StorageEntry>,
+) -> Result<Snapshot, BrowserError> {
     // The whole cookie store, not just the two origins we happen to know about.
     // A sign-in commonly ends up setting the session cookie on a host that is
     // neither the API base nor the login URL — a staging subdomain, an apex
@@ -666,7 +724,9 @@ pub async fn silent_recapture(app: &AppHandle, section: &Section) -> Result<Stri
     for _ in 0..SILENT_ATTEMPTS {
         tokio::time::sleep(SILENT_INTERVAL).await;
         if let Ok(found) = read_session(&window, section).await {
-            if let Some(value) = extract(&found, section) {
+            // Cookies-only is fine here: the loop keeps going until something
+            // matches the rule, so a partial read that misses it simply retries.
+            if let Some(value) = extract(&found.snapshot, section) {
                 if !already_open {
                     let _ = window.close();
                 }
