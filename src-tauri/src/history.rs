@@ -55,6 +55,15 @@ pub struct HistoryRecord {
     pub id: String,
     /// The saved request this belongs to, or `scratch`.
     pub request_id: String,
+    /// The collection it was sent from, when it had one.
+    ///
+    /// Stored since the column was added but never handed back, which left the
+    /// window unable to tell two collections apart: a request id is unique
+    /// within a section, and a loaded endpoint's id — `METHOD /path` — is the
+    /// same in every collection describing the same API. `None` for entries
+    /// written before this was returned, and for a scratch send.
+    #[serde(default)]
+    pub section_id: Option<String>,
     /// Epoch milliseconds.
     pub at: i64,
     pub method: String,
@@ -285,7 +294,7 @@ impl HistoryStore {
         let mut statement = connection.prepare(
             "SELECT id, request_id, at, method, url, request_body, error,
                     status, status_text, final_url, headers, is_binary, truncated,
-                    size_bytes, ttfb_ms, total_ms
+                    size_bytes, ttfb_ms, total_ms, section_id
              FROM history ORDER BY at DESC LIMIT ?1",
         )?;
 
@@ -326,6 +335,7 @@ impl HistoryStore {
             Ok(HistoryRecord {
                 id: row.get(0)?,
                 request_id: row.get(1)?,
+                section_id: row.get(16).unwrap_or_default(),
                 at: row.get(2)?,
                 method: row.get(3)?,
                 url: row.get(4)?,
@@ -396,8 +406,25 @@ impl HistoryStore {
         self.remove_where("id = ?1", params![id])
     }
 
-    pub fn clear_request(&self, request_id: &str) -> Result<(), HistoryError> {
-        self.remove_where("request_id = ?1", params![request_id])
+    /// Clears one request's history, within one collection when given.
+    ///
+    /// Unscoped still means every collection, which is what a scratch request
+    /// and an entry written before `section_id` was returned both need. Scoped
+    /// also takes the null-section rows for that id: they are the same
+    /// request's older entries, and leaving them behind would look like the
+    /// clear half-worked.
+    pub fn clear_request(
+        &self,
+        request_id: &str,
+        section_id: Option<&str>,
+    ) -> Result<(), HistoryError> {
+        match section_id {
+            Some(section) => self.remove_where(
+                "request_id = ?1 AND (section_id = ?2 OR section_id IS NULL)",
+                params![request_id, section],
+            ),
+            None => self.remove_where("request_id = ?1", params![request_id]),
+        }
     }
 
     pub fn clear_all(&self) -> Result<(), HistoryError> {
@@ -673,7 +700,7 @@ mod tests {
             .record(&spec("b1", "req-b"), 2, "u", &Ok(response("{}")))
             .unwrap();
 
-        store.clear_request("req-a").unwrap();
+        store.clear_request("req-a", None).unwrap();
         let left = store.list(10).unwrap();
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].request_id, "req-b");

@@ -16,6 +16,18 @@ export interface HistoryEntry {
 	id: string;
 	/** The saved request this belongs to, or `SCRATCH_ID`. */
 	requestId: string;
+	/**
+	 * The collection it was sent from, when it had one.
+	 *
+	 * A request id is unique only *within* a section, and a loaded endpoint's id
+	 * — `METHOD /path` — is identical in every collection describing the same
+	 * API. Bucketing on the id alone put staging's and production's replies in
+	 * one list, so opening either showed whichever was sent last.
+	 *
+	 * `null` for a scratch send, and for anything recorded before this was
+	 * returned; those match any section rather than disappearing.
+	 */
+	sectionId: string | null;
 	at: number;
 	method: string;
 	url: string;
@@ -33,6 +45,7 @@ function fromRecord(record: HistoryRecord): HistoryEntry {
 	return {
 		id: record.id,
 		requestId: record.requestId,
+		sectionId: record.sectionId ?? null,
 		at: record.at,
 		method: record.method,
 		url: record.url,
@@ -76,20 +89,41 @@ class History {
 		}
 	}
 
-	/** Newest first. */
-	forRequest(requestId: string): HistoryEntry[] {
-		return this.entries.filter((entry) => entry.requestId === requestId);
+	/**
+	 * The bucket a request's entries live in.
+	 *
+	 * Section first, because a request id is only unique inside one: two
+	 * collections describing the same API give every loaded endpoint the same
+	 * id, and keying on that alone merged their histories.
+	 */
+	static #bucket(requestId: string, sectionId: string | null | undefined): string {
+		return sectionId ? `${sectionId}\u0000${requestId}` : requestId;
+	}
+
+	/**
+	 * Newest first.
+	 *
+	 * An entry with no section belongs to whichever collection asks. It was
+	 * written before the section came back from the database, and the request it
+	 * names is real — dropping it would look like history had been lost.
+	 */
+	forRequest(requestId: string, sectionId?: string | null): HistoryEntry[] {
+		return this.entries.filter(
+			(entry) =>
+				entry.requestId === requestId &&
+				(!sectionId || !entry.sectionId || entry.sectionId === sectionId)
+		);
 	}
 
 	/** The entry on screen for a request — an explicit pick, else its newest. */
-	selectedFor(requestId: string): HistoryEntry | undefined {
-		const mine = this.forRequest(requestId);
-		const picked = this.#selected[requestId];
+	selectedFor(requestId: string, sectionId?: string | null): HistoryEntry | undefined {
+		const mine = this.forRequest(requestId, sectionId);
+		const picked = this.#selected[History.#bucket(requestId, sectionId)];
 		return mine.find((entry) => entry.id === picked) ?? mine[0];
 	}
 
-	select(requestId: string, entryId: string): void {
-		this.#selected[requestId] = entryId;
+	select(requestId: string, entryId: string, sectionId?: string | null): void {
+		this.#selected[History.#bucket(requestId, sectionId)] = entryId;
 	}
 
 	/** The entry opened from the History tab, if it's still around. */
@@ -125,7 +159,7 @@ class History {
 		// Sending shows the new response, not whatever history was open.
 		this.viewingId = null;
 		this.entries.unshift({ ...entry, pending: true, bodyLoaded: false });
-		this.select(entry.requestId, entry.id);
+		this.select(entry.requestId, entry.id, entry.sectionId);
 	}
 
 	/**
@@ -213,18 +247,30 @@ class History {
 		}
 	}
 
-	async clearFor(requestId: string): Promise<void> {
-		const removed = this.entries.filter((entry) => entry.requestId === requestId);
-		const picked = this.#selected[requestId];
-		this.entries = this.entries.filter((entry) => entry.requestId !== requestId);
-		delete this.#selected[requestId];
+	/**
+	 * Clears one request's history, in one collection when it has one.
+	 *
+	 * Scoped by the same rule `forRequest` reads by, so what disappears is
+	 * exactly what was on screen — clearing staging used to take production's
+	 * entries with it, since both sat under one key.
+	 */
+	async clearFor(requestId: string, sectionId?: string | null): Promise<void> {
+		const mine = (entry: HistoryEntry) =>
+			entry.requestId === requestId &&
+			(!sectionId || !entry.sectionId || entry.sectionId === sectionId);
+
+		const removed = this.entries.filter(mine);
+		const key = History.#bucket(requestId, sectionId);
+		const picked = this.#selected[key];
+		this.entries = this.entries.filter((entry) => !mine(entry));
+		delete this.#selected[key];
 		try {
-			await historyClearRequest(requestId);
+			await historyClearRequest(requestId, sectionId);
 		} catch (error) {
 			// Newest-first order survives: the survivors kept theirs, and the
 			// removed slice kept its own, so a merge by timestamp restores both.
 			this.entries = [...this.entries, ...removed].sort((a, b) => b.at - a.at);
-			if (picked !== undefined) this.#selected[requestId] = picked;
+			if (picked !== undefined) this.#selected[key] = picked;
 			this.error = String(error);
 		}
 	}
