@@ -1,5 +1,25 @@
 # fiber
 
+## 0.14.8
+
+### Patch Changes
+
+- [#87](https://github.com/MathiasWP/fiber/pull/87) [`a703582`](https://github.com/MathiasWP/fiber/commit/a7035828c254598b31d5d0022fc36a4b3d2f5afc) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Keep each collection's response history to itself.
+  
+  Response history was bucketed by request id alone. A loaded endpoint's id is `METHOD /path` and carries no section, so two collections describing the same API — staging and production — shared one list: opening either showed whichever had been sent last, and clearing one deleted both.
+  
+  The database has stored `section_id` since the column was added; it was simply never handed back. It is now, so the window can tell the two apart, and clearing is scoped to the collection you cleared.
+  
+  Entries recorded before this still show for either collection rather than disappearing, since nothing knows which one they came from. A scoped clear takes them too — they are the same request's older entries, and leaving them behind would look like the clear half-worked.
+
+- [#85](https://github.com/MathiasWP/fiber/pull/85) [`ba28ebb`](https://github.com/MathiasWP/fiber/commit/ba28ebbc3e43dd1059b53f97c3e5c0727b2657fd) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Select an endpoint in the collection you clicked it in.
+  
+  Two collections describing the same API — staging and production — give every loaded endpoint the same id, because a loaded id is `METHOD /path` and deliberately carries no section: that is the identity a saved body and a refresh have to agree on, so a re-run re-attaches instead of orphaning.
+  
+  Selection was keyed on that id alone. So both rows highlighted at once, the pane always resolved to whichever collection sorted first, and the second one could not be opened at all — clicking it set an id the store already held, so nothing changed. The selection now carries the section as well.
+  
+  Note that response history is still bucketed by request id, so the same endpoint in two collections shares one history. That is the same root cause and is not fixed here.
+
 ## 0.14.7
 
 ### Patch Changes
