@@ -310,15 +310,62 @@ async fn log_in(
     value_at(&parsed, token_path).ok_or_else(|| AuthError::NoToken(token_path.to_string()))
 }
 
-/// Pulls a value out of a JSON document by dotted path.
+/// Pulls a value out of a JSON document by path.
 ///
 /// Shared with `browser.rs`, which uses it to dig a token out of whatever JSON
 /// blob an SDK left in `localStorage`.
 ///
-/// Accepts an optional `$.` prefix, and numeric segments index into arrays:
-/// `$.data.tokens.0.value`. Deliberately not a full JSONPath — the extra syntax
-/// buys nothing for reading one field out of a login response.
+/// Two syntaxes, and both have to keep working:
+///
+/// - **The dotted one this has always taken.** `$.data.tokens.0.value`, where a
+///   numeric segment indexes an array. It is in every capture rule and every
+///   login config already saved to disk, and it is not valid JSONPath — RFC
+///   9535 wants `$.data.tokens[0].value`, because `.0` is not a member name.
+/// - **Real JSONPath**, via `serde_json_path`, which reaches what the dotted
+///   form cannot: `$..token` for a blob whose depth you don't know,
+///   `$.keys[?(@.active)].secret` for a list you have to pick out of.
+///
+/// So the query is tried first, and the dotted walk answers for anything it
+/// rejects or finds nothing for. That ordering matters: a dotted path is
+/// *usually* also a valid JSONPath, but not always — an object keyed `"0"` is
+/// reachable dotted and not by `[0]` — and the fallback is what makes adopting
+/// the library free of migrations.
 pub(crate) fn value_at(value: &Value, path: &str) -> Option<String> {
+    if let Some(found) = by_json_path(value, path) {
+        return Some(found);
+    }
+    value_at_dotted(value, path)
+}
+
+/// The JSONPath reading, when the path is one and it matches exactly one node.
+///
+/// A query yielding several nodes is ambiguous for "the token", and picking the
+/// first would make a capture rule that silently changes meaning as the
+/// document grows. Nothing is better than arbitrary here — the dotted walk gets
+/// its turn either way.
+fn by_json_path(value: &Value, path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // The library requires the root identifier; the dotted form has always let
+    // it be left off.
+    let query = if trimmed.starts_with('$') {
+        std::borrow::Cow::Borrowed(trimmed)
+    } else {
+        std::borrow::Cow::Owned(format!("$.{trimmed}"))
+    };
+
+    let found = serde_json_path::JsonPath::parse(&query)
+        .ok()?
+        .query(value)
+        .exactly_one()
+        .ok()?;
+    scalar(found)
+}
+
+/// The original walk: dotted segments, numbers indexing arrays.
+fn value_at_dotted(value: &Value, path: &str) -> Option<String> {
     let trimmed = path.trim().trim_start_matches('$').trim_start_matches('.');
     if trimmed.is_empty() {
         return None;
@@ -336,10 +383,16 @@ pub(crate) fn value_at(value: &Value, path: &str) -> Option<String> {
         };
     }
 
-    match current {
+    scalar(current)
+}
+
+/// A credential has to be a single scalar; an object or array is a wrong turn
+/// in the path rather than a token.
+fn scalar(value: &Value) -> Option<String> {
+    match value {
         Value::String(text) => Some(text.clone()),
         // A numeric or boolean token is unusual but not worth rejecting.
-        Value::Number(_) | Value::Bool(_) => Some(current.to_string()),
+        Value::Number(_) | Value::Bool(_) => Some(value.to_string()),
         _ => None,
     }
 }
@@ -380,6 +433,47 @@ mod tests {
         }
     }
 
+    /// What the dotted form cannot reach, and the reason for a real query
+    /// engine rather than a wider hand-rolled one.
+    #[test]
+    fn a_jsonpath_query_reaches_what_a_dotted_path_cannot() {
+        let doc: Value = serde_json::from_str(
+            r#"{"a":{"b":{"c":{"id_token":"deep"}}},
+                "keys":[{"active":false,"secret":"old"},{"active":true,"secret":"new"}]}"#,
+        )
+        .unwrap();
+
+        // Descend to a key whose depth you don't know — the shape an SDK blob
+        // has when it nests by client id and audience.
+        assert_eq!(value_at(&doc, "$..id_token").as_deref(), Some("deep"));
+        // Pick the entry that is current, rather than pinning an index that
+        // moves the next time the list is written.
+        assert_eq!(
+            value_at(&doc, "$.keys[?(@.active == true)].secret").as_deref(),
+            Some("new")
+        );
+    }
+
+    /// Several matches is not "the token". Picking the first would make a
+    /// capture rule quietly change meaning as the document grows.
+    #[test]
+    fn an_ambiguous_query_reports_nothing() {
+        let doc: Value = serde_json::from_str(r#"{"a":{"token":"x"},"b":{"token":"y"}}"#).unwrap();
+        assert_eq!(value_at(&doc, "$..token"), None);
+    }
+
+    /// The one case where the dotted reading and JSONPath genuinely disagree:
+    /// an object keyed "0" is a member, not an index. The fallback is what
+    /// keeps every rule already on disk working.
+    #[test]
+    fn a_numeric_object_key_still_resolves() {
+        let doc: Value = serde_json::from_str(r#"{"sessions":{"0":{"token":"kept"}}}"#).unwrap();
+        assert_eq!(
+            value_at(&doc, "$.sessions.0.token").as_deref(),
+            Some("kept")
+        );
+    }
+
     #[test]
     fn extracts_tokens_by_path() {
         let doc: Value = serde_json::from_str(
@@ -400,6 +494,15 @@ mod tests {
         assert_eq!(value_at(&doc, "$.missing"), None);
         assert_eq!(value_at(&doc, "$.data.tokens.9.value"), None);
         assert_eq!(value_at(&doc, ""), None);
+
+        // Bracket indexing — the spelling RFC 9535 actually wants, which the
+        // dotted walk never accepted.
+        assert_eq!(
+            value_at(&doc, "$.data.tokens[0].value").as_deref(),
+            Some("first")
+        );
+        // A path to an object is not a credential, by either reading.
+        assert_eq!(value_at(&doc, "$.data"), None);
     }
 
     /// A stand-in for the keychain that records how often it was consulted —
