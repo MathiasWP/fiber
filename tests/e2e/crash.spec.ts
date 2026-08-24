@@ -52,6 +52,27 @@ test('Copy puts the report on the clipboard, and Hide dismisses it', async ({ pa
 	await expect(page.getByRole('alert')).toBeHidden();
 });
 
+test('the banner is usable while a dialog is open', async ({ page }) => {
+	await install(page);
+	await page.goto('/');
+
+	// A modal dialog neutralises pointer events on `<body>` and closes itself on
+	// any pointerdown outside it. The banner has to sit above both.
+	await page.waitForFunction(
+		() => !window.__FIBER_TEST__.openPalette.toString().includes('has not registered')
+	);
+	await page.evaluate(() => window.__FIBER_TEST__.openPalette());
+	const palette = page.getByRole('dialog', { name: 'Search endpoints' });
+	await expect(palette).toBeVisible();
+
+	await explode(page, 'broke mid-dialog');
+
+	await page.getByRole('button', { name: 'Hide' }).click();
+	await expect(page.getByRole('alert')).toBeHidden();
+	// The click pressed the button rather than dismissing what was underneath.
+	await expect(palette).toBeVisible();
+});
+
 test('an unhandled rejection is reported the same way', async ({ page }) => {
 	await install(page);
 	await page.goto('/');

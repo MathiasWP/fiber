@@ -70,6 +70,11 @@ export default defineConfig({
 		 *
 		 * A dialog with no z-index at all is the trap: it lands at `auto` beside
 		 * the app root and disappears under the drawer.
+		 *
+		 * The two top layers need `pointer-events-auto` as well. An open modal
+		 * dialog sets `pointer-events: none` on `<body>`, so anything outside it
+		 * inherits that and the click falls through — winning on z-index only
+		 * makes it visible, not clickable.
 		 */
 		'dialog-scrim': 'fixed inset-0 z-60 bg-black/50',
 		// Bits UI menus — `data-highlighted` is what it sets on the active item.

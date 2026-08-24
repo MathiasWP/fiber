@@ -10,9 +10,15 @@
 </script>
 
 {#if updates.stage !== 'idle'}
+	<!--
+		Same as the crash banner: a modal dialog sets `pointer-events: none` on
+		`<body>` and watches `document` for a pointerdown outside itself. Without
+		these two, a click on Update lands on the dialog instead and closes it.
+	-->
 	<div
-		class="fixed bottom-4 right-4 z-100 w-80 rounded-md border border-border bg-panel p-3 shadow-xl"
+		class="pointer-events-auto fixed bottom-4 right-4 z-100 w-80 rounded-md border border-border bg-panel p-3 shadow-xl"
 		role="status"
+		onpointerdown={(event) => event.stopPropagation()}
 	>
 		{#if updates.stage === 'available'}
 			<div class="flex items-start gap-2">
