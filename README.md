@@ -158,11 +158,13 @@ The app you already installed *is* the MCP server — `fiber mcp` is the same
 binary with a different first argument. There is nothing else to install, and
 nothing to build.
 
-The **MCP** tab, beside Collections and History, is the short way in. It lists
+The **MCP** tab, beside Collections and History, is the short way in. It knows
 Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex CLI and Gemini
-CLI with the config file each one uses, and **Add** writes the entry — pointing
-at wherever this copy of Fiber actually lives, which is the part that is
-tedious to find by hand. An entry left behind by a copy that moved shows as
+CLI, and lists the ones it can find on this machine with the config file each
+uses. **Add** writes the entry — pointing at wherever this copy of Fiber
+actually lives, which is the part that is tedious to find by hand. The clients
+it didn't find are one line away, under the list, since that check is a guess
+at a directory rather than a fact. An entry left behind by a copy that moved shows as
 *Update*. Fiber only ever adds or removes its own key: other servers, other
 settings and (in Codex's TOML) every comment stay exactly as they were, and a
 config file that doesn't parse is left alone with the snippet offered instead.

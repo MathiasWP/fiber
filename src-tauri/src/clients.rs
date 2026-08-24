@@ -133,6 +133,25 @@ fn config_path(id: &str) -> Option<PathBuf> {
     }
 }
 
+/// Whether the client looks like it is on this machine.
+///
+/// Its own config file is the best answer, and the directory holding that file
+/// is the next best — a client makes it on first run. The exception is a config
+/// that lives directly in the home directory: `~/.claude.json`'s parent is
+/// `$HOME`, which exists for everybody, so presence has to be asked a different
+/// way. Claude Code's own `~/.claude` directory is that way.
+///
+/// Only ever a hint. Nothing here refuses to install because the answer was no.
+fn detected(id: &str, path: &Path, home: Option<&Path>) -> bool {
+    if path.exists() {
+        return true;
+    }
+    match id {
+        "claude-code" => home.is_some_and(|home| home.join(".claude").is_dir()),
+        _ => path.parent().is_some_and(Path::exists),
+    }
+}
+
 /// The binary an entry should point at: this one.
 ///
 /// On macOS that is the executable inside the bundle
@@ -247,7 +266,7 @@ fn status(client: &Def, binary: &str) -> Status {
         };
     };
 
-    let detected = path.exists() || path.parent().is_some_and(Path::exists);
+    let detected = detected(client.id, &path, dirs::home_dir().as_deref());
     let (state, command, message) = match read_entry(client.shape, &path) {
         Ok(None) => (State::Absent, None, None),
         Ok(Some(entry)) if entry.matches(binary) => (State::Installed, None, None),
@@ -791,6 +810,37 @@ mod tests {
         uninstall_toml(&config).unwrap();
         assert!(!json.exists());
         assert!(!config.exists());
+    }
+
+    #[test]
+    fn a_dotfile_in_the_home_directory_does_not_count_as_the_client_being_there() {
+        let home = temp_dir("detect");
+        let config = home.join(".claude.json");
+
+        // The bug this exists for: `.parent()` of `~/.claude.json` is the home
+        // directory, so the naive answer is "installed" on every machine.
+        assert!(!detected("claude-code", &config, Some(&home)));
+
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        assert!(detected("claude-code", &config, Some(&home)));
+    }
+
+    #[test]
+    fn a_client_with_its_own_directory_is_detected_by_that_directory() {
+        let home = temp_dir("detect-dir");
+        let config = home.join(".cursor").join("mcp.json");
+        assert!(!detected("cursor", &config, Some(&home)));
+
+        fs::create_dir_all(home.join(".cursor")).unwrap();
+        assert!(detected("cursor", &config, Some(&home)));
+    }
+
+    #[test]
+    fn an_existing_config_file_settles_it_whatever_the_client() {
+        let home = temp_dir("detect-file");
+        let config = home.join(".claude.json");
+        fs::write(&config, "{}").unwrap();
+        assert!(detected("claude-code", &config, Some(&home)));
     }
 
     #[test]
