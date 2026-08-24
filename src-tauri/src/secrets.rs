@@ -31,15 +31,6 @@ fn entry(reference: &str) -> Result<keyring::Entry, SecretError> {
     Ok(keyring::Entry::new(SERVICE, reference)?)
 }
 
-/// Reads from a named service. Only the rename migration needs this — the app
-/// itself never looks anywhere but [`SERVICE`].
-pub fn get_from(service: &str, reference: &str) -> Option<String> {
-    keyring::Entry::new(service, reference)
-        .ok()?
-        .get_password()
-        .ok()
-}
-
 pub fn set(reference: &str, value: &str) -> Result<(), SecretError> {
     entry(reference)?.set_password(value)?;
     Ok(())
