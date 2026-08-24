@@ -345,6 +345,16 @@ fn example_string(schema: &serde_json::Value) -> String {
     schema
         .get("example")
         .or_else(|| schema.get("default"))
+        // Same reasoning as `skeleton`: a `const` is the value, stated. A form
+        // field whose schema pins it to one string should arrive holding it
+        // rather than empty.
+        .or_else(|| schema.get("const"))
+        .or_else(|| {
+            schema
+                .get("enum")
+                .and_then(|it| it.as_array())
+                .and_then(|it| it.first())
+        })
         .map(|value| match value {
             serde_json::Value::String(text) => text.clone(),
             other => other.to_string(),
@@ -597,7 +607,15 @@ fn skeleton(
     };
 
     // Anything the document states outright beats anything we invent.
-    for key in ["example", "default"] {
+    //
+    // `const` is JSON Schema's single-value `enum`, and OpenAPI 3.1 documents
+    // lean on it heavily: a literal union is written as
+    // `anyOf: [{const: "once"}, {const: "always"}]`, which is what most 3.1
+    // generators emit where 3.0 would have written an `enum`. Missing it meant
+    // walking into the first branch, finding nothing to go on, and printing the
+    // `string` placeholder for a field whose only legal values were right
+    // there — so the body came back rejected by the very schema it came from.
+    for key in ["example", "default", "const"] {
         if let Some(value) = object.get(key) {
             return value.clone();
         }
@@ -1098,6 +1116,57 @@ paths:
         // A schema with nothing in it is a gap too, and says so rather than
         // claiming the API wants null.
         assert!(body.contains("\"anything\": unknown"), "{body}");
+    }
+
+    /// How OpenAPI 3.1 writes a literal union — and 3.0's `enum` never appears
+    /// in documents that do. Emitting the `string` placeholder for a field
+    /// whose only legal values are named right there produced a body the
+    /// document's own validator rejected.
+    #[test]
+    fn a_const_is_the_value_it_names() {
+        let spec = r##"{
+            "openapi": "3.1.1",
+            "info": { "title": "Acme", "version": "1" },
+            "paths": {
+                "/agent/deny-tool-call": {
+                    "post": {
+                        "requestBody": {
+                            "required": true,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["agentId", "seq", "scope"],
+                                        "properties": {
+                                            "agentId": { "type": "string" },
+                                            "seq": { "type": "integer", "minimum": 1 },
+                                            "scope": {
+                                                "anyOf": [
+                                                    { "type": "string", "const": "once" },
+                                                    { "type": "string", "const": "always" }
+                                                ]
+                                            },
+                                            "kind": { "const": "denial" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }"##;
+
+        let import = parse(spec).unwrap();
+        let body = &import.endpoints[0].body;
+
+        // The first branch of the choice, and its value rather than its type.
+        assert!(body.contains("\"scope\": \"once\""), "{body}");
+        // A bare `const`, with no choice around it.
+        assert!(body.contains("\"kind\": \"denial\""), "{body}");
+        // Everything else still shows what to type.
+        assert!(body.contains("\"agentId\": string"), "{body}");
+        assert!(body.contains("\"seq\": integer"), "{body}");
     }
 
     /// The other spelling of nullable, and the one real specs in the wild use:
