@@ -1217,6 +1217,39 @@
 				{collections.error}
 			</p>
 		{/if}
+
+		<!--
+			A loader failure, unlike the errors above it, belongs to a section and
+			sometimes has a fix. Saying which section is the difference between an
+			unattributable red line and something you can act on; the button is
+			there for the one cause the user can actually clear.
+		-->
+		{#if collections.loaderFailure}
+			{@const failure = collections.loaderFailure}
+			<div class="px-4 py-2 border-t border-border shrink-0 flex flex-col gap-1">
+				<p class="text-2.5 text-bad">
+					<span class="font-medium">{failure.sectionName}</span>
+					· {failure.message}
+				</p>
+				<div class="flex items-center gap-2">
+					{#if failure.canSignIn}
+						<button
+							class="btn-ghost text-2.5"
+							onclick={() => {
+								const section = collections.sections.find((it) => it.id === failure.sectionId);
+								if (section) onOpenSettings(section);
+							}}
+						>
+							<span class="i-lucide-log-in"></span>
+							Sign in again
+						</button>
+					{/if}
+					<button class="btn-ghost text-2.5" onclick={() => (collections.loaderFailure = null)}>
+						Dismiss
+					</button>
+				</div>
+			</div>
+		{/if}
 	{:else}
 		<div class="px-2 py-2 shrink-0">
 			<div class="relative">

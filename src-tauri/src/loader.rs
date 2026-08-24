@@ -225,8 +225,12 @@ pub enum LoaderError {
     NoUrl,
     #[error("the manifest request failed: {0}")]
     Fetch(String),
-    #[error("the manifest request returned {0}")]
-    Status(u16),
+    // The bare status was unactionable: 401 and 403 are what an expired or
+    // rejected credential looks like, and the API almost always says which in
+    // the body. Carrying a snippet of it is the difference between "returned
+    // 403" and "returned 403: CSRF token missing".
+    #[error("the manifest request returned {status}{}", detail.as_deref().map(|d| format!(": {d}")).unwrap_or_default())]
+    Status { status: u16, detail: Option<String> },
     #[error("the response was not JSON: {0}")]
     NotJson(String),
     #[error("that filter isn't valid jq: {0}")]
@@ -439,9 +443,52 @@ async fn fetch_json(
     .map_err(LoaderError::Fetch)?;
 
     if !(200..300).contains(&response.status) {
-        return Err(LoaderError::Status(response.status));
+        return Err(LoaderError::Status {
+            status: response.status,
+            detail: detail_from(&response.body),
+        });
     }
     serde_json::from_str(&response.body).map_err(|err| LoaderError::NotJson(err.to_string()))
+}
+
+/// How much of a rejected manifest body is worth showing.
+const DETAIL_LIMIT: usize = 200;
+
+/// A one-line summary of an error body, for the message a person reads.
+///
+/// APIs answer a rejected request with anything from `{"detail": "..."}` to a
+/// whole HTML login page. The first is the answer; the second is noise, and its
+/// only useful content is that it *is* a login page — which the status already
+/// said. So: pull the usual message fields out of JSON, and otherwise fall back
+/// to a flattened, clipped prefix.
+pub(crate) fn detail_from(body: &str) -> Option<String> {
+    let body = body.trim();
+    if body.is_empty() {
+        return None;
+    }
+
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+        // The fields every framework reaches for, in the order they tend to
+        // carry the most specific message.
+        for key in ["detail", "message", "error_description", "error", "title"] {
+            match value.get(key) {
+                Some(serde_json::Value::String(found)) if !found.trim().is_empty() => {
+                    return Some(clip(found));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Some(clip(body))
+}
+
+fn clip(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match flat.char_indices().nth(DETAIL_LIMIT) {
+        Some((at, _)) => format!("{}…", &flat[..at]),
+        None => flat,
+    }
 }
 
 /// Fills in bodies, tags, descriptions, parameters and schemas when the
@@ -905,8 +952,48 @@ mod tests {
         });
         assert!(matches!(
             run(&config(DEFAULT_QUERY), forbidden).await,
-            Err(LoaderError::Status(403))
+            Err(LoaderError::Status {
+                status: 403,
+                detail: None
+            })
         ));
+    }
+
+    /// The whole point of carrying a body: "returned 403" is unactionable and
+    /// "returned 403: CSRF token missing" is not.
+    #[tokio::test]
+    async fn a_rejected_manifest_explains_itself() {
+        let forbidden: Fetcher = Arc::new(|_| {
+            Box::pin(async {
+                Ok(LoaderResponse {
+                    status: 403,
+                    body: r#"{"detail": "CSRF token missing"}"#.to_string(),
+                })
+            })
+        });
+
+        let message = run(&config(DEFAULT_QUERY), forbidden).await.unwrap_err();
+        assert_eq!(
+            message.to_string(),
+            "the manifest request returned 403: CSRF token missing"
+        );
+    }
+
+    #[test]
+    fn a_login_page_is_flattened_rather_than_dumped() {
+        let html = format!("<html>\n  <body>{}</body>\n</html>", "sign in ".repeat(80));
+        let detail = detail_from(&html).unwrap();
+        assert!(
+            !detail.contains('\n'),
+            "newlines make a one-line message two"
+        );
+        assert!(detail.ends_with('…'), "a long body is clipped: {detail}");
+        assert!(detail.chars().count() <= DETAIL_LIMIT + 1);
+    }
+
+    #[test]
+    fn an_empty_body_adds_nothing() {
+        assert_eq!(detail_from("   "), None);
     }
 
     #[tokio::test]

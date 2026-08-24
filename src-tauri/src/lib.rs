@@ -509,7 +509,10 @@ mod gui {
         .map_err(LoaderError::Fetch)?;
 
         if !(200..300).contains(&response.status) {
-            return Err(LoaderError::Status(response.status));
+            return Err(LoaderError::Status {
+                status: response.status,
+                detail: loader::detail_from(&response.body),
+            });
         }
         serde_json::from_str(&response.body).map_err(|err| LoaderError::NotJson(err.to_string()))
     }

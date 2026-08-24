@@ -40,6 +40,31 @@ export interface LoadedRow {
 	missing: boolean;
 }
 
+/** A loader run that failed, named and — when it can be — actionable. */
+export interface LoaderFailure {
+	sectionId: string;
+	sectionName: string;
+	message: string;
+	/**
+	 * The API rejected the credential rather than the request, and this section
+	 * signs in through a browser — so there is something to click.
+	 */
+	canSignIn: boolean;
+}
+
+/**
+ * Whether a loader error reads as "your credential was not accepted".
+ *
+ * The status arrives inside a message rather than as a field, because the run
+ * goes through jq, pagination and OpenAPI enrichment before anything gets to
+ * report a status — so the string is what there is. 403 counts alongside 401:
+ * plenty of stacks answer a missing or expired session with it, which is
+ * exactly the case where the user is left with nothing to act on.
+ */
+function rejectedCredential(message: string): boolean {
+	return /returned 40[13]\b/.test(message);
+}
+
 /**
  * Sections, mirrored from disk.
  *
@@ -53,6 +78,17 @@ class Collections {
 	selectedRequestId = $state<string | null>(null);
 	loaded = $state(false);
 	error = $state<string | null>(null);
+
+	/**
+	 * The last loader run that failed, if it still matters.
+	 *
+	 * Separate from `error`, and structured, because a loader failure is the one
+	 * error here that is both attributable and actionable: it belongs to a
+	 * section, and when the API rejected the credential the fix is a button
+	 * rather than a paragraph. `error` stays the catch-all for save and load
+	 * failures, which are neither.
+	 */
+	loaderFailure = $state.raw<LoaderFailure | null>(null);
 
 	#timers = new Map<string, ReturnType<typeof setTimeout>>();
 	/**
@@ -108,6 +144,28 @@ class Collections {
 	 * than its data, so it needs no authorization and raises no prompt.
 	 */
 	credential = $state<Record<string, boolean>>({});
+
+	/**
+	 * Sections with a sign-in window open, by id.
+	 *
+	 * A background refresh must not fire at a section you are in the middle of
+	 * signing into: the credential is stale by definition until the capture
+	 * lands, so the run is guaranteed to fail, and it failed *loudly* — a 401 or
+	 * 403 in the sidebar, raised at the exact moment you opened the sign-in
+	 * window, describing a state you were already fixing.
+	 */
+	signingIn = $state<Record<string, boolean>>({});
+
+	beginSignIn(sectionId: string): void {
+		this.signingIn[sectionId] = true;
+		// The stale failure this sign-in is meant to resolve; holding onto it
+		// while the window is open only invites re-reading an obsolete message.
+		if (this.loaderFailure?.sectionId === sectionId) this.loaderFailure = null;
+	}
+
+	endSignIn(sectionId: string): void {
+		delete this.signingIn[sectionId];
+	}
 
 	/** Re-checks one section, after its auth or its secret has changed. */
 	async refreshCredential(section: Section): Promise<void> {
@@ -429,6 +487,11 @@ class Collections {
 			// Already running: a second pass while the first is in flight would
 			// double the requests and race over the same cache.
 			if (this.loading[section.id]) continue;
+			// Mid-sign-in: the credential is stale until the capture lands, so
+			// this run would fail for a reason the user is already fixing. Focus
+			// is one of the two triggers, and opening the sign-in window is
+			// precisely a moment the main window loses and regains it.
+			if (this.signingIn[section.id]) continue;
 
 			const cache = this.loaderCaches[section.id];
 			const age = now - (cache?.loadedAt ?? 0);
@@ -448,10 +511,16 @@ class Collections {
 			const run = await runLoader(section.id);
 			this.#setCache(section.id, { loadedAt: run.loadedAt, endpoints: run.endpoints });
 			this.error = this.#loadError;
+			if (this.loaderFailure?.sectionId === section.id) this.loaderFailure = null;
 			return run;
 		} catch (error) {
 			const message = String(error);
-			this.error = message;
+			this.loaderFailure = {
+				sectionId: section.id,
+				sectionName: section.name,
+				message,
+				canSignIn: section.auth.kind === 'browser' && rejectedCredential(message)
+			};
 			return message;
 		} finally {
 			this.loading[section.id] = false;
