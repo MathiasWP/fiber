@@ -104,6 +104,14 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
+          # This job reads the lockfile and never installs, so there is no store
+          # to cache. Left on, setup-node infers pnpm from `packageManager` and
+          # enables caching anyway: a cache *hit* restores and skips the save, so
+          # this passed for as long as the key kept hitting — and the first
+          # lockfile change missed, tried to save a store that was never created,
+          # and failed the job on a post-step while both audits had passed.
+          # release.yml's draft job turns it off for the same reason.
+          package-manager-cache: false
 
       # --prod: a vulnerable dev tool can't reach a user's machine. High and
       # above, because failing CI over every low advisory teaches people to
