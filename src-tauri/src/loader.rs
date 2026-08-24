@@ -21,6 +21,7 @@
 //! server can run a loader headlessly.
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -193,6 +194,25 @@ pub struct LoaderRun {
     pub pages: usize,
 }
 
+/// A cancellation handle no other request can collide with.
+///
+/// `HttpState` keys in-flight requests by `RequestSpec::id`, and inserting a
+/// second one under a key already there drops the first's cancel sender —
+/// which *is* the cancel signal. Every loader request for a section used the
+/// same id, so any two that overlapped killed each other: a "Fetch a sample"
+/// while a background refresh was out came back "request cancelled", and which
+/// of the two died depended on timing.
+///
+/// Nothing cancels a loader request by id — only the window does that, for
+/// requests a person sent — so the id has no reason to be predictable.
+pub fn request_id(section_id: &str) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "loader:{section_id}:{}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
 /// A request the loader makes, before the section's base URL and auth apply.
 #[derive(Debug, Clone)]
 pub struct LoaderRequest {
@@ -200,10 +220,20 @@ pub struct LoaderRequest {
     pub method: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LoaderResponse {
     pub status: u16,
     pub body: String,
+    /// The absolute URL the request was aimed at, once the section's base URL
+    /// had been applied. The loader itself only ever holds the relative form,
+    /// so the comparison below has to be made against what actually went out.
+    pub requested_url: String,
+    /// Where the response actually came from, after any redirects. Reported on
+    /// a rejection when it left the origin the request was aimed at: a Cookie
+    /// or Authorization credential is dropped on a cross-host hop, so "403"
+    /// and "403, and by the way you ended up somewhere else" are different
+    /// problems with the same status.
+    pub final_url: String,
 }
 
 /// How the host performs the loader's request. Injected so this module stays
@@ -443,12 +473,48 @@ async fn fetch_json(
     .map_err(LoaderError::Fetch)?;
 
     if !(200..300).contains(&response.status) {
-        return Err(LoaderError::Status {
-            status: response.status,
-            detail: detail_from(&response.body),
-        });
+        return Err(rejected(&response));
     }
     serde_json::from_str(&response.body).map_err(|err| LoaderError::NotJson(err.to_string()))
+}
+
+/// The error for a non-2xx manifest response, body and redirect included.
+pub(crate) fn rejected(response: &LoaderResponse) -> LoaderError {
+    let detail = match (
+        detail_from(&response.body),
+        redirect_note(&response.requested_url, &response.final_url),
+    ) {
+        (Some(body), Some(note)) => Some(format!("{body} ({note})")),
+        (Some(body), None) => Some(body),
+        (None, note) => note,
+    };
+
+    LoaderError::Status {
+        status: response.status,
+        detail,
+    }
+}
+
+/// "redirected to <origin>", when the response came from somewhere else.
+///
+/// Compared by origin rather than by whole URL: following a redirect within the
+/// same host is ordinary and says nothing, while leaving the host is the thing
+/// that silently drops the credential.
+fn redirect_note(requested: &str, final_url: &str) -> Option<String> {
+    if final_url.trim().is_empty() {
+        return None;
+    }
+    let (from, to) = (origin_of(requested)?, origin_of(final_url)?);
+    (from != to).then(|| format!("redirected to {to}, which the credential is not sent to"))
+}
+
+fn origin_of(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url.trim()).ok()?;
+    Some(format!(
+        "{}://{}",
+        parsed.scheme(),
+        parsed.host_str().unwrap_or_default()
+    ))
 }
 
 /// How much of a rejected manifest body is worth showing.
@@ -643,6 +709,7 @@ mod tests {
                 Ok(LoaderResponse {
                     status: 200,
                     body: body.replace("{{url}}", &request.url),
+                    ..Default::default()
                 })
             })
         })
@@ -759,6 +826,7 @@ mod tests {
                 Ok(LoaderResponse {
                     status: 200,
                     body: body.to_string(),
+                    ..Default::default()
                 })
             })
         });
@@ -786,6 +854,7 @@ mod tests {
                     status: 200,
                     body: r#"{"routes":[{"verb":"GET","url":"/loop"}],"links":{"next":"/again"}}"#
                         .to_string(),
+                    ..Default::default()
                 })
             })
         });
@@ -947,6 +1016,7 @@ mod tests {
                 Ok(LoaderResponse {
                     status: 403,
                     body: String::new(),
+                    ..Default::default()
                 })
             })
         });
@@ -968,6 +1038,7 @@ mod tests {
                 Ok(LoaderResponse {
                     status: 403,
                     body: r#"{"detail": "CSRF token missing"}"#.to_string(),
+                    ..Default::default()
                 })
             })
         });
@@ -996,6 +1067,51 @@ mod tests {
         assert_eq!(detail_from("   "), None);
     }
 
+    /// Leaving the origin is what silently drops a Cookie or Authorization
+    /// credential, so a 403 that arrived from somewhere else has to say so —
+    /// otherwise it is indistinguishable from the API refusing you outright.
+    #[test]
+    fn a_rejection_after_a_cross_host_redirect_says_where_it_ended_up() {
+        let response = LoaderResponse {
+            status: 403,
+            body: r#"{"message": "Token is empty"}"#.into(),
+            requested_url: "https://staging.example.com/openapi.json".into(),
+            final_url: "https://login.example.com/signin".into(),
+        };
+
+        assert_eq!(
+            rejected(&response).to_string(),
+            "the manifest request returned 403: Token is empty (redirected to \
+             https://login.example.com, which the credential is not sent to)"
+        );
+    }
+
+    /// A redirect that stays put is ordinary and says nothing worth saying.
+    #[test]
+    fn a_same_origin_redirect_is_not_worth_mentioning() {
+        let response = LoaderResponse {
+            status: 403,
+            body: String::new(),
+            requested_url: "https://api.example.com/openapi.json".into(),
+            final_url: "https://api.example.com/v2/openapi.json".into(),
+        };
+
+        assert_eq!(
+            rejected(&response).to_string(),
+            "the manifest request returned 403"
+        );
+    }
+
+    /// Two loader requests must not share a cancellation handle: inserting the
+    /// second under the first's key drops its sender, which reads as a cancel.
+    #[test]
+    fn every_loader_request_gets_its_own_cancel_handle() {
+        let first = request_id("sec-1");
+        let second = request_id("sec-1");
+        assert_ne!(first, second);
+        assert!(first.starts_with("loader:sec-1:"));
+    }
+
     #[tokio::test]
     async fn reports_a_response_that_is_not_json() {
         let html: Fetcher = Arc::new(|_| {
@@ -1003,6 +1119,7 @@ mod tests {
                 Ok(LoaderResponse {
                     status: 200,
                     body: "<html>login</html>".to_string(),
+                    ..Default::default()
                 })
             })
         });

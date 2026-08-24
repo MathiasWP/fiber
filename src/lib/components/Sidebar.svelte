@@ -1227,11 +1227,23 @@
 		{#if collections.loaderFailure}
 			{@const failure = collections.loaderFailure}
 			<div class="px-4 py-2 border-t border-border shrink-0 flex flex-col gap-1">
-				<p class="text-2.5 text-bad">
+				<!--
+					Selectable, because the first thing anyone does with an error
+					they can't act on is try to send it to someone who can.
+				-->
+				<p class="text-2.5 text-bad selectable">
 					<span class="font-medium">{failure.sectionName}</span>
 					· {failure.message}
 				</p>
 				<div class="flex items-center gap-2">
+					<button
+						class="btn-ghost text-2.5"
+						onclick={() =>
+							navigator.clipboard.writeText(`${failure.sectionName}: ${failure.message}`)}
+					>
+						<span class="i-lucide-copy"></span>
+						Copy
+					</button>
 					{#if failure.canSignIn}
 						<button
 							class="btn-ghost text-2.5"
