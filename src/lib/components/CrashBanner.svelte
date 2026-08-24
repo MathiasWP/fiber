@@ -47,6 +47,18 @@
 		record('A background task failed', rejection.reason, 'unhandled promise rejection');
 	}
 
+	/**
+	 * Keeps a click on Copy or Hide from reaching the dialog underneath.
+	 *
+	 * Bits UI watches `document` for a pointerdown outside the open dialog and
+	 * treats it as "dismiss me". This banner is outside every dialog, so without
+	 * this the first click closes the topmost one instead of pressing a button —
+	 * and with dialogs stacked, the banner stays unusable until they're all gone.
+	 */
+	function keepClick(event: PointerEvent) {
+		event.stopPropagation();
+	}
+
 	async function copy() {
 		await navigator.clipboard.writeText(`Fiber ${version}\n${message}\n\n${detail}`);
 	}
@@ -70,9 +82,15 @@
 <svelte:window onerror={onError} onunhandledrejection={onRejection} />
 
 {#if message}
+	<!--
+		`pointer-events-auto` because a modal dialog sets `pointer-events: none` on
+		`<body>`, which this inherits: the click would pass straight through to
+		whatever is behind it. Above the z-index, which is already the highest one.
+	-->
 	<div
-		class="fixed inset-x-0 bottom-0 z-200 border-t border-bad bg-panel p-3 shadow-2xl"
+		class="pointer-events-auto fixed inset-x-0 bottom-0 z-200 border-t border-bad bg-panel p-3 shadow-2xl"
 		role="alert"
+		onpointerdown={keepClick}
 	>
 		<div class="flex items-start gap-2">
 			<span class="i-lucide-circle-alert mt-0.5 shrink-0 text-3.5 text-bad"></span>

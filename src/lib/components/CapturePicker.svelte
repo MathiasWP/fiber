@@ -25,6 +25,12 @@
 	let loadToken = 0;
 
 	interface Candidate {
+		/**
+		 * Unique per row. The rule itself isn't: two cookies can share a name on
+		 * different domains, and a nested leaf can land on the same key/path pair
+		 * as another entry. Keying an `{#each}` on the rule blows up on those.
+		 */
+		id: string;
 		capture: CaptureKind;
 		key: string;
 		path: string;
@@ -101,7 +107,7 @@
 		detail: string,
 		value: string,
 		bonus = 0
-	): Candidate {
+	): Omit<Candidate, 'id'> {
 		// A recognised provider outweighs every heuristic — if we know Auth0 keeps
 		// its token here, that beats guessing from the shape of the string.
 		const known = identify(capture, key, path);
@@ -119,7 +125,7 @@
 
 	const candidates = $derived.by<Candidate[]>(() => {
 		if (!snapshot) return [];
-		const found: Candidate[] = [];
+		const found: Omit<Candidate, 'id'>[] = [];
 
 		for (const cookie of snapshot.cookies) {
 			found.push(
@@ -187,7 +193,9 @@
 			}
 		}
 
-		return found.sort((a, b) => b.score - a.score);
+		return found
+			.map((entry, index) => ({ ...entry, id: String(index) }))
+			.sort((a, b) => b.score - a.score);
 	});
 
 	const SOURCE_STYLE: Record<CaptureKind, string> = {
@@ -281,7 +289,7 @@
 						Nothing matches “{query}” — {candidates.length} values in this session.
 					</p>
 				{:else}
-					{#each visible as candidate (candidate.capture + candidate.key + candidate.path)}
+					{#each visible as candidate (candidate.id)}
 						<button
 							class="w-full text-left px-4 py-2 border-b border-border/50 hover:bg-raised transition-colors"
 							onclick={() =>

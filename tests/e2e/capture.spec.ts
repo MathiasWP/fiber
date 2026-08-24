@@ -110,6 +110,54 @@ test('IndexedDB entries are listed alongside cookies', async ({ page }) => {
 	await expect(page.getByText('indexeddb')).toBeVisible();
 });
 
+test('the same cookie name on two domains lists twice rather than crashing', async ({ page }) => {
+	// The rule — source, key and path — repeats here, so it cannot be the list
+	// key: Svelte throws `each_key_duplicate` and renders nothing at all.
+	await install(page, {
+		snapshot: {
+			localStorage: [],
+			cookies: [
+				{ name: 'sid', value: 'root-value', domain: '.acme.com', httpOnly: true },
+				{ name: 'sid', value: 'api-value', domain: 'api.acme.com', httpOnly: true }
+			],
+			indexedDb: []
+		},
+		sections: [section({ auth: browserAuth })]
+	});
+	await page.goto('/');
+	await openPicker(page);
+
+	await expect(page.getByText('sid', { exact: true })).toHaveCount(2);
+	await expect(page.getByText('.acme.com · HttpOnly', { exact: true })).toBeVisible();
+	await expect(page.getByText('api.acme.com · HttpOnly', { exact: true })).toBeVisible();
+	await expect(page.getByRole('alert')).toBeHidden();
+
+	await page.getByText('api-value').click();
+	await expect(page.getByText('captured', { exact: true })).toBeVisible();
+});
+
+test('a key and a nested leaf that run together are listed separately', async ({ page }) => {
+	// `authtoken` with no path and `auth` with the leaf `token` concatenate to
+	// the same string, which is the other way the old key collided.
+	await install(page, {
+		snapshot: {
+			localStorage: [
+				{ key: 'authtoken', value: 'flat-one' },
+				{ key: 'auth', value: '{"token":"nested-one"}' }
+			],
+			cookies: [],
+			indexedDb: []
+		},
+		sections: [section({ auth: browserAuth })]
+	});
+	await page.goto('/');
+	await openPicker(page);
+
+	await expect(page.getByText('flat-one')).toBeVisible();
+	await expect(page.getByText('nested-one')).toBeVisible();
+	await expect(page.getByRole('alert')).toBeHidden();
+});
+
 test('a capture failure is shown on the auth tab', async ({ page }) => {
 	await install(page, {
 		captureError: 'nothing matched',
