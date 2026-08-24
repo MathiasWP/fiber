@@ -645,12 +645,20 @@
 		// request come back showing whichever entry you last inspected.
 		history.viewingId = entry.id;
 
-		if (collections.findRequest(entry.requestId)) {
+		// A history entry names a request but not the collection it was in, so an
+		// id two collections share resolves to whichever sorts first. Keeping the
+		// section it resolved to at least makes the selection self-consistent —
+		// the pane and the highlighted row agree — rather than leaving the
+		// section pointing at whatever was open before.
+		const found = collections.findRequest(entry.requestId);
+		if (found) {
 			collections.selectedRequestId = entry.requestId;
+			collections.selectedSectionId = found.section.id;
 			return;
 		}
 
 		collections.selectedRequestId = null;
+		collections.selectedSectionId = null;
 		scratch.method = entry.method;
 		scratch.path = entry.url;
 		// Unconditionally, including when empty: what's on screen has to be what

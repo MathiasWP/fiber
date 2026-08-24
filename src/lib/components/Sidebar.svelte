@@ -316,9 +316,21 @@
 		history.stopViewing();
 	}
 
-	function selectRequest(id: string) {
+	function selectRequest(section: Section, id: string) {
 		history.stopViewing();
 		collections.selectedRequestId = id;
+		collections.selectedSectionId = section.id;
+	}
+
+	/**
+	 * Whether this row is the selected one.
+	 *
+	 * By section *and* id: two collections describing the same API give every
+	 * loaded endpoint the same id, so comparing the id alone lit up the row in
+	 * both of them.
+	 */
+	function isSelected(section: Section, id: string): boolean {
+		return collections.selectedRequestId === id && collections.selectedSectionId === section.id;
 	}
 
 	function selectLoaded(section: Section, row: LoadedRow) {
@@ -350,7 +362,10 @@
 	/** Drops user data for an endpoint the loader no longer reports. */
 	function dropOverlay(section: Section, id: string) {
 		section.overlay = section.overlay.filter((entry) => entry.id !== id);
-		if (collections.selectedRequestId === id) collections.selectedRequestId = null;
+		if (isSelected(section, id)) {
+			collections.selectedRequestId = null;
+			collections.selectedSectionId = null;
+		}
 		collections.flush(section);
 	}
 
@@ -563,8 +578,8 @@
 		<ContextMenu.Root>
 		<ContextMenu.Trigger
 			class="flex items-center gap-2 {indent} pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
-				{collections.selectedRequestId === request.id ? 'bg-raised' : ''}"
-			onclick={() => selectRequest(request.id)}
+				{isSelected(section, request.id) ? 'bg-raised' : ''}"
+			onclick={() => selectRequest(section, request.id)}
 		>
 			<span
 				class="font-mono text-2.5 font-bold shrink-0 w-9 {methodColor(request.method)}"
@@ -648,7 +663,7 @@
 	<ContextMenu.Root>
 		<ContextMenu.Trigger
 			class="flex items-center gap-2 {indent} pr-4 py-1 w-full text-left cursor-default transition-colors hover:bg-raised
-				{collections.selectedRequestId === row.request.id ? 'bg-raised' : ''}"
+				{isSelected(section, row.request.id) ? 'bg-raised' : ''}"
 			onclick={() => selectLoaded(section, row)}
 		>
 			<span

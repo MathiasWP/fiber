@@ -76,6 +76,22 @@ function rejectedCredential(message: string): boolean {
 class Collections {
 	sections = $state<Section[]>([]);
 	selectedRequestId = $state<string | null>(null);
+	/**
+	 * Which collection the selected request belongs to.
+	 *
+	 * A request id is only unique *within* a section. A loaded endpoint's id is
+	 * `endpointKey` — `"GET /users"` — because that is the identity a saved body
+	 * and a refresh have to agree on, and it is deliberately free of the section
+	 * so a re-run re-attaches rather than orphaning. The cost is that two
+	 * collections describing the same API, staging and production, give every
+	 * endpoint the same id in both.
+	 *
+	 * Selecting by id alone then meant both rows highlighted, `findRequest`
+	 * always answered with whichever collection sorted first, and clicking the
+	 * other one set the id it already held — so nothing changed and the row
+	 * could not be opened at all.
+	 */
+	selectedSectionId = $state<string | null>(null);
 	loaded = $state(false);
 	error = $state<string | null>(null);
 
@@ -182,7 +198,7 @@ class Collections {
 	}
 
 	get selected(): Selection | null {
-		return this.findRequest(this.selectedRequestId);
+		return this.findRequest(this.selectedRequestId, this.selectedSectionId);
 	}
 
 	/**
@@ -190,13 +206,29 @@ class Collections {
 	 *
 	 * History entries outlive their requests — a request can be deleted, and
 	 * some entries never had one, having come from a loader or the MCP server.
+	 *
+	 * `sectionId` disambiguates an id two collections both hold, which is every
+	 * loaded endpoint when the same API is set up twice. It is a preference
+	 * rather than a filter: a history entry recorded before this existed names
+	 * no section, and answering nothing for it would lose the request it points
+	 * at — so the search falls back to the first match, which is what it always
+	 * did.
 	 */
-	findRequest(id: string | null): Selection | null {
+	findRequest(id: string | null, sectionId?: string | null): Selection | null {
 		if (!id) return null;
+
+		const inSection = (section: Section) =>
+			section.requests.find((candidate) => candidate.id === id) ??
+			section.overlay.find((candidate) => candidate.id === id);
+
+		if (sectionId) {
+			const named = this.sections.find((section) => section.id === sectionId);
+			const request = named && inSection(named);
+			if (named && request) return { section: named, request };
+		}
+
 		for (const section of this.sections) {
-			const request =
-				section.requests.find((candidate) => candidate.id === id) ??
-				section.overlay.find((candidate) => candidate.id === id);
+			const request = inSection(section);
 			if (request) return { section, request };
 		}
 		return null;
@@ -309,6 +341,7 @@ class Collections {
 			this.touch(section);
 		}
 		this.selectedRequestId = request.id;
+		this.selectedSectionId = section.id;
 	}
 
 	/** Requests belonging to no collection, if any have been made. */
@@ -730,10 +763,15 @@ class Collections {
 		// mirror is worse than a row that briefly came back.
 		const index = this.sections.findIndex((candidate) => candidate.id === section.id);
 		const selected = this.selectedRequestId;
+		const selectedIn = this.selectedSectionId;
 
 		this.sections = this.sections.filter((candidate) => candidate.id !== section.id);
-		if (section.requests.some((r) => r.id === this.selectedRequestId)) {
+		// The whole collection is going, so anything selected inside it goes too —
+		// by section rather than by request id, which the collection next door may
+		// also hold.
+		if (this.selectedSectionId === section.id) {
 			this.selectedRequestId = null;
+			this.selectedSectionId = null;
 		}
 		clearTimeout(this.#timers.get(section.id));
 		this.#timers.delete(section.id);
@@ -744,6 +782,7 @@ class Collections {
 			restored.splice(Math.max(0, index), 0, section);
 			this.sections = restored;
 			this.selectedRequestId = selected;
+			this.selectedSectionId = selectedIn;
 			this.error = String(error);
 		}
 	}
@@ -773,13 +812,17 @@ class Collections {
 		target.requests.push(request);
 		target.collapsed = false;
 		this.selectedRequestId = request.id;
+		this.selectedSectionId = target.id;
 		await this.flush(target);
 		return request;
 	}
 
 	async removeRequest(section: Section, request: SavedRequest): Promise<void> {
 		section.requests = section.requests.filter((candidate) => candidate.id !== request.id);
-		if (this.selectedRequestId === request.id) this.selectedRequestId = null;
+		if (this.selectedRequestId === request.id && this.selectedSectionId === section.id) {
+			this.selectedRequestId = null;
+			this.selectedSectionId = null;
+		}
 		await this.flush(section);
 	}
 
@@ -792,6 +835,7 @@ class Collections {
 		const at = section.requests.findIndex((candidate) => candidate.id === request.id);
 		section.requests.splice(at + 1, 0, copy);
 		this.selectedRequestId = copy.id;
+		this.selectedSectionId = section.id;
 		await this.flush(section);
 	}
 }
