@@ -1,5 +1,18 @@
 # fiber
 
+## 0.14.0
+
+### Minor Changes
+
+- [#68](https://github.com/MathiasWP/fiber/pull/68) [`098da51`](https://github.com/MathiasWP/fiber/commit/098da51344090e39c3f0cc6f33489ed4f2c34898) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Add an MCP tab beside Collections and History that installs Fiber into an AI client for you. It lists Claude Code, Claude Desktop, Cursor, VS Code, Windsurf, Codex CLI and Gemini CLI with the config file each one uses, and Add writes the entry pointing at wherever this copy of the app actually lives. An entry left behind by a copy that has moved shows as Update. The edit only ever adds or removes Fiber's own key: other servers and settings survive, Codex's hand-written TOML keeps its comments and key order, and a config file that doesn't parse is left untouched with the snippet offered to paste instead. Below the list, the ToolHive route is offered as a copyable command with a link to its guide, for collections served from a repo rather than this machine.
+
+### Patch Changes
+
+- [#67](https://github.com/MathiasWP/fiber/pull/67) [`3c60cbd`](https://github.com/MathiasWP/fiber/commit/3c60cbdcc60243055e015f029e29c43a3354cfd6) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Loader folders now start collapsed. A spec with hundreds of endpoints opens to
+  its list of tags rather than a wall of paths, and each folder header carries the
+  full count of what it holds. Endpoints are paged in per open folder, so opening
+  one mounts its rows and a closed one costs nothing.
+
 ## 0.13.0
 
 ### Minor Changes
