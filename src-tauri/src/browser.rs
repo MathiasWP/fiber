@@ -578,11 +578,21 @@ pub fn extract(snapshot: &Snapshot, section: &Section) -> Option<String> {
         return None;
     }
 
-    match capture {
+    let found = match capture {
+        // By name across every domain, and the *first one with a value* wins.
+        //
+        // Signing out, and some sign-in flows on the way through, set the
+        // session cookie to the empty string to clear it — on the identity
+        // provider's domain, or an apex, while the real one lands elsewhere.
+        // Matching on name alone then had a coin-flip chance of capturing the
+        // blank, which stored happily, went out as `Cookie: sid=`, and came
+        // back as the API's own version of "token is empty" — a rejection that
+        // looks like a server problem and is actually an empty header.
         CaptureKind::Cookie => snapshot
             .cookies
             .iter()
-            .find(|cookie| cookie.name == key)
+            .filter(|cookie| cookie.name == key)
+            .find(|cookie| !cookie.value.trim().is_empty())
             .map(|cookie| format!("{}={}", cookie.name, cookie.value)),
 
         // Auth0's storage key embeds a client id and audience, and Firebase's
@@ -606,7 +616,13 @@ pub fn extract(snapshot: &Snapshot, section: &Section) -> Option<String> {
                 })?;
             dig(&entry.value, path)
         }
-    }
+    };
+
+    // An empty credential is not a credential. Reporting nothing sends the
+    // caller down the "sign in again" path, which is the true state of things;
+    // storing it instead bought a header the API was always going to reject,
+    // and a message blaming the API for it.
+    found.filter(|value| !value.trim().is_empty())
 }
 
 /// Exact key first, then prefix.
@@ -831,6 +847,69 @@ mod tests {
         assert_eq!(
             extract(&auth0_snapshot(), &section).as_deref(),
             Some("sid=session-xyz")
+        );
+    }
+
+    /// Signing out clears the session cookie by setting it empty, often on a
+    /// different host than the one that holds the live one. Matching by name
+    /// alone then picked whichever came first, and a blank capture goes out as
+    /// `Cookie: sid=` — which the API reports as an empty token, not as a
+    /// missing sign-in.
+    #[test]
+    fn a_cleared_cookie_does_not_shadow_the_live_one() {
+        let mut snapshot = auth0_snapshot();
+        snapshot.cookies.insert(
+            0,
+            CookieEntry {
+                name: "sid".into(),
+                value: String::new(),
+                domain: "login.example.com".into(),
+                http_only: true,
+            },
+        );
+
+        assert_eq!(
+            extract(&snapshot, &section(CaptureKind::Cookie, "sid", "")).as_deref(),
+            Some("sid=session-xyz")
+        );
+    }
+
+    /// And when the blank one is all there is, that is "sign in again" rather
+    /// than a credential worth storing.
+    #[test]
+    fn a_cookie_with_no_value_is_not_a_credential() {
+        let snapshot = Snapshot {
+            local_storage: vec![],
+            cookies: vec![CookieEntry {
+                name: "sid".into(),
+                value: "   ".into(),
+                domain: "api.example.com".into(),
+                http_only: true,
+            }],
+            indexed_db: vec![],
+        };
+
+        assert_eq!(
+            extract(&snapshot, &section(CaptureKind::Cookie, "sid", "")),
+            None
+        );
+    }
+
+    /// The same for a stored token that resolves to an empty string.
+    #[test]
+    fn an_empty_stored_value_is_not_a_credential() {
+        let snapshot = Snapshot {
+            local_storage: vec![StorageEntry {
+                key: "token".into(),
+                value: String::new(),
+            }],
+            cookies: vec![],
+            indexed_db: vec![],
+        };
+
+        assert_eq!(
+            extract(&snapshot, &section(CaptureKind::LocalStorage, "token", "")),
+            None
         );
     }
 

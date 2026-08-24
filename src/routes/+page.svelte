@@ -73,6 +73,8 @@
 		};
 	}
 	let settingsFor = $state.raw<Section | null>(null);
+	/** Set alongside `settingsFor` when the drawer was opened to sign in. */
+	let settingsIntent = $state.raw<'sign-in' | null>(null);
 	let bodyEditor = $state<Editor>();
 
 	const selection = $derived<Selection | null>(collections.selected);
@@ -109,12 +111,15 @@
 	 * section being left before replacing it; otherwise only the newly opened
 	 * section is flushed when the drawer eventually closes.
 	 */
-	async function openSettings(next: Section) {
+	async function openSettings(next: Section, intent: 'sign-in' | null = null) {
 		const previous = settingsFor;
 		if (previous && previous.id !== next.id) {
 			await collections.flush(previous);
 			await browserClose(previous.id);
 		}
+		// Before the section, so the drawer never sees a new section carrying the
+		// last one's intent and signs into the wrong thing.
+		settingsIntent = intent;
 		settingsFor = next;
 	}
 
@@ -720,7 +725,14 @@
 			<!-- `relative` is what the settings drawer anchors to: it opens from this
 			     pane's left edge, which is the sidebar's right edge. -->
 			<main class="relative grid grid-rows-[auto_1fr] min-h-0 min-w-0 h-full">
-				<SectionSettings section={settingsFor} onClose={() => (settingsFor = null)} />
+				<SectionSettings
+					section={settingsFor}
+					intent={settingsIntent}
+					onClose={() => {
+						settingsFor = null;
+						settingsIntent = null;
+					}}
+				/>
 				<!-- URL bar -->
 				<div class="flex items-center gap-2 px-3 h-11 border-b border-border bg-panel shrink-0">
 					<MethodSelect bind:value={draft.method} />
@@ -1207,7 +1219,7 @@
 											</span>
 											<button
 												class="btn-ghost text-2.5 ml-auto"
-												onclick={() => (settingsFor = rejectedCredential)}
+												onclick={() => openSettings(rejectedCredential, 'sign-in')}
 											>
 												<span class="i-lucide-log-in"></span>
 												Sign in again

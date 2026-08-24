@@ -22,10 +22,20 @@
 	interface Props {
 		/** The section being edited, or null when closed. */
 		section: Section | null;
+		/**
+		 * Why the drawer was opened, when it wasn't the settings button.
+		 *
+		 * `sign-in` comes from the "Sign in again" the sidebar and the response
+		 * pane offer after the API turned a credential down. Someone who clicked
+		 * that has already said what they want, so landing them on the General
+		 * tab to find Auth and press Open sign-in themselves is three steps of
+		 * nothing.
+		 */
+		intent?: 'sign-in' | null;
 		onClose: () => void;
 	}
 
-	let { section, onClose }: Props = $props();
+	let { section, intent = null, onClose }: Props = $props();
 
 	let tab = $state('general');
 	/** Whether the keychain already holds this section's credential. */
@@ -92,6 +102,27 @@
 			return;
 		}
 		hasSecret(reference).then((exists) => (stored = exists));
+	});
+
+	/**
+	 * Carry out the intent the drawer was opened with, once per opening.
+	 *
+	 * Keyed on the section id rather than on `intent` alone: the prop stays
+	 * `sign-in` for as long as the drawer is open, so without a guard this would
+	 * re-open the window on every unrelated state change.
+	 */
+	let acted: string | null = null;
+	$effect(() => {
+		if (!section || intent !== 'sign-in') {
+			if (!section) acted = null;
+			return;
+		}
+		if (acted === section.id) return;
+		acted = section.id;
+		tab = 'auth';
+		// Only browser auth has a window to open; the others are a field to type
+		// in, and the Auth tab is already the whole answer.
+		if (section.auth.kind === 'browser') signIn();
 	});
 
 	function changeKind(next: AuthKind) {

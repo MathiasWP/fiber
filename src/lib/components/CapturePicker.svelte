@@ -128,6 +128,11 @@
 		const found: Omit<Candidate, 'id'>[] = [];
 
 		for (const cookie of snapshot.cookies) {
+			// A blank cookie is a cleared one — signing out sets the session
+			// cookie to the empty string, and some sign-in flows do it on the way
+			// through. Offering it invites picking a credential that can only ever
+			// go out as `Cookie: sid=`.
+			if (!cookie.value.trim()) continue;
 			found.push(
 				candidate(
 					'cookie',
