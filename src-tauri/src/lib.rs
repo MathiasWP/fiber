@@ -40,6 +40,7 @@ mod gui {
     use crate::history::{self, HistoryError, HistoryRecord, HistoryStore};
     use crate::http::{BodyEvent, ChunkSink, HttpError, HttpState, RequestSpec, ResponseData};
     use crate::loader::{self, LoaderError, LoaderRun};
+    use crate::mcp;
     use crate::openapi;
     use crate::secrets::{self, SecretError};
     use crate::send::{send_authenticated, send_authenticated_streaming};
@@ -59,6 +60,10 @@ mod gui {
     struct Paths {
         sections: PathBuf,
         loaders: PathBuf,
+        /// The root, not just the two directories under it: the credential
+        /// file a containerised MCP server reads lives here too. See
+        /// mcp::sync_secrets_file.
+        data: PathBuf,
     }
 
     /// Parsed loader caches, keyed by section id.
@@ -279,8 +284,16 @@ mod gui {
     // call on the thread that pumps the event loop is a frozen window. Nothing
     // here needs to await; `async` is what moves the work off that thread.
     #[tauri::command]
-    async fn set_secret(reference: String, value: String) -> Result<(), SecretError> {
-        secrets::set(&reference, &value)
+    async fn set_secret(
+        paths: State<'_, Paths>,
+        reference: String,
+        value: String,
+    ) -> Result<(), SecretError> {
+        secrets::set(&reference, &value)?;
+        // The keychain is the record; this only mirrors the change into the
+        // file a containerised server reads, and only if one has been set up.
+        mcp::sync_secrets_file(&paths.data, &reference, Some(&value));
+        Ok(())
     }
 
     /// The UI can ask whether a secret exists; it can never read one back.
@@ -290,8 +303,10 @@ mod gui {
     }
 
     #[tauri::command]
-    async fn delete_secret(reference: String) -> Result<(), SecretError> {
-        secrets::delete(&reference)
+    async fn delete_secret(paths: State<'_, Paths>, reference: String) -> Result<(), SecretError> {
+        secrets::delete(&reference)?;
+        mcp::sync_secrets_file(&paths.data, &reference, None);
+        Ok(())
     }
 
     /// Forces the next send for this section to log in again.
@@ -352,6 +367,10 @@ mod gui {
 
         if let Some(reference) = section.auth.secret_ref() {
             secrets::set(reference, &value).map_err(|err| BrowserError::Eval(err.to_string()))?;
+            // Signing in again is exactly the case a container used to miss:
+            // the keychain got the new credential and the running server went
+            // on presenting the expired one.
+            mcp::sync_secrets_file(&paths.data, reference, Some(&value));
         }
         auth_state.invalidate(&section_id);
         crate::browser::close(&app, &section_id);
@@ -648,6 +667,7 @@ mod gui {
         section: Section,
     ) -> Result<(), StoreError> {
         store::save(&paths.sections, &section)?;
+        mcp::sync_section_sharing(&paths.data, &section);
         sections.remember(section);
         Ok(())
     }
@@ -661,6 +681,10 @@ mod gui {
     ) -> Result<(), StoreError> {
         // The loader cache is derived data; it has no business outliving its section.
         loader::forget_cache(&paths.loaders, &id);
+        // Same for the credential file a container reads: the app writes
+        // `<sectionId>:auth`, so the reference is derivable without the section
+        // that is about to go.
+        mcp::sync_secrets_file(&paths.data, &format!("{id}:auth"), None);
         mem.forget(&id);
         sections.forget(&id);
         store::delete(&paths.sections, &id)
@@ -771,6 +795,7 @@ mod gui {
                 app.manage(Paths {
                     sections: store::sections_dir(&app_data_dir),
                     loaders: loader::loaders_dir(&app_data_dir),
+                    data: app_data_dir.clone(),
                 });
                 app.manage(LoaderMem::new());
                 app.manage(SectionMem::new());

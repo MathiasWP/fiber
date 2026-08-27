@@ -21,10 +21,10 @@ rather than the desktop app's own collections, name it:
 curl -fsSL .../toolhive.sh | bash -s -- ~/work/api-collections
 ```
 
-The script finds your collections directory, moves the credentials for the
-collections you have shared into ToolHive's secret store, and starts the server.
-Rerunning it replaces the workload and refreshes the credentials, which is what
-you want after signing in again.
+The script finds your collections directory, sets up the credentials for the
+collections you have shared, and starts the server. Signing in again in Fiber
+reaches the running server on its own — see [Credentials](#credentials) — so
+rerunning this is for changing what you serve, not for refreshing a token.
 
 The image is published by the release workflow for `linux/amd64` and
 `linux/arm64`, so there is nothing to build and nothing to push. ToolHive pulls
@@ -64,6 +64,9 @@ section files. Two things a section needs to be usable over MCP:
 - for authenticated sections, a `secretRef` — the app writes `"<sectionId>:auth"`.
   That exact string is the key you provide below.
 
+`/data` is also where the credentials file lives when the app is keeping one
+current, which is why that half needs no separate mount.
+
 `/data` should be **writable and persistent**: loader caches, request history and
 spilled response bodies are written there, and `query_response` reads a stored
 body back, so it needs to survive between tool calls. The image runs as the
@@ -81,24 +84,68 @@ image.
 
 The desktop app keeps secrets in the OS keychain and the section file holds only
 a reference. A container can reach neither, so the headless build takes them
-from the environment instead: `FIBER_SECRETS` is a JSON object of
-`reference → value`, and `FIBER_SECRETS_FILE` is a path to a file holding the
-same. Both are unset in the desktop app, which still uses only the keychain.
+from the environment instead. There are two ways in, and they differ in one
+thing that matters a lot in practice: whether signing in again reaches a server
+that is already running.
 
-Building that map by hand is the one genuinely tedious part, so the app will
-write it for you:
+### The file the app keeps current (what the script sets up)
+
+`FIBER_SECRETS_FILE` points at a file of `reference → value`, and the server
+re-reads it whenever it needs a credential. Put that file in the directory you
+already mount and the desktop app will keep it up to date as you work: sign in
+again, and the next tool call picks the new token up. No re-export, no restart.
+
+That mount is the only channel the two halves share — the app cannot write to
+ToolHive's secret store, and the container cannot read the keychain — so the
+file is encrypted rather than plain, with `FIBER_SECRETS_KEY`. The key stays out
+of the mount: in the keychain on the app's side, in ToolHive's encrypted store
+on the container's. A copy of the file on its own is inert, and a tampered one
+fails to open rather than decrypting to something else.
+
+```sh
+/Applications/Fiber.app/Contents/MacOS/fiber mcp file-key | thv secret set fiber-key
+/Applications/Fiber.app/Contents/MacOS/fiber mcp export-secrets --to \
+  "$HOME/Library/Application Support/dev.fiber.app/mcp-secrets.enc"
+
+thv run --name fiber --transport stdio -v /path/to/your/collections:/data \
+  --secret fiber-key,target=FIBER_SECRETS_KEY \
+  --env FIBER_SECRETS_FILE=/data/mcp-secrets.enc \
+  ghcr.io/mathiaswp/fiber-mcp:latest
+```
+
+`file-key` creates the key on first use and returns the same one thereafter, so
+rerunning any of this is safe: the key is long-lived and the values rotate
+underneath it.
+
+**The file's existence is the opt-in.** The app writes to it only if it is
+already there, so a desktop-only user never has credentials on disk, and
+deleting the file opts back out.
+
+Both commands refuse to run into a terminal, so the key and the credentials go
+down a pipe or into a `0600` file rather than into your scrollback. Reading
+secrets back out of the keychain is the one thing nothing else in Fiber does;
+macOS may ask you to approve each one.
+
+### The snapshot (`FIBER_SECRETS`)
+
+`FIBER_SECRETS` is a JSON object of `reference → value` in the environment. It
+is simpler, and it is what to use when there is no app on the machine to keep a
+file current — a collections repo on a server, say.
 
 ```sh
 /Applications/Fiber.app/Contents/MacOS/fiber mcp export-secrets |
   thv secret set fiber-secrets
+
+thv run --name fiber --transport stdio -v /path/to/your/collections:/data \
+  --secret fiber-secrets,target=FIBER_SECRETS \
+  ghcr.io/mathiaswp/fiber-mcp:latest
 ```
 
-It emits `{"<secretRef>": "<value>"}` for every collection you have shared over
-MCP — and only those, so it hands out nothing an agent could not already use. It
-writes to stdout and refuses to run into a terminal, so the credentials go down
-the pipe into ToolHive's encrypted store without touching a file, a shell
-variable or your scrollback. It is the only thing in Fiber that reads a secret
-back out of the keychain; macOS may ask you to approve each one.
+A process's environment cannot change under it, so this is a **snapshot taken
+when the workload started**. Sign in again and the container will go on
+presenting the old credential until you re-export and replace the workload —
+rerunning `toolhive.sh` does both. That is the behaviour the file above exists
+to avoid.
 
 If you have no app on the machine, the same map typed by hand does the same job:
 
@@ -107,32 +154,27 @@ thv secret set fiber-secrets
 # paste, e.g.:  {"acme-api:auth":"eyJhbGciOi...","stripe:auth":"sk_live_..."}
 ```
 
-Either way, one flag on the run command uses it:
-
-```sh
-thv run --name fiber --transport stdio -v /path/to/your/collections:/data \
-  --secret fiber-secrets,target=FIBER_SECRETS \
-  ghcr.io/mathiaswp/fiber-mcp:latest
-```
-
 For a login-request section the value is the request body (`{"user":"…","password":"…"}`);
 for bearer/browser sections it's the token or cookie string — exactly what the
 app would have put in the keychain.
 
-If you'd rather not manage a JSON blob, mount a file and set
-`--env FIBER_SECRETS_FILE=/run/secrets/fiber.json` instead of the `--secret`
-line.
+`FIBER_SECRETS` wins over the file if you somehow set both. An unencrypted
+`FIBER_SECRETS_FILE` still works when `FIBER_SECRETS_KEY` is unset, for a file
+you manage yourself; setting the key and pointing it at a plaintext file is an
+error rather than a silent downgrade, and so is an encrypted file with no key.
 
 ### Why this is not as good as the keychain
 
-Inside a container, injected secrets live in the process environment (or a
-mounted file) rather than the OS keychain — that's the unavoidable cost of a
+Inside a container, injected secrets live in the process environment or a
+mounted file rather than the OS keychain — that's the unavoidable cost of a
 container that can't reach the keychain, and it's the standard container
-pattern. ToolHive's encrypted secret store decrypts and injects them at runtime,
-which is why `--secret` is preferable to a plain `--env`. The redaction guarantee
-still holds: `authorization`, `cookie`, `set-cookie`, `proxy-authorization` and
-`x-api-key` are stripped from every response the server returns, so an injected
-credential can't be laundered back out through a tool result.
+pattern. Encrypting the file narrows the gap: what is at rest in the mount is
+ciphertext, and the key is held by ToolHive's encrypted secret store, which is
+why `--secret` is preferable to a plain `--env` for it. The redaction guarantee
+still holds either way: `authorization`, `cookie`, `set-cookie`,
+`proxy-authorization` and `x-api-key` are stripped from every response the
+server returns, so an injected credential can't be laundered back out through a
+tool result.
 
 ## Building the image yourself
 

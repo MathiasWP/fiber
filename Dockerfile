@@ -29,7 +29,7 @@ ARG TARGETARCH
 # --no-default-features drops Tauri entirely (see Cargo.toml [features]) — and
 # with it the Linux keychain, whose D-Bus backend needs libdbus here and a
 # session bus at runtime, neither of which a container has. Secrets come from
-# FIBER_SECRETS instead. The musl target links the CRT statically by default, so
+# FIBER_SECRETS, or from the FIBER_SECRETS_FILE the app keeps current, instead. The musl target links the CRT statically by default, so
 # the result needs no libc.
 #
 # The binary is copied to a fixed path because the target triple is not known to
