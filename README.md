@@ -112,8 +112,10 @@ in memory from then on.
 The single exception is `fiber mcp export-secrets`, which exists so that a
 containerised copy can be given the credentials it cannot fetch itself — see
 [`deploy/toolhive.md`](deploy/toolhive.md). It covers only the collections you
-have shared over MCP, it writes to a pipe and refuses a terminal, and you have
-to run it deliberately.
+have shared over MCP, it writes to a pipe or an encrypted file and refuses a
+terminal, and you have to run it deliberately. Once you have set that up, the
+app keeps the file current as you sign in, so a container stops going stale;
+without it, nothing is ever written to disk.
 
 A header you type on a request beats the collection's auth — for "just this
 once, use a different token". `Cookie` is the exception, and has to be: cookies

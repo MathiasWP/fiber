@@ -18,7 +18,10 @@ set -euo pipefail
 # Overridable for a mirror, a pinned version, or a local build under test.
 IMAGE="${FIBER_IMAGE:-ghcr.io/mathiaswp/fiber-mcp:latest}"
 NAME="fiber"
-SECRET="fiber-secrets"
+# The sealing key lives in ToolHive's store; the credentials it seals live in
+# the mounted collections directory, so the app can keep them current.
+SECRET_KEY="fiber-key"
+SECRETS_FILE="mcp-secrets.enc"
 
 die() {
 	echo "$*" >&2
@@ -71,27 +74,39 @@ fi
 secret_args=()
 if [ -x "$app" ]; then
 	echo "Copying credentials out of the keychain..."
-	# Straight down a pipe into ToolHive's encrypted store — the JSON never
-	# reaches a file, a shell variable or the terminal. macOS may ask for
-	# permission once per credential; that prompt is the keychain doing its job.
+	# Two pieces, and the split is the point. The *key* goes into ToolHive's
+	# encrypted store, where it sits unchanged for the life of the workload. The
+	# *credentials* go into a file inside the collections directory we are about
+	# to mount, sealed with that key — so signing in again in Fiber rewrites the
+	# file, the running container reads it on its next 401, and nothing has to be
+	# re-exported or restarted. Before this, a container held whatever was true
+	# when it started.
 	#
-	# FIBER_DATA_DIR so it reports on the collections we are about to serve,
-	# which is not the app's own directory when a repo was named.
+	# The key never reaches the mount and the credentials never reach the
+	# terminal: each goes straight down a pipe or straight to a 0600 file.
 	#
 	# `< /dev/null` is not decoration. Under `curl | bash` this script *is*
 	# bash's stdin, so a child inherits the rest of it — and a copy of Fiber too
-	# old to know `export-secrets` would take that for MCP traffic and sit there
+	# old to know these commands would take that for MCP traffic and sit there
 	# reading. With stdin closed the worst case is an immediate empty result,
 	# which the check below turns into an explanation.
-	if FIBER_DATA_DIR="$data" "$app" mcp export-secrets < /dev/null |
-		thv secret set "$SECRET" > /dev/null; then
-		secret_args=(--secret "$SECRET,target=FIBER_SECRETS")
-	else
-		echo "Could not store the credentials." >&2
+	if ! "$app" mcp file-key < /dev/null | thv secret set "$SECRET_KEY" > /dev/null; then
+		echo "Could not store the sealing key." >&2
 		echo "  - if ToolHive has no secrets provider yet: run 'thv secret setup'" >&2
-		echo "  - if Fiber said nothing about export-secrets: update it, that command is newer" >&2
+		echo "  - if Fiber said nothing about file-key: update it, that command is newer" >&2
 		exit 1
 	fi
+	# FIBER_DATA_DIR so it reports on the collections we are about to serve,
+	# which is not the app's own directory when a repo was named.
+	if ! FIBER_DATA_DIR="$data" "$app" mcp export-secrets --to "$data/$SECRETS_FILE" \
+		< /dev/null; then
+		echo "Could not write the credentials file." >&2
+		exit 1
+	fi
+	secret_args=(
+		--secret "$SECRET_KEY,target=FIBER_SECRETS_KEY"
+		--env "FIBER_SECRETS_FILE=/data/$SECRETS_FILE"
+	)
 else
 	echo "Fiber is not installed here, so there are no credentials to copy."
 	echo "Authenticated collections will need FIBER_SECRETS — see deploy/toolhive.md."

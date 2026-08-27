@@ -79,8 +79,24 @@ where
     let prepared = apply_auth(http_state, auth_state, section, spec, lookup).await?;
     let first = http::send_streaming(http_state, prepared, sink).await;
 
-    let should_retry =
-        matches!(&first, Ok(response) if response.status == 401) && retry_spec.is_some();
+    let rejected = matches!(&first, Ok(response) if response.status == 401);
+
+    // A static token cannot be refreshed by replaying anything, so there is no
+    // retry to make — but where the credential comes from a source that changes
+    // underneath the process, the cached copy is still worth dropping so the
+    // *next* send reads the new one. That is a containerised server whose
+    // credential file the app has just rewritten: without this, a bearer
+    // collection would present the token it started with for the life of the
+    // workload, because nothing else ever expires a zero-TTL entry.
+    //
+    // Conditioned on there being such a source, because in the desktop app the
+    // same line would buy nothing and cost a keychain prompt per 401 — see
+    // `auth::header_for` on why reads are lazy.
+    if rejected && retry_spec.is_none() && crate::secrets::has_injected_source() {
+        auth_state.invalidate(&section.id);
+    }
+
+    let should_retry = rejected && retry_spec.is_some();
     if !should_retry {
         return first;
     }
@@ -350,6 +366,103 @@ mod tests {
             2,
             "one rejected attempt, then one retry"
         );
+    }
+
+    /// An API that only accepts one exact token, for the container story: the
+    /// credential is not refreshed by replaying a request, it is *replaced on
+    /// disk* by the desktop app when someone signs in again.
+    async fn fixed_token_api(accepted: &'static str) -> (String, Arc<Calls>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let calls = Arc::new(Calls {
+            logins: AtomicUsize::new(0),
+            protected: AtomicUsize::new(0),
+        });
+
+        let counters = calls.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let counters = counters.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let read = socket.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..read]).to_string();
+                    counters.protected.fetch_add(1, Ordering::SeqCst);
+                    let ok = request.contains(&format!("Bearer {accepted}"));
+                    let status = if ok { "200 OK" } else { "401 Unauthorized" };
+                    let _ = socket
+                        .write_all(
+                            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes(),
+                        )
+                        .await;
+                    let _ = socket.flush().await;
+                });
+            }
+        });
+
+        (format!("http://{addr}"), calls)
+    }
+
+    /// The whole containerised story, end to end: a bearer collection whose
+    /// credential arrives through `FIBER_SECRETS_FILE`, a server holding the
+    /// token it started with, and a sign-in in the desktop app that rewrites
+    /// the file underneath it.
+    ///
+    /// Before this worked, the second send below returned 401 forever — the
+    /// file was read once into a `OnceLock` at startup, and a zero-TTL bearer
+    /// entry was never dropped because bearer auth cannot be refreshed.
+    #[tokio::test]
+    async fn a_rewritten_credential_file_reaches_a_running_server() {
+        let (base, _calls) = fixed_token_api("new-token").await;
+        let dir = std::env::temp_dir().join(format!("fiber-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secrets.json");
+        std::fs::write(&path, r#"{"sec-1:auth":"old-token"}"#).unwrap();
+
+        // SAFETY: no other test reads this variable, and the reads it causes all
+        // happen on this task before it is removed at the end.
+        unsafe { std::env::set_var("FIBER_SECRETS_FILE", &path) };
+
+        let section = Section {
+            id: "sec-1".into(),
+            name: "Test".into(),
+            base_url: base.clone(),
+            auth: AuthConfig::Bearer {
+                secret_ref: "sec-1:auth".into(),
+            },
+            ..Default::default()
+        };
+        let http_state = HttpState::default();
+        let auth_state = AuthState::default();
+
+        let send = || {
+            send_authenticated(
+                &http_state,
+                &auth_state,
+                Some(&section),
+                spec_for(&base),
+                &crate::secrets::get,
+                None,
+            )
+        };
+
+        // The token the workload started with. Rejected, and now also dropped
+        // from the cache, which is the half that used to be missing.
+        assert_eq!(send().await.unwrap().status, 401);
+
+        // Signing in again in Fiber. Same length, as a refreshed token usually
+        // is — an mtime+size stamp would not have noticed this.
+        std::fs::write(&path, r#"{"sec-1:auth":"new-token"}"#).unwrap();
+
+        let after = send().await.unwrap().status;
+        unsafe { std::env::remove_var("FIBER_SECRETS_FILE") };
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(after, 200, "the next send should use the rewritten token");
     }
 
     /// A genuine 401 must not loop: exactly one retry, then give up.

@@ -762,11 +762,21 @@ impl FiberMcp {
             hints.push("The response could not be persisted, so query_response is unavailable.");
             log::warn!("could not record MCP response {id}: {err}");
         }
-        if response.status == 401 && matches!(section.auth, crate::auth::AuthConfig::Browser { .. })
-        {
-            hints.push(
-                "Browser credentials cannot refresh headlessly. Sign in again in Fiber, then restart the MCP server or re-export container secrets.",
-            );
+        // A 401 that survived the retry means re-authenticating did not help,
+        // and the reason depends on where the credential came from. The retry
+        // re-reads it (`send::send_authenticated_streaming` invalidates first),
+        // so a credential file that the app keeps current has already been
+        // consulted — which is why the advice is no longer "restart the server".
+        if response.status == 401 && section.auth.secret_ref().is_some() {
+            let browser = matches!(section.auth, crate::auth::AuthConfig::Browser { .. });
+            hints.push(if browser {
+                "Browser credentials cannot be re-captured headlessly. Sign in again in Fiber \
+                 — if this server reads a credential file the app keeps current, the next call \
+                 picks it up; otherwise re-export its secrets."
+            } else {
+                "Re-authenticating did not help, so the stored credential is being rejected. \
+                 Check it in Section settings."
+            });
         }
 
         #[derive(Serialize)]
@@ -1081,6 +1091,192 @@ fn collect_secrets(
     exported
 }
 
+/// Where the app keeps the credential file a containerised server reads.
+///
+/// Deliberately inside the data directory, because that is the directory
+/// ToolHive already mounts at `/data` — the app and the container have no other
+/// channel, and the mount is already how collection edits reach a running
+/// server. See `secrets::file_secrets` for the reading half.
+pub fn secrets_file(data: &std::path::Path) -> std::path::PathBuf {
+    data.join(secrets::FILE_NAME)
+}
+
+/// The key that seals that file, created on first use.
+///
+/// Cached for the life of the process: on an ad-hoc signed build every keychain
+/// read is a password prompt, and the app rewrites the file on every sign-in.
+/// Reading once per run rather than once per write is the difference between
+/// one prompt and one per credential change.
+fn file_key() -> Result<String, String> {
+    static KEY: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        if let Some(existing) = crate::secrets::get(secrets::KEY_REF) {
+            return Ok(existing);
+        }
+        let key = secrets::new_key()?;
+        secrets::set(secrets::KEY_REF, &key).map_err(|err| err.to_string())?;
+        Ok(key)
+    })
+    .clone()
+}
+
+/// Prints the sealing key, for `thv secret set`.
+///
+/// Same terminal guard as `export_secrets`, and for the same reason: this is a
+/// key to credentials, so it goes down a pipe or nowhere.
+pub fn print_file_key() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{IsTerminal, Write};
+
+    if std::io::stdout().is_terminal() {
+        return Err("This prints a key, so it only writes to a pipe.\n\
+                    Try: fiber mcp file-key | thv secret set fiber-key"
+            .into());
+    }
+    let key = file_key()?;
+    let mut out = std::io::stdout();
+    out.write_all(key.as_bytes())?;
+    out.flush()?;
+    Ok(())
+}
+
+/// Replaces the file, sealed, in one step that a reader cannot catch half-done.
+///
+/// `0600` before the rename rather than after: a credential file that is
+/// world-readable for even a moment is world-readable.
+fn write_sealed(
+    path: &std::path::Path,
+    secrets: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<(), String> {
+    let sealed =
+        crate::secrets::seal(key, &serde_json::Value::Object(secrets.clone()).to_string())?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| format!("{}: {err}", parent.display()))?;
+    }
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, sealed).map_err(|err| format!("{}: {err}", temporary.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))
+            .map_err(|err| format!("{}: {err}", temporary.display()))?;
+    }
+    std::fs::rename(&temporary, path).map_err(|err| format!("{}: {err}", path.display()))
+}
+
+fn read_sealed(
+    path: &std::path::Path,
+    key: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(err) => return Err(format!("{}: {err}", path.display())),
+    };
+    let plain = crate::secrets::open(key, &raw)?;
+    serde_json::from_str(&plain).map_err(|err| format!("{}: {err}", path.display()))
+}
+
+/// Writes the whole map to `path`, sealed — the setup half of `export_secrets`.
+///
+/// Reads every shared collection's credential out of the keychain, so it is a
+/// deliberate one-off rather than something the app does as you work. The
+/// as-you-work path is `sync_secrets_file`, which touches one reference.
+pub fn export_secrets_to(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let sections = store::load_all(&store::sections_dir(&app_data_dir()))?;
+    let exported = collect_secrets(&sections, crate::secrets::get);
+    let shared = sections
+        .iter()
+        .filter(|section| section.mcp.enabled)
+        .count();
+    write_sealed(path, &exported, &file_key()?)?;
+    // How many, not which — the same reticence as the piped form.
+    eprintln!(
+        "Wrote {} credential(s) from {} shared collection(s) to {}.",
+        exported.len(),
+        shared,
+        path.display()
+    );
+    Ok(())
+}
+
+/// Keeps one reference in the credential file current, if that file exists.
+///
+/// This is what makes signing in again reach a running container without a
+/// re-export or a restart. The file's *existence* is the opt-in: `toolhive.sh`
+/// creates it, and a desktop-only user never has one, so nothing is written
+/// behind their back. Deleting it opts back out.
+///
+/// Surgical on purpose. Rebuilding the whole map would re-read every shared
+/// collection's credential from the keychain on every sign-in — on an ad-hoc
+/// signed build, a prompt each. The new value is already in hand at every call
+/// site, so only the key that changed is touched.
+pub fn sync_secrets_file(data: &std::path::Path, reference: &str, value: Option<&str>) {
+    let path = secrets_file(data);
+    if !path.exists() {
+        return;
+    }
+    if let Err(err) = file_key().and_then(|key| sync_inner(&path, reference, value, &key)) {
+        // Never fails the action the user actually took — saving a credential
+        // has already succeeded by this point, and the keychain is the record.
+        // A stale container is recoverable; a sign-in that reports failure
+        // because a container it knows nothing about could not be updated is
+        // just confusing.
+        log::warn!("could not update {}: {err}", path.display());
+    }
+}
+
+fn sync_inner(
+    path: &std::path::Path,
+    reference: &str,
+    value: Option<&str>,
+    key: &str,
+) -> Result<(), String> {
+    let mut current = read_sealed(path, key)?;
+    let changed = match value {
+        Some(value) => {
+            let value = serde_json::Value::String(value.to_string());
+            current.insert(reference.to_string(), value.clone()) != Some(value)
+        }
+        None => current.remove(reference).is_some(),
+    };
+    // Rewriting an unchanged file would still bump its mtime, and every running
+    // server would re-read and re-decrypt it for nothing.
+    if changed {
+        write_sealed(path, &current, key)?;
+    }
+    Ok(())
+}
+
+/// Brings a section's presence in the credential file in line with whether it
+/// is shared, after a save that may have toggled either.
+///
+/// The keychain is read only when a section has just been shared and its
+/// credential is not in the file yet — one read, not one per collection.
+pub fn sync_section_sharing(data: &std::path::Path, section: &Section) {
+    let Some(reference) = section.auth.secret_ref() else {
+        return;
+    };
+    let path = secrets_file(data);
+    if !path.exists() {
+        return;
+    }
+    if !section.mcp.enabled {
+        sync_secrets_file(data, reference, None);
+        return;
+    }
+    match file_key().and_then(|key| read_sealed(&path, &key)) {
+        Ok(current) if current.contains_key(reference) => {}
+        Ok(_) => {
+            if let Some(value) = crate::secrets::get(reference) {
+                sync_secrets_file(data, reference, Some(&value));
+            }
+        }
+        Err(err) => log::warn!("could not read {}: {err}", path.display()),
+    }
+}
+
 /// Serves MCP over stdio until the client disconnects.
 pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let data = app_data_dir();
@@ -1322,6 +1518,60 @@ mod tests {
         let (accented, cut) = truncate(&"é".repeat(5), 3);
         assert_eq!(accented, "ééé");
         assert!(cut);
+    }
+
+    /// The bug this exists for: sign in again, and a running container has to
+    /// see the new credential without anyone re-exporting or restarting it.
+    #[test]
+    fn signing_in_again_rewrites_the_credential_the_container_reads() {
+        let dir = std::env::temp_dir().join(format!("fiber-sync-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = secrets_file(&dir);
+        let key = crate::secrets::new_key().unwrap();
+
+        write_sealed(&path, &Default::default(), &key).unwrap();
+        sync_inner(&path, "sec-1:auth", Some("first"), &key).unwrap();
+        assert_eq!(
+            read_sealed(&path, &key).unwrap()["sec-1:auth"],
+            serde_json::json!("first")
+        );
+
+        sync_inner(&path, "sec-1:auth", Some("second"), &key).unwrap();
+        assert_eq!(
+            read_sealed(&path, &key).unwrap()["sec-1:auth"],
+            serde_json::json!("second"),
+            "the second sign-in must replace the first"
+        );
+
+        // And the file on disk never holds either in the clear.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(crate::secrets::is_sealed(&raw));
+        assert!(!raw.contains("second"), "credential in the clear: {raw}");
+
+        sync_inner(&path, "sec-1:auth", None, &key).unwrap();
+        assert!(
+            !read_sealed(&path, &key).unwrap().contains_key("sec-1:auth"),
+            "deleting a credential must take it out of the file too"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The file's existence is the opt-in. A desktop-only user never has one,
+    /// and must never have credentials written to disk behind their back.
+    #[test]
+    fn without_a_file_nothing_is_written() {
+        let dir = std::env::temp_dir().join(format!("fiber-sync-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // No keychain is touched either — `file_key` is never reached, which is
+        // what keeps this off the password-prompt path for ordinary users.
+        sync_secrets_file(&dir, "sec-1:auth", Some("tok"));
+        assert!(!secrets_file(&dir).exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
