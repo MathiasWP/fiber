@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "fiber"
-version = "0.14.10"
+version = "0.15.0"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
