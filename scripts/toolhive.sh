@@ -22,6 +22,10 @@ NAME="fiber"
 # the mounted collections directory, so the app can keep them current.
 SECRET_KEY="fiber-key"
 SECRETS_FILE="mcp-secrets.enc"
+# What the pre-0.15 setup used: a JSON snapshot of every credential, injected
+# as FIBER_SECRETS. Replaced by the file above, and named here only so a rerun
+# can tell you it is now dead weight.
+LEGACY_SECRET="fiber-secrets"
 
 die() {
 	echo "$*" >&2
@@ -65,8 +69,16 @@ fi
 
 # A rerun should replace the workload rather than collide with it. `thv rm`
 # takes the container away; the collections and the secret both outlive it.
+#
+# This is also the only migration path off the pre-0.15 setup, and nothing else
+# will prompt anyone to take it: a workload created back then goes on reading a
+# frozen FIBER_SECRETS snapshot, quietly, for as long as it runs. Saying so here
+# is the difference between "my new collection 401s over MCP but works in the
+# app" and knowing why.
+replaced=""
 if thv list --all 2> /dev/null | grep -q "^$NAME[[:space:]]"; then
 	echo "Replacing the existing '$NAME' workload..."
+	replaced="yes"
 	thv stop "$NAME" > /dev/null 2>&1 || true
 	thv rm "$NAME" > /dev/null 2>&1 || true
 fi
@@ -129,5 +141,21 @@ fi
 
 echo
 echo "Done. '$NAME' is serving $data."
+
+# The snapshot outlives the workload that used it, and ToolHive gives no sign
+# that nothing reads it any more. Left in place it is a stale copy of every
+# credential you had the day it was taken, so it is worth saying out loud.
+if [ -n "$replaced" ] && [ "${#secret_args[@]}" -ne 0 ] &&
+	thv secret list 2> /dev/null |
+	grep -q -- "^[[:space:]]*-[[:space:]]*$LEGACY_SECRET\$"; then
+	echo
+	echo "This workload reads the credentials file, so signing in again in Fiber"
+	echo "reaches it without a rerun. The '$LEGACY_SECRET' snapshot it used before is"
+	echo "no longer read by anything, and holds whatever your credentials were the"
+	echo "day it was taken. Remove it with:"
+	echo "  thv secret delete $LEGACY_SECRET"
+fi
+
+echo
 echo "Check it with:  thv list"
 echo "Point a client at it with:  thv client setup"
