@@ -27,6 +27,47 @@ test.describe('the General tab', () => {
 		await expect(page.getByText('https://pay.example.com/v1', { exact: true })).toBeVisible();
 	});
 
+	test('an access policy replaces the write switch, and shows what it would do', async ({
+		page
+	}) => {
+		await install(page, {
+			sections: [section()],
+			policyTemplates: [['Read-only', 'if .method == "GET" then "allow" else "deny" end']],
+			policyPreview: {
+				items: [
+					{ method: 'GET', path: '/users', name: 'listUsers', loaded: true, access: 'allow' },
+					{ method: 'POST', path: '/orders', name: 'createOrder', loaded: true, access: 'ask' }
+				]
+			}
+		});
+		await page.goto('/');
+		await openSettings(page);
+
+		const drawer = page.locator('.drawer');
+		await expect(drawer.getByLabel('Allow more than GET, HEAD and OPTIONS')).toBeVisible();
+		await drawer.getByRole('button', { name: 'Add an access policy' }).click();
+
+		// The switch and the policy are the same decision, so only one is offered.
+		await expect(drawer.getByLabel('Allow more than GET, HEAD and OPTIONS')).toHaveCount(0);
+		// And the answers are shown against the collection's real endpoints.
+		await expect(drawer.getByText('1 allow')).toBeVisible();
+		await expect(drawer.getByText('1 ask')).toBeVisible();
+		await expect(drawer.getByText('/orders')).toBeVisible();
+
+		await drawer.getByRole('button', { name: 'Remove' }).first().click();
+		await expect(drawer.getByLabel('Allow more than GET, HEAD and OPTIONS')).toBeVisible();
+	});
+
+	test('a policy that cannot run says so, rather than looking permissive', async ({ page }) => {
+		await install(page, {
+			sections: [section({ mcp: { enabled: true, allowWrites: false, policy: 'not jq' } })],
+			policyPreview: { items: [], warning: 'that filter isn\'t valid jq' }
+		});
+		await page.goto('/');
+		await openSettings(page);
+		await expect(page.locator('.drawer').getByText("that filter isn't valid jq")).toBeVisible();
+	});
+
 	test('MCP write access is locked until the collection is shared', async ({ page }) => {
 		await install(page, { sections: [section()] });
 		await page.goto('/');

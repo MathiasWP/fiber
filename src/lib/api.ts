@@ -244,6 +244,12 @@ export interface LoadedEndpoint {
 	description: string;
 	/** OpenAPI tag, used as a folder. Empty is ungrouped. */
 	tag?: string;
+	/**
+	 * What the manifest says about this endpoint beyond the fields above: every
+	 * scalar `x-` extension when it is OpenAPI, plus anything the filter added.
+	 * Fiber never reads a key of its own out of it — an access policy does.
+	 */
+	meta?: Record<string, unknown>;
 	parameters?: SpecParam[];
 	/** A JSON body to start from, when the manifest was an OpenAPI document. */
 	body: string;
@@ -272,6 +278,12 @@ export interface McpAccess {
 	enabled: boolean;
 	/** Whether they may use anything but GET, HEAD and OPTIONS. */
 	allowWrites: boolean;
+	/**
+	 * A jq filter answering `"allow"`, `"ask"` or `"deny"` per endpoint, for an
+	 * API where the HTTP method doesn't say what a call does. Empty leaves
+	 * `allowWrites` in charge; set, it decides everything, GET included.
+	 */
+	policy?: string;
 }
 
 /** A group of requests sharing a base URL. */
@@ -480,6 +492,38 @@ export function parseOpenApi(text: string): Promise<Import> {
 /** Worked filters for the manifest shapes people actually hit. */
 export function loaderTemplates(): Promise<[string, string][]> {
 	return invoke<[string, string][]>('loader_templates');
+}
+
+/** What an agent may do with one endpoint. */
+export type Access = 'allow' | 'ask' | 'deny';
+
+export interface PolicyRow {
+	method: string;
+	path: string;
+	name: string;
+	/** True when a loader reported this rather than someone typing it. */
+	loaded: boolean;
+	access: Access;
+}
+
+export interface PolicyPreview {
+	items: PolicyRow[];
+	/** Set when the policy could not run, in which case every row denies. */
+	warning?: string | null;
+}
+
+/**
+ * How a policy would answer for every endpoint a collection has. Pure jq over
+ * data already on disk — nothing is fetched and nothing is sent — so it can run
+ * as the filter is typed.
+ */
+export function policyPreview(sectionId: string, policy: string): Promise<PolicyPreview> {
+	return invoke<PolicyPreview>('policy_preview', { sectionId, policy });
+}
+
+/** Starting points for a policy, offered in the editor. */
+export function policyTemplates(): Promise<[string, string][]> {
+	return invoke<[string, string][]>('policy_templates');
 }
 
 /** Write-only by design: there is no command to read a secret back out. */

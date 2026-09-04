@@ -172,6 +172,14 @@ export interface MockOptions {
 	/** What a refresh reports instead. Defaults to `loaded` — no change. */
 	refreshed?: LoadedEndpoint[];
 	templates?: [string, string][];
+	/** What `policy_templates` offers. Empty hides the picker. */
+	policyTemplates?: [string, string][];
+	/** What `policy_preview` answers, since the mock cannot run jq. */
+	policyPreview?: {
+		items: { method: string; path: string; name: string; loaded: boolean; access: string }[];
+		warning?: string | null;
+	};
+	policyPreviewError?: string;
 	/** Held open so a test can drive the stream itself. See `chunk` below. */
 	deferSend?: boolean;
 	/** Held open so a test can observe the refresh while it is still running. */
@@ -521,6 +529,12 @@ export async function install(page: Page, options: MockOptions = {}): Promise<vo
 					}
 					case 'loader_templates':
 						return Promise.resolve(opts.templates ?? []);
+					case 'policy_templates':
+						return Promise.resolve(opts.policyTemplates ?? []);
+					case 'policy_preview':
+						if (opts.policyPreviewError)
+							return Promise.reject(new Error(opts.policyPreviewError));
+						return Promise.resolve(opts.policyPreview ?? { items: [], warning: null });
 					case 'default_loader':
 						return Promise.resolve({
 							enabled: true,
