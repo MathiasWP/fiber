@@ -125,6 +125,11 @@ where
                 // Setting one up explicitly, through Pick credential, still
                 // writes — that is a credential chosen on purpose, and worth
                 // keeping.
+                //
+                // None of that applies to the credentials file a containerised
+                // server reads, which is not the keychain and costs no prompt,
+                // so the recapturer mirrors the new value into it before
+                // returning. See `browser::BrowserRecapture`.
                 auth_state.store(&section.id, value, 0);
             }
             // The window is now visible for the user to sign in; the original

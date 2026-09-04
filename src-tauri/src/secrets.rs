@@ -276,7 +276,74 @@ fn injected(reference: &str) -> Option<String> {
 /// dropping a cached token on a 401 costs a container one file read and costs
 /// the app a keychain prompt.
 pub fn has_injected_source() -> bool {
-    std::env::var_os("FIBER_SECRETS").is_some() || std::env::var_os("FIBER_SECRETS_FILE").is_some()
+    injected_source() != InjectedSource::None
+}
+
+/// Where a headless server's credentials come from.
+///
+/// Knowing *which* is the difference between an accurate explanation and a
+/// misleading one when a credential is missing, so this is deliberately finer
+/// than [`has_injected_source`]. `Snapshot` is the case worth naming: a
+/// process's environment cannot change under it, so a collection signed into
+/// after the workload started is not stale in `FIBER_SECRETS` — it is absent,
+/// and nothing the server does will make it appear. The same absence under
+/// `File` means the app has never written that reference, which is a different
+/// problem with a different fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectedSource {
+    /// The desktop app: the keychain, and nothing injected.
+    None,
+    /// `FIBER_SECRETS`, frozen when the process started.
+    Snapshot,
+    /// `FIBER_SECRETS_FILE`, re-read on every lookup.
+    File,
+    /// Both. `injected` resolves the snapshot first, so it behaves as
+    /// `Snapshot` for anything the snapshot happens to hold.
+    Both,
+}
+
+pub fn injected_source() -> InjectedSource {
+    source_of(
+        std::env::var_os("FIBER_SECRETS").is_some(),
+        std::env::var_os("FIBER_SECRETS_FILE").is_some(),
+    )
+}
+
+/// Split from the environment read so the mapping — and the advice that hangs
+/// off it — is testable without setting process-wide variables, which the tests
+/// here deliberately never do.
+fn source_of(snapshot: bool, file: bool) -> InjectedSource {
+    match (snapshot, file) {
+        (true, true) => InjectedSource::Both,
+        (true, false) => InjectedSource::Snapshot,
+        (false, true) => InjectedSource::File,
+        (false, false) => InjectedSource::None,
+    }
+}
+
+impl InjectedSource {
+    /// How a missing credential should be explained under this source.
+    ///
+    /// `None` returns nothing: the desktop app's own message already fits, and
+    /// appending container advice to it would be noise in the one place the
+    /// keychain really is the answer.
+    pub fn missing_credential_advice(self) -> Option<&'static str> {
+        match self {
+            InjectedSource::None => Option::None,
+            InjectedSource::Snapshot | InjectedSource::Both => Some(
+                "This server reads credentials from FIBER_SECRETS, a snapshot taken when the \
+                 workload started, so a collection signed into afterwards is not in it. \
+                 Re-export and replace the workload, or switch to the credentials file the \
+                 app keeps current — see deploy/toolhive.md.",
+            ),
+            InjectedSource::File => Some(
+                "This server reads credentials from FIBER_SECRETS_FILE, which the app rewrites \
+                 whenever one changes. Signing in to this collection in Fiber will put it \
+                 there; if you already have, check that the app writes to the file this \
+                 server reads.",
+            ),
+        }
+    }
 }
 
 /// `None` when absent, which is not an error — an unconfigured section is a
@@ -347,6 +414,38 @@ mod tests {
         assert_eq!(
             map.get("sec-2:login").map(String::as_str),
             Some(r#"{"user":"me"}"#)
+        );
+    }
+
+    #[test]
+    fn the_credential_source_is_named_from_the_two_variables() {
+        assert_eq!(source_of(false, false), InjectedSource::None);
+        assert_eq!(source_of(true, false), InjectedSource::Snapshot);
+        assert_eq!(source_of(false, true), InjectedSource::File);
+        assert_eq!(source_of(true, true), InjectedSource::Both);
+    }
+
+    /// The desktop app gets no container advice appended to its message: there
+    /// the keychain really is the answer, and "re-export the workload" would be
+    /// nonsense.
+    #[test]
+    fn only_an_injected_source_explains_a_missing_credential() {
+        assert!(source_of(false, false)
+            .missing_credential_advice()
+            .is_none());
+        assert!(source_of(true, false).missing_credential_advice().is_some());
+        assert!(source_of(false, true).missing_credential_advice().is_some());
+    }
+
+    /// Both set resolves snapshot-first in `injected`, so the advice has to be
+    /// the snapshot's. Telling someone to sign in again — the file's answer —
+    /// would be wrong precisely when the snapshot is what holds the reference,
+    /// because the sign-in cannot displace it.
+    #[test]
+    fn both_sources_give_the_snapshot_advice() {
+        assert_eq!(
+            source_of(true, true).missing_credential_advice(),
+            source_of(true, false).missing_credential_advice()
         );
     }
 
