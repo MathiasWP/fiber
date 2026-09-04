@@ -41,7 +41,7 @@ use crate::auth::AuthState;
 use crate::history::HistoryStore;
 // `redact` lives in `http` because history persistence needs the same list;
 // two lists would drift, and the one that drifted would be the one that leaks.
-use crate::http::{redact_with, BodyKind, FormField, Header, HttpState, RequestSpec};
+use crate::http::{redact_with, BodyKind, FormField, Header, HttpError, HttpState, RequestSpec};
 use crate::loader;
 use crate::policy::{self, is_read_only, Access};
 use crate::secrets;
@@ -70,6 +70,41 @@ const NOBODY_READ_IT: Duration = Duration::from_millis(250);
 /// Enough of a body to recognise the request by, in a dialog someone has to
 /// read in a second.
 const APPROVAL_BODY_CHARS: usize = 400;
+
+/// The message for a send that failed, with the container context the error
+/// itself cannot carry.
+///
+/// One failure needs this and the rest do not. `AuthError`'s text is written for
+/// the desktop app — "not signed in — open Section settings and sign in" — and
+/// here there are no Section settings, no window to sign in through, and very
+/// often a user who *is* signed in and whose credential simply never reached
+/// this process. The 401 path has had source-aware advice since the credentials
+/// file landed; this is the same courtesy for the failure that happens before a
+/// request is ever sent, which until now was the more confusing of the two.
+///
+/// The check is `secrets::has` rather than a match on the error text: it is the
+/// same question the send asked, it raises no keychain prompt, and it answers
+/// from the injected map first, so under a container it is a lookup in memory.
+fn send_failure(section: &Section, err: &HttpError) -> String {
+    let missing = matches!(err, HttpError::Auth(_))
+        && section
+            .auth
+            .secret_ref()
+            .is_some_and(|reference| !secrets::has(reference));
+
+    let advice = missing
+        .then(secrets::injected_source)
+        .and_then(secrets::InjectedSource::missing_credential_advice);
+
+    match advice {
+        Some(advice) => format!(
+            "No credential for collection \"{}\" ({}). {advice}",
+            section.name,
+            section.auth.secret_ref().unwrap_or_default(),
+        ),
+        None => err.to_string(),
+    }
+}
 
 /// One pass over the body: find the byte where character `limit + 1` would
 /// start and cut there. Counting the characters first and *then* collecting
@@ -607,7 +642,7 @@ impl FiberMcp {
                     None,
                 )
                 .await
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| send_failure(&section, &err))?;
 
                 Ok(loader::LoaderResponse {
                     status: response.status,
@@ -696,6 +731,13 @@ impl FiberMcp {
             /// by HTTP method, in which case `allowsWrites` says nothing.
             has_policy: bool,
             has_loader: bool,
+            /// `"missing"` when the collection is authenticated and this
+            /// process cannot see its credential — a call to it would fail
+            /// before it was sent. Absent otherwise, so the ordinary listing is
+            /// unchanged. Better here than at the first failed call: it costs
+            /// the caller nothing to know before spending one.
+            #[serde(skip_serializing_if = "Option::is_none")]
+            credential: Option<&'static str>,
         }
 
         let (all, warnings) = self.all_sections()?;
@@ -712,7 +754,22 @@ impl FiberMcp {
                 allows_writes: section.mcp.allow_writes,
                 has_policy: !section.mcp.policy.trim().is_empty(),
                 has_loader: section.loader.is_some(),
+                // `has`, not `get`: presence is the question, and on the
+                // desktop the difference between the two is a password prompt.
+                credential: section
+                    .auth
+                    .secret_ref()
+                    .is_some_and(|reference| !secrets::has(reference))
+                    .then_some("missing"),
             });
+        }
+
+        // The per-collection flag says what is wrong; this says why, once,
+        // rather than repeating a paragraph on every entry.
+        if summaries.iter().any(|summary| summary.credential.is_some()) {
+            if let Some(advice) = secrets::injected_source().missing_credential_advice() {
+                warnings.push(advice.to_string());
+            }
         }
 
         ok_json(&serde_json::json!({
@@ -982,7 +1039,8 @@ impl FiberMcp {
             McpError::internal_error(format!("response persistence task failed: {err}"), None)
         })?;
 
-        let response = outcome.map_err(|err| McpError::internal_error(err.to_string(), None))?;
+        let response =
+            outcome.map_err(|err| McpError::internal_error(send_failure(&section, &err), None))?;
         let (body, context_truncated) = truncate(&response.body, MAX_BODY_CHARS);
         let query_available = recorded.is_ok();
         let mut hints = Vec::new();
@@ -1511,11 +1569,78 @@ pub fn sync_section_sharing(data: &std::path::Path, section: &Section) {
     }
 }
 
+/// What this process can see of the credentials its collections need, logged
+/// once at startup.
+///
+/// The failure this exists for is silent by construction: a shared collection
+/// whose credential never reached this process behaves exactly like one that
+/// was never authenticated, right up until the first call — and the call is
+/// where anyone finds out. Naming the source and the gaps costs one line in
+/// `docker logs` and is usually the whole explanation.
+///
+/// A warning rather than a refusal to start, because under a credentials file
+/// the missing value legitimately arrives later: the app writes it on the next
+/// sign-in and the server picks it up without restarting. Refusing to serve the
+/// collections that *are* authenticated until every one of them is would be
+/// worse than the problem being guarded against.
+fn report_credentials(sections: &[Section]) {
+    let source = secrets::injected_source();
+    match source {
+        secrets::InjectedSource::None => return,
+        secrets::InjectedSource::Snapshot => {
+            log::info!("credentials: FIBER_SECRETS, a snapshot frozen at startup")
+        }
+        secrets::InjectedSource::File => {
+            log::info!("credentials: FIBER_SECRETS_FILE, re-read on every lookup")
+        }
+        secrets::InjectedSource::Both => log::info!(
+            "credentials: FIBER_SECRETS and FIBER_SECRETS_FILE; the snapshot wins where it \
+             holds a reference, so a sign-in cannot reach those"
+        ),
+    }
+
+    // `has` rather than `get`: the question is presence, and on the desktop the
+    // difference is a keychain prompt. Nothing injected ever reaches the
+    // keychain anyway, so under a container this is a map lookup.
+    let missing: Vec<&Section> = sections
+        .iter()
+        .filter(|section| section.mcp.enabled)
+        .filter(|section| {
+            section
+                .auth
+                .secret_ref()
+                .is_some_and(|reference| !secrets::has(reference))
+        })
+        .collect();
+
+    if missing.is_empty() {
+        return;
+    }
+
+    for section in &missing {
+        log::warn!(
+            "no credential for shared collection \"{}\" ({}) — calls to it will fail",
+            section.name,
+            section.auth.secret_ref().unwrap_or_default(),
+        );
+    }
+    if let Some(advice) = source.missing_credential_advice() {
+        log::warn!("{advice}");
+    }
+}
+
 /// Serves MCP over stdio until the client disconnects.
 pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
     let data = app_data_dir();
     secrets::validate_injected()
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+    // Best effort: a collections directory that cannot be read is the next
+    // line's problem, and reporting nothing is better than failing to start
+    // over a report.
+    match store::load_all(&store::sections_dir(&data)) {
+        Ok(sections) => report_credentials(&sections),
+        Err(err) => log::warn!("could not check credentials at startup: {err}"),
+    }
     let server = FiberMcp {
         sections_dir: store::sections_dir(&data),
         loaders_dir: loader::loaders_dir(&data),

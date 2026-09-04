@@ -150,6 +150,12 @@ presenting the old credential until you re-export and replace the workload —
 rerunning `toolhive.sh` does both. That is the behaviour the file above exists
 to avoid.
 
+Worth being precise about what "old credential" covers, because the sharper case
+is easy to miss: a collection you authenticated *after* the workload started is
+not in the snapshot at all. It fails with no credential rather than a rejected
+one, so there is no 401 and nothing to refresh — see
+[Migrating from `FIBER_SECRETS`](#migrating-from-fiber_secrets).
+
 If you have no app on the machine, the same map typed by hand does the same job:
 
 ```sh
@@ -165,6 +171,38 @@ app would have put in the keychain.
 `FIBER_SECRETS_FILE` still works when `FIBER_SECRETS_KEY` is unset, for a file
 you manage yourself; setting the key and pointing it at a plaintext file is an
 error rather than a silent downgrade, and so is an encrypted file with no key.
+
+### Migrating from `FIBER_SECRETS`
+
+A workload created before the credentials file existed goes on reading its
+snapshot, and nothing announces it: the container is healthy, the collections it
+knew about still work, and only a collection you authenticated *after* the
+workload started fails — with the credential simply absent rather than expired.
+The symptom is "it works in the app but not over MCP".
+
+Rerunning the install migrates it, because the script replaces the workload:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/MathiasWP/fiber/main/scripts/toolhive.sh | bash
+```
+
+Afterwards the old snapshot is unused, and it is a stale copy of every
+credential you had the day it was taken, so take it away:
+
+```sh
+thv secret delete fiber-secrets
+```
+
+Two things will tell you which scheme a running server is on. It logs its source
+at startup —
+
+```
+credentials: FIBER_SECRETS, a snapshot frozen at startup
+```
+
+— and warns there about any shared collection whose credential it cannot see.
+`list_sections` marks the same collections with `"credential": "missing"`, so an
+agent finds out before spending a call rather than after.
 
 ### Why this is not as good as the keychain
 

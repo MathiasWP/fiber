@@ -248,6 +248,10 @@ It finds your collections, copies the credentials for the collections you have
 shared straight from the keychain into ToolHive's encrypted store, and starts
 the server. Nothing is typed twice and nothing is pasted.
 
+Rerun it to migrate a server set up before Fiber 0.15, which reads a snapshot of
+your credentials frozen when it started — see
+[Migrating from `FIBER_SECRETS`](deploy/toolhive.md#migrating-from-fiber_secrets).
+
 See [`deploy/toolhive.md`](deploy/toolhive.md) for what each step does, and for
 running it by hand.
 

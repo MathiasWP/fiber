@@ -262,7 +262,7 @@ mod gui {
 
         let at = history::now_millis();
         let url = spec.url.clone();
-        let recapture = BrowserRecapture::new(app.clone());
+        let recapture = BrowserRecapture::new(app.clone(), paths.data.clone());
 
         // The channel is the only reason the body is on the bridge at all
         // mid-flight. A send that fails means the window has gone; the request
@@ -412,17 +412,20 @@ mod gui {
         app: &AppHandle,
         http_state: &Arc<HttpState>,
         auth_state: &Arc<AuthState>,
+        data: &Path,
         section: &Section,
     ) -> loader::Fetcher {
         let http = http_state.clone();
         let auth = auth_state.clone();
         let app = app.clone();
+        let data = data.to_path_buf();
         let section = section.clone();
 
         Arc::new(move |request: loader::LoaderRequest| {
             let http = http.clone();
             let auth = auth.clone();
             let app = app.clone();
+            let data = data.clone();
             let section = section.clone();
 
             Box::pin(async move {
@@ -447,7 +450,7 @@ mod gui {
                     ..Default::default()
                 };
 
-                let recapture = BrowserRecapture::new(app);
+                let recapture = BrowserRecapture::new(app, data);
                 let response = send_authenticated(
                     &http,
                     &auth,
@@ -493,7 +496,13 @@ mod gui {
     ) -> Result<LoaderRun, LoaderError> {
         let section = section_for_loader(&paths, &sections, &section_id)?;
         let config = section.loader.clone().ok_or(LoaderError::NoUrl)?;
-        let fetcher = loader_fetcher(&app, http_state.inner(), auth_state.inner(), &section);
+        let fetcher = loader_fetcher(
+            &app,
+            http_state.inner(),
+            auth_state.inner(),
+            &paths.data,
+            &section,
+        );
 
         let (endpoints, schemas, response_schemas, pages) = loader::run(&config, fetcher).await?;
 
@@ -539,7 +548,13 @@ mod gui {
             return Err(LoaderError::NoUrl);
         }
 
-        let fetcher = loader_fetcher(&app, http_state.inner(), auth_state.inner(), &section);
+        let fetcher = loader_fetcher(
+            &app,
+            http_state.inner(),
+            auth_state.inner(),
+            &paths.data,
+            &section,
+        );
         let method = match config.method.trim() {
             "" => "GET".to_string(),
             method => method.to_string(),

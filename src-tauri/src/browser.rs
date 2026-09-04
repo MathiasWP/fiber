@@ -20,6 +20,7 @@
 //! credential (it just can't capture a new one, having no UI).
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -747,11 +748,14 @@ pub async fn silent_recapture(app: &AppHandle, section: &Section) -> Result<Stri
 /// `send` module.
 pub struct BrowserRecapture {
     app: AppHandle,
+    /// The data directory, for the credentials file a containerised server
+    /// reads. See `recapture`.
+    data: PathBuf,
 }
 
 impl BrowserRecapture {
-    pub fn new(app: AppHandle) -> Self {
-        Self { app }
+    pub fn new(app: AppHandle, data: PathBuf) -> Self {
+        Self { app, data }
     }
 }
 
@@ -761,9 +765,26 @@ impl Recapturer for BrowserRecapture {
         section: &'a Section,
     ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async move {
-            silent_recapture(&self.app, section)
+            let value = silent_recapture(&self.app, section)
                 .await
-                .map_err(|err| err.to_string())
+                .map_err(|err| err.to_string())?;
+
+            // The keychain is skipped for a silent re-capture — writing one
+            // costs a password prompt on a build that cannot hold an ACL, and
+            // `send` explains why that trade is not worth making here. None of
+            // it carries over to the credentials file: the sealing key is
+            // already cached for the life of the process and the write is a
+            // file write, so the cost is nothing, and the file is the only
+            // channel a containerised server has.
+            //
+            // Without this, the token a container holds only ever moved on an
+            // explicit sign-in: the app could refresh a browser credential
+            // silently all day and the server would go on presenting the one it
+            // started with — the very failure the file was added to end.
+            if let Some(reference) = section.auth.secret_ref() {
+                crate::mcp::sync_secrets_file(&self.data, reference, Some(&value));
+            }
+            Ok(value)
         })
     }
 }
