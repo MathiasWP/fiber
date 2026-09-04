@@ -113,9 +113,17 @@ pub struct McpAccess {
     /// Whether agents can see this section at all.
     #[serde(default)]
     pub enabled: bool,
-    /// Whether they may use anything but GET, HEAD and OPTIONS.
+    /// Whether they may use anything but GET, HEAD and OPTIONS. Ignored when
+    /// `policy` is set — a policy is the whole answer, including for GET.
     #[serde(default)]
     pub allow_writes: bool,
+    /// A jq filter deciding `"allow"`, `"ask"` or `"deny"` per endpoint. Empty
+    /// leaves the method-based rule above in charge, which is what every
+    /// collection written before this did, so nothing needs migrating.
+    ///
+    /// See `policy.rs` for what the filter is handed and why this is jq.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub policy: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

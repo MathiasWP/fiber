@@ -114,6 +114,17 @@ pub struct LoadedEndpoint {
     pub description: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tag: String,
+    /// Whatever the manifest says about this endpoint beyond the fields above:
+    /// every scalar `x-` extension when the manifest is OpenAPI, plus anything
+    /// a filter chose to put here for a manifest that isn't.
+    ///
+    /// Fiber never reads a key of its own out of this. It exists so an access
+    /// policy can be written against the vocabulary an API already publishes —
+    /// `x-kind`, `x-scope`, `deprecated` — instead of Fiber guessing from the
+    /// HTTP method, which for an API where every call is a POST tells you
+    /// nothing at all.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub meta: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub parameters: Vec<crate::openapi::SpecParam>,
     /// A JSON body to start from. Derived from the manifest when it is an
@@ -139,6 +150,7 @@ impl Default for LoadedEndpoint {
             name: String::new(),
             description: String::new(),
             tag: String::new(),
+            meta: BTreeMap::new(),
             parameters: Vec::new(),
             body: String::new(),
             body_kind: crate::http::BodyKind::Json,
@@ -603,6 +615,11 @@ fn enrich_openapi(
         if endpoint.tag.is_empty() {
             endpoint.tag = crate::openapi::first_tag(Some(operation));
         }
+        // The filter had the same document and got there first, so a key it
+        // set stands. Anything it didn't mention comes off the operation.
+        for (name, value) in crate::openapi::extensions(Some(operation)) {
+            endpoint.meta.entry(name).or_insert(value);
+        }
         if endpoint.parameters.is_empty() {
             endpoint.parameters = crate::openapi::operation_params(document, item, Some(operation));
         }
@@ -940,6 +957,58 @@ mod tests {
         // A GET declares no body, and gets none.
         let get = endpoints.iter().find(|e| e.method == "GET").unwrap();
         assert_eq!(get.body, "");
+    }
+
+    /// The reason `meta` exists: an API where the HTTP method says nothing puts
+    /// what it does say in an extension, and Fiber has to carry it without
+    /// knowing what it means.
+    #[tokio::test]
+    async fn operation_extensions_survive_into_the_cache() {
+        let manifest = r##"{
+            "openapi": "3.1.1",
+            "paths": {
+                "/customers/search": {
+                    "post": { "operationId": "searchCustomers", "x-kind": "query" }
+                },
+                "/orders": {
+                    "post": {
+                        "operationId": "createOrder",
+                        "x-kind": "command",
+                        "x-internal": true,
+                        "x-owner": { "team": "billing" }
+                    }
+                }
+            }
+        }"##;
+
+        let openapi = TEMPLATES
+            .iter()
+            .find(|(name, _)| *name == "OpenAPI")
+            .unwrap()
+            .1;
+        let (endpoints, _, _, _) = run(&config(openapi), answering(manifest)).await.unwrap();
+
+        let search = endpoints
+            .iter()
+            .find(|e| e.path == "/customers/search")
+            .unwrap();
+        assert_eq!(search.meta.get("x-kind"), Some(&serde_json::json!("query")));
+
+        let orders = endpoints.iter().find(|e| e.path == "/orders").unwrap();
+        assert_eq!(
+            orders.meta.get("x-kind"),
+            Some(&serde_json::json!("command"))
+        );
+        // Any scalar, not only strings — a policy can compare against `true`.
+        assert_eq!(
+            orders.meta.get("x-internal"),
+            Some(&serde_json::json!(true))
+        );
+        // An object-valued extension is skipped: this ends up in a cache and in
+        // every search result, so it is not a place to carry a document.
+        assert!(!orders.meta.contains_key("x-owner"));
+        // And nothing that isn't an extension leaks in beside them.
+        assert!(!orders.meta.contains_key("operationId"));
     }
 
     /// A jq filter that already filled in a body used to skip schema extraction

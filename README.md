@@ -195,6 +195,38 @@ for anything more. Turn sharing off and the collection is hidden completely, not
 just read-only. Credentials are applied on the way out and stripped from
 everything that comes back.
 
+### When the method says nothing
+
+That switch assumes GET means read and POST means write. For an API where every
+call is a POST it is useless: off, and the API can't be used; on, and there is no
+guard left.
+
+So a collection can carry an **access policy** instead — a jq filter answering
+`"allow"`, `"ask"` or `"deny"` per endpoint, reading what the manifest already
+publishes about each one. Every scalar `x-` extension on an OpenAPI operation
+comes through the loader, so a rule can be written against the API's own words:
+
+```jq
+if   .meta["x-kind"] == "query"   then "allow"
+elif .meta["x-kind"] == "command" then "ask"
+else "deny" end
+```
+
+Fiber knows nothing about `x-kind`, or any other key. The filter is where meaning
+is attached, in one place you can read and change. Section settings runs it
+against the collection's real endpoints as you type and shows what each one gets.
+
+`"ask"` puts the call in front of you — in your agent's client, which is where
+you are sitting when an agent is working — and sends it only if you approve.
+One approval covers one call. If nobody answers within ten minutes, or the
+client has no way to show a prompt, the call is refused rather than sent.
+
+A policy replaces the switch entirely while it is set, GET included, so a read
+that returns your whole customer table can say so. Anything it cannot answer
+for — including a path the collection doesn't list, which is how an agent would
+reach an endpoint nobody reviewed — is denied, as is everything in a collection
+whose policy has a mistake in it.
+
 Two tools exist for jq specifically: `loader_manifest` fetches your raw
 manifest, and `try_loader_filter` tests a filter against it. So you can ask an
 agent to write a loader filter instead of learning jq first.

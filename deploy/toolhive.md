@@ -60,7 +60,10 @@ section files. Two things a section needs to be usable over MCP:
 
 - `mcp.enabled = true` in its `[mcp]` table. Sharing is off by default; enable
   it explicitly in Section settings. Add `allowWrites = true` to permit
-  anything beyond GET/HEAD/OPTIONS.
+  anything beyond GET/HEAD/OPTIONS, or a `policy` filter to decide per endpoint
+  (see the README). A policy that answers `"ask"` needs a client that can show
+  an approval prompt; through a proxy that cannot relay one, `ask` refuses, so
+  a server nobody is sitting in front of wants `"allow"` and `"deny"` only.
 - for authenticated sections, a `secretRef` — the app writes `"<sectionId>:auth"`.
   That exact string is the key you provide below.
 

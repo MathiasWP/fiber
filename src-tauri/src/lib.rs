@@ -14,6 +14,7 @@ mod http;
 mod loader;
 pub mod mcp;
 mod openapi;
+mod policy;
 mod secrets;
 mod send;
 mod store;
@@ -42,6 +43,7 @@ mod gui {
     use crate::loader::{self, LoaderError, LoaderRun};
     use crate::mcp;
     use crate::openapi;
+    use crate::policy;
     use crate::secrets::{self, SecretError};
     use crate::send::{send_authenticated, send_authenticated_streaming};
     use crate::store::{self, Section, StoreError};
@@ -196,6 +198,26 @@ mod gui {
     struct LoaderCacheView {
         loaded_at: i64,
         endpoints: Vec<loader::LoadedEndpoint>,
+    }
+
+    /// What a policy would do with each of a collection's endpoints, for the
+    /// editor to show while it is being written.
+    #[derive(serde::Serialize, Default)]
+    #[serde(rename_all = "camelCase")]
+    struct PolicyPreview {
+        items: Vec<PolicyRow>,
+        /// Set when the policy could not run, in which case every row denies.
+        warning: Option<String>,
+    }
+
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PolicyRow {
+        method: String,
+        path: String,
+        name: String,
+        loaded: bool,
+        access: policy::Access,
     }
 
     #[derive(serde::Serialize)]
@@ -588,6 +610,57 @@ mod gui {
         loader::LoaderConfig::default()
     }
 
+    /// How a policy would answer for every endpoint this collection has.
+    ///
+    /// The policy comes from the editor rather than from disk, so the preview
+    /// follows the keystrokes; the endpoints come from the same shared
+    /// catalogue the MCP server decides on, so what the preview shows is what
+    /// an agent will get. Pure jq over data already in hand — no network, and
+    /// nothing here can send anything.
+    #[tauri::command]
+    async fn policy_preview(
+        paths: State<'_, Paths>,
+        sections: State<'_, SectionMem>,
+        mem: State<'_, LoaderMem>,
+        section_id: String,
+        policy: String,
+    ) -> Result<PolicyPreview, store::StoreError> {
+        let Some(section) = sections.get_or_load(&paths.sections, &section_id)? else {
+            return Ok(PolicyPreview::default());
+        };
+        // The saved section decides nothing here; only its endpoints do.
+        let mut section = (*section).clone();
+        section.mcp.policy = policy;
+
+        let loaded = mem.endpoints(&paths.loaders, &section_id);
+        let entries = policy::catalogue(&section, &loaded);
+        let (accesses, warning) = policy::decide_catalogue(&section, &entries);
+
+        Ok(PolicyPreview {
+            items: entries
+                .into_iter()
+                .zip(accesses)
+                .map(|(entry, access)| PolicyRow {
+                    method: entry.method,
+                    path: entry.path,
+                    name: entry.name,
+                    loaded: entry.loaded,
+                    access,
+                })
+                .collect(),
+            warning,
+        })
+    }
+
+    /// Starting points for a policy, offered in the editor.
+    #[tauri::command]
+    fn policy_templates() -> Vec<(String, String)> {
+        policy::TEMPLATES
+            .iter()
+            .map(|(name, query)| (name.to_string(), query.to_string()))
+            .collect()
+    }
+
     /// Worked filters for the manifest shapes people actually hit.
     #[tauri::command]
     fn loader_templates() -> Vec<(String, String)> {
@@ -770,6 +843,8 @@ mod gui {
                 default_loader,
                 parse_openapi,
                 loader_templates,
+                policy_preview,
+                policy_templates,
                 mcp_clients,
                 mcp_binary,
                 mcp_install,

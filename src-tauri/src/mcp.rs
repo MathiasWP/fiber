@@ -12,7 +12,9 @@
 //! - **Sections opt in**, one at a time, and the default is off. A section the
 //!   user hasn't exposed is invisible here — not merely read-only.
 //! - **Writes opt in separately.** Anything but GET/HEAD/OPTIONS needs a second
-//!   switch on that section.
+//!   switch on that section — or, where the HTTP method says nothing useful
+//!   about what a call does, a policy filter that reads the API's own
+//!   vocabulary instead. See `policy.rs`.
 //! - **Credentials never come back out.** Auth headers are redacted from every
 //!   response, so a token can't be laundered through a tool result.
 //! - **Bodies are truncated**, with a jq filter available to query the rest.
@@ -25,8 +27,14 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
+use rmcp::model::{
+    CallToolResult, ElicitRequestParams, ElicitationAction, ElicitationSchema, ServerCapabilities,
+    ServerInfo,
+};
+use rmcp::service::RequestContext;
+use rmcp::{
+    tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthState;
@@ -35,6 +43,7 @@ use crate::history::HistoryStore;
 // two lists would drift, and the one that drifted would be the one that leaks.
 use crate::http::{redact_with, BodyKind, FormField, Header, HttpState, RequestSpec};
 use crate::loader;
+use crate::policy::{self, is_read_only, Access};
 use crate::secrets;
 use crate::store::{self, Section};
 
@@ -47,6 +56,20 @@ const MAX_SEARCH_LIMIT: usize = 200;
 const MANIFEST_CACHE_TTL: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT_REQUESTS: usize = 16;
 const MAX_CONCURRENT_LOADERS: usize = 2;
+/// How long an approval waits for a person. Long, because the point of asking
+/// is that someone reads it, and they may be at lunch; finite, because an agent
+/// blocked forever on a prompt nobody will ever see is worse than a refusal.
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
+/// Approvals in flight at once. A loop in an agent must not be able to bury the
+/// user in prompts — past this it is refused rather than queued.
+const MAX_PENDING_APPROVALS: usize = 8;
+/// A refusal this fast came from the client itself, not from a person reading
+/// it. Not a rule the protocol gives us, but the difference between an error
+/// that says "you were denied" and one that says "nobody was asked".
+const NOBODY_READ_IT: Duration = Duration::from_millis(250);
+/// Enough of a body to recognise the request by, in a dialog someone has to
+/// read in a second.
+const APPROVAL_BODY_CHARS: usize = 400;
 
 /// One pass over the body: find the byte where character `limit + 1` would
 /// start and cut there. Counting the characters first and *then* collecting
@@ -73,13 +96,6 @@ fn require_same_origin(base_url: &str, path: &str) -> Result<(), McpError> {
         })
 }
 
-fn is_read_only(method: &str) -> bool {
-    matches!(
-        method.trim().to_ascii_uppercase().as_str(),
-        "GET" | "HEAD" | "OPTIONS"
-    )
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EndpointSummary {
@@ -91,9 +107,25 @@ struct EndpointSummary {
     name: String,
     description: String,
     tag: String,
+    /// Whatever the manifest published about this endpoint beyond the fields
+    /// above — `x-` extensions, mostly. Returned because it is what a policy
+    /// decides on, so an agent can see why it got the answer it got.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    meta: std::collections::BTreeMap<String, serde_json::Value>,
     parameters: Vec<crate::openapi::SpecParam>,
     /// True when a loader reported this rather than a person writing it.
     loaded: bool,
+    /// `allow`, `ask` or `deny` — what `send_request` will do with this one.
+    /// Knowing in advance beats discovering it by being refused.
+    access: Access,
+}
+
+/// A collection's endpoints, with whatever went wrong deciding on them.
+struct Catalogue {
+    endpoints: Vec<EndpointSummary>,
+    /// A policy that failed to run. Everything is denied when this is set, so
+    /// it has to reach the user rather than only the log.
+    warning: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -251,6 +283,7 @@ pub struct FiberMcp {
     request_ids: Arc<AtomicU64>,
     requests: Arc<tokio::sync::Semaphore>,
     loaders: Arc<tokio::sync::Semaphore>,
+    approvals: Arc<tokio::sync::Semaphore>,
     #[expect(dead_code, reason = "the tool_handler macro reads this field")]
     tool_router: ToolRouter<Self>,
 }
@@ -348,39 +381,187 @@ impl FiberMcp {
             })
     }
 
-    /// Every endpoint an exposed section has, hand-written or loaded.
-    fn endpoints_of(&self, section: &Section) -> Vec<EndpointSummary> {
-        let mut found: Vec<EndpointSummary> = section
-            .requests
-            .iter()
-            .map(|request| EndpointSummary {
+    /// Every endpoint an exposed section has, hand-written or loaded, each with
+    /// the access it would get.
+    fn catalogue_of(&self, section: &Section) -> Catalogue {
+        let cache = self.loader_cache_of(&section.id);
+        let entries = policy::catalogue(section, &cache.endpoints);
+        let (accesses, warning) = policy::decide_catalogue(section, &entries);
+
+        let endpoints = entries
+            .into_iter()
+            .zip(accesses)
+            .map(|(entry, access)| EndpointSummary {
                 section_id: section.id.clone(),
                 section: section.name.clone(),
-                key: request.id.clone(),
-                method: request.method.clone(),
-                path: request.path.clone(),
-                name: request.name.clone(),
-                description: request.description.clone(),
-                tag: request.tag.clone(),
-                parameters: Vec::new(),
-                loaded: false,
+                key: entry.key,
+                method: entry.method,
+                path: entry.path,
+                name: entry.name,
+                description: entry.description,
+                tag: entry.tag,
+                meta: entry.meta,
+                parameters: entry.parameters,
+                loaded: entry.loaded,
+                access,
             })
             .collect();
 
-        let cache = self.loader_cache_of(&section.id);
-        found.extend(cache.endpoints.iter().map(|endpoint| EndpointSummary {
-            section_id: section.id.clone(),
-            section: section.name.clone(),
-            key: endpoint.key(),
-            method: endpoint.method.clone(),
-            path: endpoint.path.clone(),
-            name: endpoint.name.clone(),
-            description: endpoint.description.clone(),
-            tag: endpoint.tag.clone(),
-            parameters: endpoint.parameters.clone(),
-            loaded: true,
-        }));
-        found
+        Catalogue { endpoints, warning }
+    }
+
+    /// Puts one call in front of a person, and waits.
+    ///
+    /// The prompt goes to the MCP client, because that is where whoever asked
+    /// for the call is sitting — in their agent, not in Fiber's window. It is
+    /// also the weaker of the two places to ask: the client renders the dialog,
+    /// so a client that answers on its own behalf answers for the user too. A
+    /// headless `claude -p` does exactly that, declaring the capability and
+    /// then cancelling in five milliseconds without showing anyone anything.
+    /// Which is safe — it cancels rather than accepts — but it is not an
+    /// approval, and the error has to say so or the agent will keep trying.
+    /// Fiber's own dialog, for when this cannot reach anybody, comes next.
+    ///
+    /// Only `accept` sends the request. Decline, cancel, timeout, a client that
+    /// can't ask, too many prompts already waiting: all refusals.
+    async fn approve(
+        &self,
+        context: &RequestContext<RoleServer>,
+        section: &Section,
+        method: &str,
+        url: &str,
+        body: Option<&str>,
+    ) -> Result<(), McpError> {
+        let peer_info = context.peer.peer_info();
+        let client = peer_info
+            .as_ref()
+            .map(|info| info.client_info.name.clone())
+            .unwrap_or_else(|| "this client".to_string());
+        // Absent info means an old client that never told us; try, and let the
+        // answer decide. A client that told us it cannot is taken at its word.
+        if peer_info
+            .as_ref()
+            .is_some_and(|info| info.capabilities.elicitation.is_none())
+        {
+            return Err(McpError::invalid_params(
+                format!(
+                    "`{method} {url}` needs a person to approve it, and {client} cannot show an \
+                     approval prompt. Run it from a client that can, or change this collection's \
+                     access policy in Fiber."
+                ),
+                None,
+            ));
+        }
+
+        let Ok(_pending) = self.approvals.clone().try_acquire_owned() else {
+            return Err(McpError::invalid_params(
+                format!(
+                    "`{method} {url}` needs approval, and {MAX_PENDING_APPROVALS} approvals are \
+                     already waiting. Answer those first."
+                ),
+                None,
+            ));
+        };
+
+        let mut message = format!(
+            "Fiber: approve {method} {url}?\n\nCollection: {} ({})",
+            section.name, section.base_url
+        );
+        if let Some(body) = body.map(str::trim).filter(|body| !body.is_empty()) {
+            let (preview, cut) = truncate(body, APPROVAL_BODY_CHARS);
+            message.push_str(&format!(
+                "\nBody: {preview}{}",
+                if cut { "… (truncated)" } else { "" }
+            ));
+        }
+        message.push_str(
+            "\n\nFiber will send this authenticated as you. Approving covers this one call.",
+        );
+
+        // An empty form: the question is the message, and accept/decline is the
+        // whole answer. A field to fill in would only invite a client to fill
+        // it in.
+        let params = ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message,
+            requested_schema: ElicitationSchema::new(Default::default()),
+        };
+
+        let asked_at = Instant::now();
+        let result = context
+            .peer
+            .create_elicitation_with_timeout(params, Some(APPROVAL_TIMEOUT))
+            .await;
+        let waited = asked_at.elapsed();
+
+        match result {
+            Ok(reply) if reply.action == ElicitationAction::Accept => Ok(()),
+            Ok(_) if waited < NOBODY_READ_IT => Err(McpError::invalid_params(
+                format!(
+                    "`{method} {url}` needs a person to approve it. {client} answered in \
+                     {}ms, which is too fast for anyone to have read it — it is most likely \
+                     running without a way to prompt, so nobody was asked. Run it from an \
+                     interactive session, or change this collection's access policy in Fiber.",
+                    waited.as_millis()
+                ),
+                None,
+            )),
+            Ok(_) => Err(McpError::invalid_params(
+                format!("`{method} {url}` was not approved."),
+                None,
+            )),
+            Err(rmcp::service::ServiceError::Timeout { .. }) => Err(McpError::invalid_params(
+                format!(
+                    "`{method} {url}` needs approval and nobody answered within {} minutes.",
+                    APPROVAL_TIMEOUT.as_secs() / 60
+                ),
+                None,
+            )),
+            Err(err) => Err(McpError::invalid_params(
+                format!("`{method} {url}` needs approval, and asking for it failed: {err}."),
+                None,
+            )),
+        }
+    }
+
+    /// The access one call gets, and the reason if it is a refusal.
+    ///
+    /// `send_request` names a method and a path rather than a catalogue key, so
+    /// the entry has to be found by matching. Nothing matching is not an error:
+    /// it is a call with no metadata, which a policy decides on like any other.
+    fn decide_one(&self, section: &Section, method: &str, path: &str) -> (Access, Option<String>) {
+        let catalogue = self.catalogue_of(section);
+        if let Some(entry) = catalogue
+            .endpoints
+            .iter()
+            .find(|entry| policy::same_endpoint(&entry.method, &entry.path, method, path))
+        {
+            return (entry.access, catalogue.warning);
+        }
+
+        if section.mcp.policy.trim().is_empty() {
+            let access = if is_read_only(method) || section.mcp.allow_writes {
+                Access::Allow
+            } else {
+                Access::Deny
+            };
+            return (access, None);
+        }
+
+        let (access, failure) = policy::decide_one(
+            &section.mcp.policy,
+            &policy::Facts {
+                method,
+                path,
+                name: "",
+                description: "",
+                tag: "",
+                meta: &Default::default(),
+                loaded: false,
+                known: false,
+            },
+        );
+        (access, failure)
     }
 
     fn fetcher(&self, section: &Section) -> loader::Fetcher {
@@ -511,26 +692,32 @@ impl FiberMcp {
             base_url: String,
             endpoints: usize,
             allows_writes: bool,
+            /// Set when the collection decides access per endpoint rather than
+            /// by HTTP method, in which case `allowsWrites` says nothing.
+            has_policy: bool,
             has_loader: bool,
         }
 
         let (all, warnings) = self.all_sections()?;
-        let summaries: Vec<Summary> = all
-            .iter()
-            .filter(|section| section.mcp.enabled)
-            .map(|section| Summary {
+        let mut warnings: Vec<String> = warnings.as_ref().clone();
+        let mut summaries = Vec::new();
+        for section in all.iter().filter(|section| section.mcp.enabled) {
+            let catalogue = self.catalogue_of(section);
+            warnings.extend(catalogue.warning);
+            summaries.push(Summary {
                 id: section.id.clone(),
                 name: section.name.clone(),
                 base_url: section.base_url.clone(),
-                endpoints: self.endpoints_of(section).len(),
+                endpoints: catalogue.endpoints.len(),
                 allows_writes: section.mcp.allow_writes,
+                has_policy: !section.mcp.policy.trim().is_empty(),
                 has_loader: section.loader.is_some(),
-            })
-            .collect();
+            });
+        }
 
         ok_json(&serde_json::json!({
             "sections": summaries,
-            "warnings": warnings.as_ref(),
+            "warnings": warnings,
         }))
     }
 
@@ -547,11 +734,16 @@ impl FiberMcp {
             .method
             .as_deref()
             .map(|method| method.trim().to_uppercase());
+        let mut warnings = Vec::new();
         let found: Vec<EndpointSummary> = self
             .exposed()?
             .iter()
             .filter(|section| section_filter.is_none_or(|id| section.id == id))
-            .flat_map(|section| self.endpoints_of(section))
+            .flat_map(|section| {
+                let catalogue = self.catalogue_of(section);
+                warnings.extend(catalogue.warning);
+                catalogue.endpoints
+            })
             .filter(|endpoint| {
                 method_filter
                     .as_deref()
@@ -580,6 +772,7 @@ impl FiberMcp {
             "limit": limit,
             "nextOffset": next_offset,
             "truncated": next_offset.is_some(),
+            "warnings": warnings,
         }))
     }
 
@@ -591,6 +784,15 @@ impl FiberMcp {
         Parameters(args): Parameters<EndpointArgs>,
     ) -> Result<CallToolResult, McpError> {
         let section = self.exposed_section(&args.section_id)?;
+        // The same decision search_endpoints reported, taken the same way, so
+        // the two can't disagree about one endpoint.
+        let catalogue = self.catalogue_of(&section);
+        let access = catalogue
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.key == args.key)
+            .map(|endpoint| endpoint.access);
+
         if let Some(request) = section
             .requests
             .iter()
@@ -599,6 +801,8 @@ impl FiberMcp {
             return ok_json(&serde_json::json!({
                 "sectionId": section.id,
                 "key": request.id,
+                "access": access,
+                "warning": catalogue.warning,
                 "loaded": false,
                 "method": request.method,
                 "path": request.path,
@@ -630,12 +834,15 @@ impl FiberMcp {
         ok_json(&serde_json::json!({
             "sectionId": section.id,
             "key": endpoint.key(),
+            "access": access,
+            "warning": catalogue.warning,
             "loaded": true,
             "method": endpoint.method,
             "path": endpoint.path,
             "name": endpoint.name,
             "description": endpoint.description,
             "tag": endpoint.tag,
+            "meta": endpoint.meta,
             "headers": [],
             "body": endpoint.body,
             "bodyKind": endpoint.body_kind,
@@ -653,6 +860,7 @@ impl FiberMcp {
     async fn send_request(
         &self,
         Parameters(args): Parameters<SendArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let section = self.exposed_section(&args.section_id)?;
         let method = match args.method.trim() {
@@ -660,17 +868,43 @@ impl FiberMcp {
             method => method.to_uppercase(),
         };
 
-        if !is_read_only(&method) && !section.mcp.allow_writes {
-            return Err(McpError::invalid_params(
-                format!(
-                    "`{method}` is not allowed for this collection. Only GET, HEAD and OPTIONS are \
-                     permitted unless writes are enabled for it in Section settings."
-                ),
-                None,
-            ));
-        }
-
+        // Before the decision, not after: there is no sense asking someone to
+        // approve a request that would be refused whatever they said.
         require_same_origin(&section.base_url, &args.path)?;
+
+        match self.decide_one(&section, &method, &args.path) {
+            (Access::Allow, _) => {}
+            (Access::Deny, failure) => {
+                let why = match (failure, section.mcp.policy.trim().is_empty()) {
+                    // A policy that could not run denies everything, and the
+                    // reason is the one thing that leads anywhere.
+                    (Some(failure), _) => format!(
+                        "This collection's access policy could not decide: {failure}. Nothing is \
+                         permitted until it is fixed in Section settings."
+                    ),
+                    (None, true) => format!(
+                        "`{method}` is not allowed for this collection. Only GET, HEAD and OPTIONS \
+                         are permitted unless writes are enabled for it in Section settings."
+                    ),
+                    (None, false) => format!(
+                        "`{method} {}` is not allowed for this collection. Its access policy \
+                         decides per endpoint — search_endpoints reports what each one allows.",
+                        args.path
+                    ),
+                };
+                return Err(McpError::invalid_params(why, None));
+            }
+            (Access::Ask, _) => {
+                self.approve(
+                    &context,
+                    &section,
+                    &method,
+                    &store::join_url(&section.base_url, &args.path),
+                    args.body.as_deref(),
+                )
+                .await?;
+            }
+        }
         if args.body_kind == BodyKind::File {
             return Err(McpError::invalid_params(
                 "File bodies are not exposed to MCP because a file path could read arbitrary host data."
@@ -1294,6 +1528,7 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         request_ids: Arc::new(AtomicU64::new(0)),
         requests: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         loaders: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LOADERS)),
+        approvals: Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_APPROVALS)),
         tool_router: FiberMcp::tool_router(),
     };
 
@@ -1352,6 +1587,10 @@ mod tests {
     }
 
     fn section(enabled: bool, allow_writes: bool) -> Section {
+        policed(enabled, allow_writes, "")
+    }
+
+    fn policed(enabled: bool, allow_writes: bool, policy: &str) -> Section {
         Section {
             id: "sec-1".into(),
             name: "Acme".into(),
@@ -1363,6 +1602,7 @@ mod tests {
             mcp: crate::store::McpAccess {
                 enabled,
                 allow_writes,
+                policy: policy.to_string(),
             },
             requests: vec![SavedRequest {
                 id: "req-1".into(),
@@ -1391,6 +1631,7 @@ mod tests {
             request_ids: Arc::new(AtomicU64::new(0)),
             requests: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS)),
             loaders: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LOADERS)),
+            approvals: Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_APPROVALS)),
             tool_router: FiberMcp::tool_router(),
         }
     }
@@ -1435,6 +1676,127 @@ mod tests {
         for method in ["POST", "PUT", "PATCH", "DELETE", "post"] {
             assert!(!is_read_only(method), "{method} must count as a write");
         }
+    }
+
+    /// The filter every collection of this shape wants: three POSTs, three
+    /// answers, taken off what the spec already says about them.
+    const BY_KIND: &str = r#"if .meta["x-kind"] == "query" then "allow"
+                             elif .meta["x-kind"] == "command" then "ask"
+                             else "deny" end"#;
+
+    fn loaded(dir: &std::path::Path, endpoints: Vec<loader::LoadedEndpoint>) {
+        let loaders = dir.join("loaders");
+        std::fs::create_dir_all(&loaders).unwrap();
+        loader::write_cache(
+            &loaders,
+            "sec-1",
+            &loader::LoaderCache {
+                loaded_at: 1,
+                endpoints,
+                schemas: Default::default(),
+                response_schemas: Default::default(),
+            },
+        )
+        .unwrap();
+    }
+
+    fn endpoint(method: &str, path: &str, kind: &str) -> loader::LoadedEndpoint {
+        loader::LoadedEndpoint {
+            method: method.into(),
+            path: path.into(),
+            name: path.into(),
+            meta: [("x-kind".to_string(), serde_json::json!(kind))]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_policy_separates_posts_the_method_cannot() {
+        let dir = scratch("policy-kinds");
+        // Writes are off, which under the old rule would refuse all three.
+        let acme = policed(true, false, BY_KIND);
+        store::save(&dir, &acme).unwrap();
+        loaded(
+            &dir,
+            vec![
+                endpoint("POST", "/customers/search", "query"),
+                endpoint("POST", "/orders", "command"),
+                endpoint("POST", "/events", "subscription"),
+            ],
+        );
+
+        let mcp = server(&dir);
+        let by_path = |path: &str| mcp.decide_one(&acme, "POST", path).0;
+        assert_eq!(by_path("/customers/search"), Access::Allow);
+        assert_eq!(by_path("/orders"), Access::Ask);
+        assert_eq!(by_path("/events"), Access::Deny);
+
+        // And the agent can see it coming rather than finding out by refusal.
+        let catalogue = mcp.catalogue_of(&acme);
+        assert!(catalogue.warning.is_none());
+        assert_eq!(
+            catalogue
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.path == "/orders")
+                .map(|endpoint| endpoint.access),
+            Some(Access::Ask)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_path_the_collection_never_listed_gets_no_ones_permission() {
+        let dir = scratch("policy-unknown");
+        let acme = policed(true, false, BY_KIND);
+        store::save(&dir, &acme).unwrap();
+        loaded(&dir, vec![endpoint("POST", "/orders/{id}", "query")]);
+
+        let mcp = server(&dir);
+        // The template it did list, filled in: same endpoint, same answer.
+        assert_eq!(mcp.decide_one(&acme, "POST", "/orders/42").0, Access::Allow);
+        // A path underneath it is a different endpoint, and unknown.
+        assert_eq!(
+            mcp.decide_one(&acme, "POST", "/orders/42/refund").0,
+            Access::Deny
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_policy_that_cannot_run_closes_the_collection() {
+        let dir = scratch("policy-broken");
+        let acme = policed(true, true, "this is not jq");
+        store::save(&dir, &acme).unwrap();
+        loaded(&dir, vec![endpoint("GET", "/orders", "query")]);
+
+        let mcp = server(&dir);
+        // Writes are switched on, and it still refuses: a policy that cannot
+        // answer must not fall back to the rule it replaced.
+        let (access, why) = mcp.decide_one(&acme, "GET", "/orders");
+        assert_eq!(access, Access::Deny);
+        assert!(why.is_some(), "the reason has to reach the user");
+        assert!(mcp.catalogue_of(&acme).warning.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_collection_with_no_policy_keeps_the_old_rule() {
+        let dir = scratch("policy-absent");
+        let acme = section(true, false);
+        store::save(&dir, &acme).unwrap();
+        let mcp = server(&dir);
+        assert_eq!(mcp.decide_one(&acme, "GET", "/user/42").0, Access::Allow);
+        assert_eq!(mcp.decide_one(&acme, "POST", "/user/42").0, Access::Deny);
+
+        let writable = policed(true, true, "");
+        assert_eq!(
+            mcp.decide_one(&writable, "POST", "/user/42").0,
+            Access::Allow
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1496,7 +1858,7 @@ mod tests {
         .unwrap();
 
         let mcp = server(&dir);
-        let found = mcp.endpoints_of(&acme);
+        let found = mcp.catalogue_of(&acme).endpoints;
         assert_eq!(found.len(), 2);
         assert!(found.iter().any(|e| e.key == "req-1" && !e.loaded));
         assert!(found.iter().any(|e| e.key == "POST /orders" && e.loaded));

@@ -436,6 +436,39 @@ fn collect_params(
     }
 }
 
+/// Every scalar `x-` extension on an operation, kept under the name the
+/// document uses.
+///
+/// OpenAPI reserves `x-` for extensions, so carrying all of them is following
+/// the spec rather than blessing any one vendor's. Nothing here knows what a
+/// given key means — `x-kind`, `x-internal`, `x-sla` are all the same to Fiber.
+/// A policy filter is where meaning gets attached, which is the only place a
+/// person can see it and change it.
+///
+/// Scalars only: an object-valued extension can be arbitrarily large, and this
+/// ends up in a cache and in every search result.
+pub(crate) fn extensions(
+    operation: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    operation
+        .map(|operation| {
+            operation
+                .iter()
+                .filter(|(name, value)| {
+                    name.starts_with("x-")
+                        && matches!(
+                            value,
+                            serde_json::Value::String(_)
+                                | serde_json::Value::Number(_)
+                                | serde_json::Value::Bool(_)
+                        )
+                })
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn first_tag(operation: Option<&serde_json::Map<String, serde_json::Value>>) -> String {
     operation
         .and_then(|operation| operation.get("tags"))

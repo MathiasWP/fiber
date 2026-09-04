@@ -17,6 +17,7 @@
 	import CapturePicker from './CapturePicker.svelte';
 	import ImportSpec from './ImportSpec.svelte';
 	import LoaderTab from './LoaderTab.svelte';
+	import PolicyEditor from './PolicyEditor.svelte';
 	import { urlField } from '$lib/urlfield';
 
 	interface Props {
@@ -434,21 +435,31 @@
 								<input type="checkbox" bind:checked={section.mcp.enabled} />
 								Let agents see and call this collection
 							</label>
-							<label class="flex items-center gap-1.5 text-xs {section.mcp.enabled ? '' : 'opacity-40'}">
-								<input
-									type="checkbox"
-									disabled={!section.mcp.enabled}
-									bind:checked={section.mcp.allowWrites}
-								/>
-								Allow more than GET, HEAD and OPTIONS
-							</label>
+							<!-- The switch and the policy are the same decision made two ways,
+							     so only one of them is offered at a time. -->
+							{#if !section.mcp.policy}
+								<label
+									class="flex items-center gap-1.5 text-xs {section.mcp.enabled ? '' : 'opacity-40'}"
+								>
+									<input
+										type="checkbox"
+										disabled={!section.mcp.enabled}
+										bind:checked={section.mcp.allowWrites}
+									/>
+									Allow more than GET, HEAD and OPTIONS
+								</label>
 
-							<p class="text-2.5 text-muted leading-relaxed">
-								Shared read-only by default: an agent can see and call this collection, but only
-								with GET, HEAD and OPTIONS until you allow more. It's authenticated as you, and
-								credentials are never returned. Turn the top switch off to hide it entirely — an
-								unshared collection is invisible, not merely read-only.
-							</p>
+								<p class="text-2.5 text-muted leading-relaxed">
+									Shared read-only by default: an agent can see and call this collection, but only
+									with GET, HEAD and OPTIONS until you allow more. It's authenticated as you, and
+									credentials are never returned. Turn the top switch off to hide it entirely — an
+									unshared collection is invisible, not merely read-only.
+								</p>
+							{/if}
+
+							<div class="flex flex-col gap-2 {section.mcp.enabled ? '' : 'opacity-40'}">
+								<PolicyEditor {section} />
+							</div>
 						</div>
 					</Tabs.Content>
 
