@@ -556,6 +556,31 @@ test.describe('keeping endpoints current', () => {
 		await page.evaluate(() => window.__FIBER_TEST__.finishRefresh());
 		await expect(spinner).toBeHidden();
 	});
+
+	/**
+	 * A failed run writes no cache, so nothing about the section changes and it
+	 * is still stale — which turned the TTL into "re-run on every focus". That
+	 * is a retry loop, and a self-feeding one: when the failure is a rejected
+	 * credential the next run reads the keychain, an ad-hoc signed build raises
+	 * an authorization dialog for that read, and dismissing the dialog gives
+	 * focus back to the window that starts the run after it.
+	 */
+	test('a loader that failed is not re-run on every focus', async ({ page }) => {
+		await install(page, {
+			sections: [section({ loader: withTtl(60) })],
+			runLoaderError: 'the manifest request returned 403: Invalid token: jwt expired'
+		});
+		await page.goto('/');
+
+		await expect.poll(() => runs(page)).toBe(1);
+		await expect(page.getByText(/jwt expired/)).toBeVisible();
+
+		for (let i = 0; i < 3; i++) {
+			await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+		}
+		await page.waitForTimeout(150);
+		expect(await runs(page)).toBe(1);
+	});
 });
 
 /**

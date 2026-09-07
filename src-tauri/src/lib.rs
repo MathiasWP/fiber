@@ -166,6 +166,15 @@ mod gui {
             self.lock().insert(section.id.clone(), Arc::new(section));
         }
 
+        /// The copy already held, without falling back to disk.
+        ///
+        /// `save_section` wants the version it is about to replace, and only to
+        /// compare against — a section this process has never seen is a fair
+        /// "unknown" rather than a reason to read a file back.
+        fn peek(&self, id: &str) -> Option<Arc<store::Section>> {
+            self.lock().get(id).cloned()
+        }
+
         fn forget(&self, id: &str) {
             self.lock().remove(id);
         }
@@ -755,7 +764,10 @@ mod gui {
         section: Section,
     ) -> Result<(), StoreError> {
         store::save(&paths.sections, &section)?;
-        mcp::sync_section_sharing(&paths.data, &section);
+        // Read before the remember below replaces it: the credential file only
+        // has something to reconcile when sharing itself moved.
+        let previous = sections.peek(&section.id);
+        mcp::sync_section_sharing(&paths.data, previous.as_deref(), &section);
         sections.remember(section);
         Ok(())
     }

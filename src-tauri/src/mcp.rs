@@ -1542,11 +1542,24 @@ fn sync_inner(
 }
 
 /// Brings a section's presence in the credential file in line with whether it
-/// is shared, after a save that may have toggled either.
+/// is shared, after a save that has toggled either.
 ///
 /// The keychain is read only when a section has just been shared and its
 /// credential is not in the file yet — one read, not one per collection.
-pub fn sync_section_sharing(data: &std::path::Path, section: &Section) {
+///
+/// `previous` is the section as it was before the save, and the save is skipped
+/// outright when neither the sharing switch nor the reference moved. That is
+/// nearly every save: the app writes a section on any edit, debounced, so
+/// renaming a request or typing in a URL came through here too. Each of those
+/// unsealed the credential file, and the *first* did so with a keychain read —
+/// the sealing key — which on an ad-hoc signed build is an authorization
+/// dialog. A prompt has to be attached to something the user did that needs it;
+/// this one appeared while they were typing. `None` — a section this process
+/// has not seen — is treated as a change, since there is nothing to compare.
+pub fn sync_section_sharing(data: &std::path::Path, previous: Option<&Section>, section: &Section) {
+    if previous.is_some_and(|previous| sharing_matches(previous, section)) {
+        return;
+    }
     let Some(reference) = section.auth.secret_ref() else {
         return;
     };
@@ -1567,6 +1580,15 @@ pub fn sync_section_sharing(data: &std::path::Path, section: &Section) {
         }
         Err(err) => log::warn!("could not read {}: {err}", path.display()),
     }
+}
+
+/// Whether two versions of a section say the same thing about the credential
+/// file: shared or not, and under which reference.
+///
+/// Everything else a section holds — requests, overlay, base URL, the loader —
+/// is nothing the file records, so a change to it has nothing to reconcile.
+fn sharing_matches(previous: &Section, next: &Section) -> bool {
+    previous.mcp.enabled == next.mcp.enabled && previous.auth.secret_ref() == next.auth.secret_ref()
 }
 
 /// What this process can see of the credentials its collections need, logged
@@ -2059,6 +2081,33 @@ mod tests {
         assert!(!secrets_file(&dir).exists());
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ordinary edits must not count as a change to sharing. Reconciling the
+    /// credential file means unsealing it, and unsealing it means the keychain
+    /// — a password prompt on an ad-hoc signed build, raised while someone was
+    /// typing in a URL.
+    #[test]
+    fn an_ordinary_edit_is_not_a_change_to_sharing() {
+        let mut shared = section(true, false);
+        shared.auth = crate::auth::AuthConfig::Bearer {
+            secret_ref: "sec-1:auth".into(),
+        };
+
+        // The same collection with an unrelated edit: still shared, still the
+        // same credential.
+        let mut renamed = shared.clone();
+        renamed.name = "Acme (prod)".into();
+        renamed.requests[0].path = "/user/43".into();
+        assert!(sharing_matches(&shared, &renamed));
+
+        let mut unshared = shared.clone();
+        unshared.mcp.enabled = false;
+        assert!(!sharing_matches(&shared, &unshared));
+
+        let mut recredentialed = shared.clone();
+        recredentialed.auth = crate::auth::AuthConfig::None;
+        assert!(!sharing_matches(&shared, &recredentialed));
     }
 
     #[test]
