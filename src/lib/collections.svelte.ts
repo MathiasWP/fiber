@@ -138,6 +138,28 @@ class Collections {
 	#following = new Set<string>();
 
 	/**
+	 * When each section's loader last failed, by id.
+	 *
+	 * A failed run writes no cache, so `loadedAt` never moves and the section
+	 * counts as stale for ever — while `refreshStale` fires on every window
+	 * focus. That is a retry loop wearing a TTL's clothes: one collection the
+	 * API is rejecting re-ran its loader every single time the window came back
+	 * to the front.
+	 *
+	 * It bites hardest when the credential has to be read from the keychain
+	 * again, because on an ad-hoc signed build that read raises an
+	 * authorization dialog — and dismissing the dialog hands focus back to the
+	 * window that starts the next run, which raises the next dialog. The app
+	 * could not converge: allow, refocus, prompt, forever.
+	 *
+	 * A failure now counts as an attempt, so the TTL means what it says for
+	 * both outcomes: don't ask this API again for another `ttlSeconds`. Held in
+	 * memory only — a relaunch is a deliberate act and may try again at once,
+	 * and so may the user, through Refresh or Sign in again.
+	 */
+	#failedAt = new Map<string, number>();
+
+	/**
 	 * Last loader run per section id, mirrored from disk.
 	 *
 	 * `$state.raw` because each cache is replaced wholesale — never edited in
@@ -511,6 +533,9 @@ class Collections {
 	 * about to look, so it is the moment worth being current. Startup used to
 	 * be the only trigger, which for an app you leave open for days meant a TTL
 	 * almost never came round.
+	 *
+	 * The TTL runs from the last attempt, not the last success — see
+	 * `#failedAt`.
 	 */
 	refreshStale(): void {
 		const now = Date.now();
@@ -527,8 +552,8 @@ class Collections {
 			if (this.signingIn[section.id]) continue;
 
 			const cache = this.loaderCaches[section.id];
-			const age = now - (cache?.loadedAt ?? 0);
-			if (age > loader.ttlSeconds * 1000) this.refresh(section);
+			const last = Math.max(cache?.loadedAt ?? 0, this.#failedAt.get(section.id) ?? 0);
+			if (now - last > loader.ttlSeconds * 1000) this.refresh(section);
 		}
 	}
 
@@ -547,6 +572,7 @@ class Collections {
 			if (this.loaderFailure?.sectionId === section.id) this.loaderFailure = null;
 			return run;
 		} catch (error) {
+			this.#failedAt.set(section.id, Date.now());
 			const message = String(error);
 			this.loaderFailure = {
 				sectionId: section.id,
