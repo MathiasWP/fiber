@@ -12,6 +12,16 @@ import {
 /** Requests that aren't saved to a section all share this bucket. */
 export const SCRATCH_ID = 'scratch';
 
+/**
+ * What the MCP server prefixes the request id of everything it sends.
+ *
+ * It records into the same database as the window, under one synthetic request
+ * per collection — `mcp:<section id>` — which is also how `mcp_body` on the
+ * Rust side tells its own rows apart. Mirrored here so the History tab can say
+ * which entries an agent sent.
+ */
+export const MCP_REQUEST_PREFIX = 'mcp:';
+
 export interface HistoryEntry {
 	id: string;
 	/** The saved request this belongs to, or `SCRATCH_ID`. */
@@ -28,6 +38,13 @@ export interface HistoryEntry {
 	 * returned; those match any section rather than disappearing.
 	 */
 	sectionId: string | null;
+	/**
+	 * Sent by the MCP server on an agent's behalf rather than from this window.
+	 *
+	 * Read off the request id — see `MCP_REQUEST_PREFIX` — so it is known from
+	 * the list alone, without a lookup per row.
+	 */
+	viaMcp: boolean;
 	at: number;
 	method: string;
 	url: string;
@@ -46,6 +63,7 @@ function fromRecord(record: HistoryRecord): HistoryEntry {
 		id: record.id,
 		requestId: record.requestId,
 		sectionId: record.sectionId ?? null,
+		viaMcp: record.requestId.startsWith(MCP_REQUEST_PREFIX),
 		at: record.at,
 		method: record.method,
 		url: record.url,
@@ -87,6 +105,33 @@ class History {
 		} catch (error) {
 			this.error = String(error);
 		}
+	}
+
+	/**
+	 * Picks up what another process has written since the last look.
+	 *
+	 * The MCP server runs outside this window and records into the same
+	 * database, so a list loaded at startup went stale the moment an agent sent
+	 * something — its requests only showed up after a relaunch. This merges
+	 * rather than replaces: an entry already here keeps its object, and with it
+	 * a body that is loaded or a send still streaming onto it. Nothing is
+	 * dropped either — an entry the page limit has since pushed out is still a
+	 * real row, and losing it from the list would look like history had been
+	 * lost.
+	 */
+	async refresh(): Promise<void> {
+		let records: HistoryRecord[];
+		try {
+			records = await historyList();
+			this.error = null;
+		} catch (error) {
+			this.error = String(error);
+			return;
+		}
+		const known = new Set(this.entries.map((entry) => entry.id));
+		const added = records.filter((record) => !known.has(record.id)).map(fromRecord);
+		if (added.length === 0) return;
+		this.entries = [...added, ...this.entries].sort((a, b) => b.at - a.at);
 	}
 
 	/**
@@ -155,10 +200,10 @@ class History {
 		}
 	}
 
-	start(entry: Omit<HistoryEntry, 'pending' | 'bodyLoaded'>): void {
+	start(entry: Omit<HistoryEntry, 'pending' | 'bodyLoaded' | 'viaMcp'>): void {
 		// Sending shows the new response, not whatever history was open.
 		this.viewingId = null;
-		this.entries.unshift({ ...entry, pending: true, bodyLoaded: false });
+		this.entries.unshift({ ...entry, viaMcp: false, pending: true, bodyLoaded: false });
 		this.select(entry.requestId, entry.id, entry.sectionId);
 	}
 
