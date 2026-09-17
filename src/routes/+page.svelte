@@ -725,6 +725,10 @@
 </script>
 
 <!--
+	Focus is the moment you are about to look, so it is when history catches up
+	with what the MCP server wrote from its own process while you were in the
+	agent's window — a send made there only used to appear after a relaunch.
+
 	`pagehide` is the last moment the webview is guaranteed to still be there.
 	The quit paths above already flush, and so does the update restart; this
 	covers the ways out that route through none of them — a reload from the
@@ -732,7 +736,10 @@
 -->
 <svelte:window
 	onkeydown={onKeydown}
-	onfocus={() => collections.refreshStale()}
+	onfocus={() => {
+		collections.refreshStale();
+		history.refresh();
+	}}
 	onpagehide={() => session.flush()}
 />
 

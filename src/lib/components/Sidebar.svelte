@@ -2,6 +2,7 @@
 	import { ContextMenu, Dialog, Tooltip } from 'bits-ui';
 	import {
 		applyPathParams,
+		endpointKey,
 		LOOSE_SECTION_ID,
 		methodColor,
 		normalizeBaseUrl,
@@ -308,6 +309,30 @@
 	}
 
 	/**
+	 * Opening History is a look at the list, so it is the moment to make sure the
+	 * list is current: the MCP server writes to the same database from another
+	 * process, and nothing else tells this window when it has.
+	 */
+	function showHistory() {
+		session.sidebarTab = 'history';
+		history.refresh();
+	}
+
+	/**
+	 * And while History stays open, keep looking. An agent typically sends in
+	 * bursts while you watch the tab, so a refresh only on opening it would show
+	 * the first request of a run and none that followed. A list of a few hundred
+	 * rows from SQLite is cheap, and a refresh that finds nothing new changes
+	 * nothing, so polling costs no re-render.
+	 */
+	const HISTORY_POLL_MS = 5_000;
+	$effect(() => {
+		if (session.sidebarTab !== 'history') return;
+		const timer = setInterval(() => history.refresh(), HISTORY_POLL_MS);
+		return () => clearInterval(timer);
+	});
+
+	/**
 	 * Same reason as above: the MCP tab isn't History either, so the entry you
 	 * were looking at stops overriding the response pane.
 	 */
@@ -456,27 +481,89 @@
 	});
 
 	/**
-	 * The name of the request an entry came from, when there still is one.
+	 * Every endpoint's name by what it hits — `"METHOD /path"` — per section.
 	 *
-	 * Plenty of entries outlive their request: sent from scratch, sent by a
-	 * loader or the MCP server, or the request has since been deleted. Those get
-	 * no name rather than an invented one — the URL underneath is their identity.
+	 * For the entries that have no request to be named after. The MCP server
+	 * sends under one synthetic request per collection rather than an endpoint's
+	 * id, so its entries never matched `requestNames`, and a run of agent calls
+	 * showed up as a column of bare URLs. The endpoint they hit is still known:
+	 * the loader's manifest lists it, or a saved request does.
 	 */
-	function requestName(entry: HistoryEntry): string | null {
-		return requestNames.get(entry.requestId) ?? null;
+	const endpointNames = $derived.by(() => {
+		const names = new Map<string, Map<string, string>>();
+		for (const section of collections.sections) {
+			const mine = new Map<string, string>();
+			for (const endpoint of collections.loaderCaches[section.id]?.endpoints ?? []) {
+				mine.set(endpointKey(endpoint.method, endpoint.path), endpoint.name);
+			}
+			// User-named after loader-named, so a rename of an endpoint wins.
+			for (const request of section.requests) {
+				mine.set(endpointKey(request.method, request.path), request.name);
+			}
+			for (const entry of section.overlay) mine.set(entry.id, entry.name);
+			names.set(section.id, mine);
+		}
+		return names;
+	});
+
+	const sectionsById = $derived(
+		new Map(collections.sections.map((section) => [section.id, section]))
+	);
+
+	/**
+	 * The path an entry's URL has under its section's base, or under no base at
+	 * all — `/users/42` either way, so that it reads like the endpoint rows in
+	 * Collections. Never empty: a request to the base URL itself is `/`.
+	 */
+	function pathOf(entry: HistoryEntry): string {
+		const base = entry.sectionId ? sectionsById.get(entry.sectionId)?.baseUrl : undefined;
+		let path: string;
+		if (base && entry.url.startsWith(normalizeBaseUrl(base))) {
+			path = entry.url.slice(normalizeBaseUrl(base).length);
+		} else {
+			try {
+				path = new URL(entry.url).pathname;
+			} catch {
+				path = entry.url;
+			}
+		}
+		path = path.split(/[?#]/, 1)[0];
+		return path.startsWith('/') ? path : `/${path}`;
+	}
+
+	/**
+	 * What to call an entry.
+	 *
+	 * The request it came from, when that still exists; else the endpoint its
+	 * URL hits, when the collection knows one; else the path. Every entry gets a
+	 * name — a row without one looked like a rendering fault rather than like a
+	 * request sent from scratch, by a loader, or by an agent.
+	 */
+	function requestName(entry: HistoryEntry): string {
+		const own = requestNames.get(entry.requestId);
+		if (own) return own;
+		const path = pathOf(entry);
+		if (entry.sectionId) {
+			const named = endpointNames.get(entry.sectionId)?.get(endpointKey(entry.method, path));
+			if (named) return named;
+		}
+		return path;
 	}
 
 	/**
 	 * Matched against the request's name, method, URL and status — so `404`,
-	 * `POST` and the name now on the row all work.
+	 * `POST` and the name now on the row all work — and against `mcp`, so the
+	 * badge on a row is something you can search for too.
 	 */
 	const visibleHistory = $derived.by(() => {
 		const needle = historyQuery.trim().toLowerCase();
 		if (!needle) return history.entries;
 		return history.entries.filter((entry) => {
 			const status = entry.response ? String(entry.response.status) : entry.error ? 'error' : '';
-			const name = requestName(entry) ?? '';
-			return `${name} ${entry.method} ${entry.url} ${status}`.toLowerCase().includes(needle);
+			const via = entry.viaMcp ? 'mcp' : '';
+			return `${requestName(entry)} ${entry.method} ${entry.url} ${status} ${via}`
+				.toLowerCase()
+				.includes(needle);
 		});
 	});
 
@@ -818,7 +905,7 @@
 			class="px-2 py-1 rounded text-xs transition-colors {session.sidebarTab === 'history'
 				? 'bg-raised text-text'
 				: 'text-muted hover:text-text'}"
-			onclick={() => (session.sidebarTab = 'history')}
+			onclick={() => showHistory()}
 		>
 			History
 		</button>
@@ -1323,12 +1410,15 @@
 								spinner, error icon and code all occupy the same space, so a row
 								doesn't jump about as a request settles.
 							-->
-							{#if name}
-								<span class="min-w-0 flex-1 truncate text-xs text-text" title={name}>{name}</span>
-							{:else}
-								<!-- Unnamed entries still push the right-hand group over, so
-								     every row lines up down the list. -->
-								<span class="flex-1"></span>
+							<span class="min-w-0 flex-1 truncate text-xs text-text" title={name}>{name}</span>
+							{#if entry.viaMcp}
+								<!-- An agent sent this, not you. It sits with the name rather
+								     than the right-hand group so the fixed-width columns stay
+								     aligned with the rows that don't wear it. -->
+								<span
+									class="shrink-0 rounded border border-border px-1 font-mono text-2.5 text-muted"
+									title="Sent by an agent through the MCP server">MCP</span
+								>
 							{/if}
 							<!-- Method, status and time are one group on a single `gap-1`, so
 							     the space before the timestamp matches the one between the
