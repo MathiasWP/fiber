@@ -1,0 +1,822 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cyclic union",
+    "version": "1"
+  },
+  "paths": {
+    "/data-points": {
+      "get": {
+        "operationId": "listDataPoints"
+      }
+    },
+    "/data-points/concept0/define": {
+      "post": {
+        "operationId": "defineConcept0",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept1/define": {
+      "post": {
+        "operationId": "defineConcept1",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept2/define": {
+      "post": {
+        "operationId": "defineConcept2",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept3/define": {
+      "post": {
+        "operationId": "defineConcept3",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept4/define": {
+      "post": {
+        "operationId": "defineConcept4",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept5/define": {
+      "post": {
+        "operationId": "defineConcept5",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept6/define": {
+      "post": {
+        "operationId": "defineConcept6",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept7/define": {
+      "post": {
+        "operationId": "defineConcept7",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept8/define": {
+      "post": {
+        "operationId": "defineConcept8",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept9/define": {
+      "post": {
+        "operationId": "defineConcept9",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept10/define": {
+      "post": {
+        "operationId": "defineConcept10",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept11/define": {
+      "post": {
+        "operationId": "defineConcept11",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept12/define": {
+      "post": {
+        "operationId": "defineConcept12",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept13/define": {
+      "post": {
+        "operationId": "defineConcept13",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept14/define": {
+      "post": {
+        "operationId": "defineConcept14",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept15/define": {
+      "post": {
+        "operationId": "defineConcept15",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept16/define": {
+      "post": {
+        "operationId": "defineConcept16",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept17/define": {
+      "post": {
+        "operationId": "defineConcept17",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept18/define": {
+      "post": {
+        "operationId": "defineConcept18",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/data-points/concept19/define": {
+      "post": {
+        "operationId": "defineConcept19",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Operand"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Operand": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/Step0"
+          },
+          {
+            "$ref": "#/components/schemas/Step1"
+          },
+          {
+            "$ref": "#/components/schemas/Step2"
+          },
+          {
+            "$ref": "#/components/schemas/Step3"
+          },
+          {
+            "$ref": "#/components/schemas/Step4"
+          },
+          {
+            "$ref": "#/components/schemas/Step5"
+          },
+          {
+            "$ref": "#/components/schemas/Step6"
+          },
+          {
+            "$ref": "#/components/schemas/Literal"
+          }
+        ]
+      },
+      "Literal": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": [
+              "string",
+              "number",
+              "null"
+            ]
+          }
+        }
+      },
+      "Step0": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "step0"
+          },
+          "input": {
+            "$ref": "#/components/schemas/Operand"
+          },
+          "then1": {
+            "$ref": "#/components/schemas/Step1"
+          },
+          "then2": {
+            "$ref": "#/components/schemas/Step2"
+          },
+          "then3": {
+            "$ref": "#/components/schemas/Step3"
+          },
+          "then4": {
+            "$ref": "#/components/schemas/Step4"
+          },
+          "then5": {
+            "$ref": "#/components/schemas/Step5"
+          },
+          "then6": {
+            "$ref": "#/components/schemas/Step6"
+          }
+        }
+      },
+      "Step1": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "step1"
+          },
+          "input": {
+            "$ref": "#/components/schemas/Operand"
+          },
+          "then0": {
+            "$ref": "#/components/schemas/Step0"
+          },
+          "then2": {
+            "$ref": "#/components/schemas/Step2"
+          },
+          "then3": {
+            "$ref": "#/components/schemas/Step3"
+          },
+          "then4": {
+            "$ref": "#/components/schemas/Step4"
+          },
+          "then5": {
+            "$ref": "#/components/schemas/Step5"
+          },
+          "then6": {
+            "$ref": "#/components/schemas/Step6"
+          }
+        }
+      },
+      "Step2": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "step2"
+          },
+          "input": {
+            "$ref": "#/components/schemas/Operand"
+          },
+          "then0": {
+            "$ref": "#/components/schemas/Step0"
+          },
+          "then1": {
+            "$ref": "#/components/schemas/Step1"
+          },
+          "then3": {
+            "$ref": "#/components/schemas/Step3"
+          },
+          "then4": {
+            "$ref": "#/components/schemas/Step4"
+          },
+          "then5": {
+            "$ref": "#/components/schemas/Step5"
+          },
+          "then6": {
+            "$ref": "#/components/schemas/Step6"
+          }
+        }
+      },
+      "Step3": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "step3"
+          },
+          "input": {
+            "$ref": "#/components/schemas/Operand"
+          },
+          "then0": {
+            "$ref": "#/components/schemas/Step0"
+          },
+          "then1": {
+            "$ref": "#/components/schemas/Step1"
+          },
+          "then2": {
+            "$ref": "#/components/schemas/Step2"
+          },
+          "then4": {
+            "$ref": "#/components/schemas/Step4"
+          },
+          "then5": {
+            "$ref": "#/components/schemas/Step5"
+          },
+          "then6": {
+            "$ref": "#/components/schemas/Step6"
+          }
+        }
+      },
+      "Step4": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "step4"
+          },
+          "input": {
+            "$ref": "#/components/schemas/Operand"
+          },
+          "then0": {
+            "$ref": "#/components/schemas/Step0"
+          },
+          "then1": {
+            "$ref": "#/components/schemas/Step1"
+          },
+          "then2": {
+            "$ref": "#/components/schemas/Step2"
+          },
+          "then3": {
+            "$ref": "#/components/schemas/Step3"
+          },
+          "then5": {
+            "$ref": "#/components/schemas/Step5"
+          },
+          "then6": {
+            "$ref": "#/components/schemas/Step6"
+          }
+        }
+      },
+      "Step5": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "step5"
+          },
+          "input": {
+            "$ref": "#/components/schemas/Operand"
+          },
+          "then0": {
+            "$ref": "#/components/schemas/Step0"
+          },
+          "then1": {
+            "$ref": "#/components/schemas/Step1"
+          },
+          "then2": {
+            "$ref": "#/components/schemas/Step2"
+          },
+          "then3": {
+            "$ref": "#/components/schemas/Step3"
+          },
+          "then4": {
+            "$ref": "#/components/schemas/Step4"
+          },
+          "then6": {
+            "$ref": "#/components/schemas/Step6"
+          }
+        }
+      },
+      "Step6": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "step6"
+          },
+          "input": {
+            "$ref": "#/components/schemas/Operand"
+          },
+          "then0": {
+            "$ref": "#/components/schemas/Step0"
+          },
+          "then1": {
+            "$ref": "#/components/schemas/Step1"
+          },
+          "then2": {
+            "$ref": "#/components/schemas/Step2"
+          },
+          "then3": {
+            "$ref": "#/components/schemas/Step3"
+          },
+          "then4": {
+            "$ref": "#/components/schemas/Step4"
+          },
+          "then5": {
+            "$ref": "#/components/schemas/Step5"
+          }
+        }
+      }
+    }
+  }
+}

@@ -170,6 +170,13 @@ pub fn parse(text: &str) -> Result<Import, ImportError> {
 /// what keep a skeleton finite.
 const MAX_DEPTH: usize = 6;
 
+/// How many schema nodes one body may be built from. The depth limit alone
+/// still lets schemas that refer to each other branch at every level — seven
+/// steps that each refer to the other six made a 440 KB body within it, for
+/// every endpoint that takes one. A body over this is built again one level
+/// shallower, so it is cut evenly rather than wherever the walk ran out.
+const MAX_NODES: usize = 1_000;
+
 /// A JSON body to start from, built from the operation's request schema.
 ///
 /// An `example` written into the document always wins: it is what the author
@@ -201,7 +208,7 @@ pub(crate) fn request_body(
     let (value, derived) = match given {
         Some(value) => (value, false),
         None => match media.get("schema") {
-            Some(schema) => (skeleton(document, schema, 0, &mut Vec::new()), true),
+            Some(schema) => (bounded_skeleton(document, schema), true),
             None => return String::new(),
         },
     };
@@ -218,27 +225,24 @@ pub(crate) fn request_body(
     }
 }
 
-/// The JSON Schema that governs an operation's JSON request body.
-///
-/// Local references are expanded before the schema leaves Rust. The editor gets
-/// this only for the endpoint being edited, and has no copy of the full OpenAPI
-/// document with which to resolve `#/components/...` itself.
-pub(crate) fn request_schema(
-    document: &serde_json::Value,
-    operation: &serde_json::Map<String, serde_json::Value>,
-) -> Option<serde_json::Value> {
-    let schema = json_media(document, operation)?.get("schema")?;
-    Some(resolve_schema(document, schema, &mut Vec::new()))
+/// The JSON Schema that governs an operation's JSON request body, as the
+/// document wrote it — `$ref`s and all. See [`bundle`] for the form that
+/// leaves Rust.
+pub(crate) fn request_schema<'a>(
+    document: &'a serde_json::Value,
+    operation: &'a serde_json::Map<String, serde_json::Value>,
+) -> Option<&'a serde_json::Value> {
+    json_media(document, operation)?.get("schema")
 }
 
 /// JSON Schema for the successful JSON response, when the operation has one.
 ///
 /// Prefers 200, then any 2xx, then `default`. Used to lint the response the
 /// same way the request body is linted — after it arrives, not before.
-pub(crate) fn response_schema(
-    document: &serde_json::Value,
-    operation: &serde_json::Map<String, serde_json::Value>,
-) -> Option<serde_json::Value> {
+pub(crate) fn response_schema<'a>(
+    document: &'a serde_json::Value,
+    operation: &'a serde_json::Map<String, serde_json::Value>,
+) -> Option<&'a serde_json::Value> {
     let responses = operation
         .get("responses")
         .and_then(|value| value.as_object())?;
@@ -261,8 +265,7 @@ pub(crate) fn response_schema(
             .find(|(kind, _)| kind.contains("json"))
             .map(|(_, value)| value)
     })?;
-    let schema = media.get("schema")?;
-    Some(resolve_schema(document, schema, &mut Vec::new()))
+    media.get("schema")
 }
 
 /// Body text, kind, and form fields for an operation — JSON skeleton, or a
@@ -478,38 +481,216 @@ pub(crate) fn first_tag(operation: Option<&serde_json::Map<String, serde_json::V
         .to_string()
 }
 
-/// Resolves local schema references recursively. A circular reference remains
-/// as-is at its second occurrence; that preserves the useful outer constraints
-/// without making either the cache or the browser representation infinite.
-fn resolve_schema(
+/// Keywords whose value is data rather than schema. An example payload may
+/// well hold a `$ref` key, and it is not a reference.
+const DATA_KEYWORDS: &[&str] = &["example", "examples", "const", "enum", "default"];
+
+/// Keywords whose value maps names of the document's choosing to schemas. A
+/// property called `example` is a property, not an example.
+const NAMED_SCHEMAS: &[&str] = &[
+    "properties",
+    "patternProperties",
+    "dependentSchemas",
+    "$defs",
+    "definitions",
+];
+
+/// Calls `found` with every `$ref` a schema holds, and whether that `$ref`
+/// sits beside other keywords.
+fn each_ref<'a>(schema: &'a serde_json::Value, named: bool, found: &mut impl FnMut(&'a str, bool)) {
+    match schema {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                each_ref(item, false, found);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                if named {
+                    each_ref(value, false, found);
+                } else if key == "$ref" {
+                    if let Some(reference) = value.as_str() {
+                        found(reference, fields.len() > 1);
+                    }
+                } else if !DATA_KEYWORDS.contains(&key.as_str()) {
+                    each_ref(value, NAMED_SCHEMAS.contains(&key.as_str()), found);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every local definition a schema reaches, directly or through another
+/// definition, keyed by the `$ref` that names it. Each is stored once, as the
+/// document wrote it.
+///
+/// This is what keeps a loader cache the size of the document rather than the
+/// size of its expansion. The cache used to hold every endpoint's schema with
+/// its references expanded in place, and a reference cycle only stopped where
+/// it met itself on the current path. Schemas that refer to each other in a
+/// ring — an operand that is an object or a function, each of which holds
+/// operands — have a number of such paths that grows factorially with the size
+/// of the ring, and one real collection's cache reached 2.5 GB that way.
+pub(crate) fn collect_definitions(
     document: &serde_json::Value,
     schema: &serde_json::Value,
-    trail: &mut Vec<String>,
+    into: &mut std::collections::BTreeMap<String, serde_json::Value>,
+) {
+    let mut queue = vec![schema];
+    while let Some(next) = queue.pop() {
+        each_ref(next, false, &mut |reference, _| {
+            if into.contains_key(reference) {
+                return;
+            }
+            if let Some(found) = target(document, reference) {
+                into.insert(reference.to_string(), found.clone());
+                queue.push(found);
+            }
+        });
+    }
+}
+
+/// One schema made self-contained: its references point into a `$defs` block
+/// carried alongside, rather than into a document the reader does not have.
+///
+/// A definition used once, by a bare `$ref`, is written in place, which is how
+/// most schemas in most documents read best. Anything used more than once is
+/// written once under `$defs` and referred to — so the result is never larger
+/// than the schema plus the definitions it reaches, however those refer to
+/// each other. A cycle always has a member that is used more than once (from
+/// outside the cycle and from inside it), so nothing is written in place
+/// forever.
+///
+/// Ajv, which lints bodies in the editor, reads `$defs` natively.
+pub(crate) fn bundle(
+    schema: &serde_json::Value,
+    definitions: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> serde_json::Value {
-    if let Some(reference) = schema.get("$ref").and_then(|value| value.as_str()) {
-        if reference.starts_with("#/") && !trail.iter().any(|seen| seen == reference) {
-            trail.push(reference.to_string());
-            let resolved = resolve(document, schema);
-            let expanded = resolve_schema(document, resolved, trail);
-            trail.pop();
-            return expanded;
-        }
-        return schema.clone();
+    // How often each reachable definition is referred to, counting every
+    // reference in the schema and in each reachable definition once.
+    let mut uses: std::collections::BTreeMap<&str, (usize, bool)> = Default::default();
+    let mut queue = vec![schema];
+    while let Some(next) = queue.pop() {
+        each_ref(next, false, &mut |reference, beside| {
+            let Some((key, found)) = definitions.get_key_value(reference) else {
+                return;
+            };
+            let entry = uses.entry(key.as_str()).or_insert((0, false));
+            entry.0 += 1;
+            entry.1 |= beside;
+            if entry.0 == 1 {
+                queue.push(found);
+            }
+        });
     }
 
+    // Names come from the reference's last segment, made safe to use in a
+    // pointer without escaping. Component names are nearly always safe
+    // already, so this rarely changes anything.
+    let mut taken: std::collections::HashSet<String> = schema
+        .get("$defs")
+        .and_then(|defs| defs.as_object())
+        .map(|defs| defs.keys().cloned().collect())
+        .unwrap_or_default();
+    let mut shared = std::collections::BTreeMap::new();
+    for (reference, (count, beside)) in &uses {
+        if *count < 2 && !beside {
+            continue;
+        }
+        let base: String = reference
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let base = if base.is_empty() {
+            "schema".into()
+        } else {
+            base
+        };
+        let mut name = base.clone();
+        let mut suffix = 1;
+        while !taken.insert(name.clone()) {
+            suffix += 1;
+            name = format!("{base}_{suffix}");
+        }
+        shared.insert(*reference, name);
+    }
+
+    let mut root = rewrite(schema, false, definitions, &shared);
+    if !shared.is_empty() {
+        if let serde_json::Value::Object(fields) = &mut root {
+            let defs = fields
+                .entry("$defs")
+                .or_insert_with(|| serde_json::Value::Object(Default::default()));
+            if let serde_json::Value::Object(defs) = defs {
+                for (reference, name) in &shared {
+                    defs.insert(
+                        name.clone(),
+                        rewrite(&definitions[*reference], false, definitions, &shared),
+                    );
+                }
+            }
+        }
+    }
+    root
+}
+
+/// A copy of `schema` with each reference either pointed into `$defs` or,
+/// when it is used only once, replaced by what it names.
+fn rewrite(
+    schema: &serde_json::Value,
+    named: bool,
+    definitions: &std::collections::BTreeMap<String, serde_json::Value>,
+    shared: &std::collections::BTreeMap<&str, String>,
+) -> serde_json::Value {
     match schema {
         serde_json::Value::Array(items) => serde_json::Value::Array(
             items
                 .iter()
-                .map(|item| resolve_schema(document, item, trail))
+                .map(|item| rewrite(item, false, definitions, shared))
                 .collect(),
         ),
-        serde_json::Value::Object(fields) => serde_json::Value::Object(
-            fields
-                .iter()
-                .map(|(key, value)| (key.clone(), resolve_schema(document, value, trail)))
-                .collect(),
-        ),
+        serde_json::Value::Object(fields) => {
+            if !named {
+                if let Some(reference) = fields.get("$ref").and_then(|value| value.as_str()) {
+                    if !shared.contains_key(reference) {
+                        if let Some(found) = definitions.get(reference) {
+                            return rewrite(found, false, definitions, shared);
+                        }
+                    }
+                }
+            }
+            serde_json::Value::Object(
+                fields
+                    .iter()
+                    .map(|(key, value)| {
+                        let value = if named {
+                            rewrite(value, false, definitions, shared)
+                        } else if key == "$ref" {
+                            match value.as_str().and_then(|reference| shared.get(reference)) {
+                                Some(name) => serde_json::Value::String(format!("#/$defs/{name}")),
+                                None => value.clone(),
+                            }
+                        } else if DATA_KEYWORDS.contains(&key.as_str()) {
+                            value.clone()
+                        } else {
+                            let named = NAMED_SCHEMAS.contains(&key.as_str());
+                            rewrite(value, named, definitions, shared)
+                        };
+                        (key.clone(), value)
+                    })
+                    .collect(),
+            )
+        }
         _ => schema.clone(),
     }
 }
@@ -594,23 +775,45 @@ fn resolve<'a>(
     document: &'a serde_json::Value,
     value: &'a serde_json::Value,
 ) -> &'a serde_json::Value {
-    let Some(pointer) = value.get("$ref").and_then(|it| it.as_str()) else {
-        return value;
-    };
-    let Some(rest) = pointer.strip_prefix("#/") else {
-        return value;
-    };
+    value
+        .get("$ref")
+        .and_then(|it| it.as_str())
+        .and_then(|pointer| target(document, pointer))
+        .unwrap_or(value)
+}
 
+/// What a local `$ref` points at, if it points anywhere in this document.
+fn target<'a>(document: &'a serde_json::Value, pointer: &str) -> Option<&'a serde_json::Value> {
+    let rest = pointer.strip_prefix("#/")?;
     let mut current = document;
     for segment in rest.split('/') {
         // JSON Pointer escapes, in the order the spec requires: `~1` first.
         let key = segment.replace("~1", "/").replace("~0", "~");
-        match current.get(&key) {
-            Some(next) => current = next,
-            None => return value,
+        current = current.get(&key)?;
+    }
+    Some(current)
+}
+
+/// The deepest skeleton that fits in [`MAX_NODES`].
+fn bounded_skeleton(document: &serde_json::Value, schema: &serde_json::Value) -> serde_json::Value {
+    for max_depth in (0..=MAX_DEPTH).rev() {
+        let mut walk = Walk {
+            max_depth,
+            room: MAX_NODES,
+        };
+        let value = skeleton(document, schema, 0, &mut walk, &mut Vec::new());
+        if walk.room > 0 {
+            return value;
         }
     }
-    current
+    serde_json::Value::Null
+}
+
+/// Limits on one skeleton walk.
+struct Walk {
+    max_depth: usize,
+    /// Nodes still allowed. Reaching 0 means the walk did not fit.
+    room: usize,
 }
 
 /// One placeholder value per field, following `$ref`s but never in a circle.
@@ -618,11 +821,13 @@ fn skeleton(
     document: &serde_json::Value,
     schema: &serde_json::Value,
     depth: usize,
+    walk: &mut Walk,
     trail: &mut Vec<String>,
 ) -> serde_json::Value {
-    if depth > MAX_DEPTH {
+    if depth > walk.max_depth || walk.room == 0 {
         return serde_json::Value::Null;
     }
+    walk.room -= 1;
 
     // A `$ref` already on the trail is a cycle — stop rather than follow it.
     if let Some(pointer) = schema.get("$ref").and_then(|it| it.as_str()) {
@@ -630,7 +835,7 @@ fn skeleton(
             return serde_json::Value::Null;
         }
         trail.push(pointer.to_string());
-        let value = skeleton(document, resolve(document, schema), depth, trail);
+        let value = skeleton(document, resolve(document, schema), depth, walk, trail);
         trail.pop();
         return value;
     }
@@ -666,7 +871,8 @@ fn skeleton(
     if let Some(parts) = object.get("allOf").and_then(|it| it.as_array()) {
         let mut merged = serde_json::Map::new();
         for part in parts {
-            if let serde_json::Value::Object(fields) = skeleton(document, part, depth, trail) {
+            if let serde_json::Value::Object(fields) = skeleton(document, part, depth, walk, trail)
+            {
                 merged.extend(fields);
             }
         }
@@ -683,7 +889,7 @@ fn skeleton(
                 .find(|branch| !only_null(branch))
                 .or_else(|| branches.first());
             if let Some(branch) = pick {
-                return skeleton(document, branch, depth, trail);
+                return skeleton(document, branch, depth, walk, trail);
             }
         }
     }
@@ -695,7 +901,10 @@ fn skeleton(
         let mut fields = serde_json::Map::new();
         if let Some(properties) = object.get("properties").and_then(|it| it.as_object()) {
             for (name, property) in properties {
-                fields.insert(name.clone(), skeleton(document, property, depth + 1, trail));
+                fields.insert(
+                    name.clone(),
+                    skeleton(document, property, depth + 1, walk, trail),
+                );
             }
         }
         return serde_json::Value::Object(fields);
@@ -704,7 +913,7 @@ fn skeleton(
     if kind == Some("array") {
         let item = object
             .get("items")
-            .map(|items| skeleton(document, items, depth + 1, trail))
+            .map(|items| skeleton(document, items, depth + 1, walk, trail))
             .unwrap_or(serde_json::Value::Null);
         return serde_json::Value::Array(if item.is_null() { vec![] } else { vec![item] });
     }
@@ -1323,6 +1532,151 @@ paths:
         // The cycle is cut, so `replies` is present but empty rather than
         // nested forever.
         assert!(body.contains("\"replies\": []"), "{body}");
+    }
+
+    /// Every `$ref` in a bundle points inside it, so it can be validated
+    /// without the document it came from.
+    fn assert_self_contained(bundled: &serde_json::Value) {
+        each_ref(bundled, false, &mut |reference, _| {
+            assert!(
+                reference.starts_with("#/$defs/") && target(bundled, reference).is_some(),
+                "`{reference}` does not resolve inside {bundled}"
+            );
+        });
+    }
+
+    fn definitions_of(
+        document: &serde_json::Value,
+        schema: &serde_json::Value,
+    ) -> std::collections::BTreeMap<String, serde_json::Value> {
+        let mut definitions = Default::default();
+        collect_definitions(document, schema, &mut definitions);
+        definitions
+    }
+
+    /// The smallest shape of the ring that blew a loader cache up to 2.5 GB:
+    /// a union whose branches each hold the union again.
+    #[test]
+    fn a_cyclic_union_is_bundled_once() {
+        let document = json!({
+            "components": { "schemas": {
+                "A": { "oneOf": [
+                    { "$ref": "#/components/schemas/B" },
+                    { "$ref": "#/components/schemas/C" }
+                ] },
+                "B": { "type": "object", "properties": { "a": { "$ref": "#/components/schemas/A" } } },
+                "C": { "type": "array", "items": { "$ref": "#/components/schemas/A" } },
+                "Unused": { "type": "string" }
+            } }
+        });
+        let root = json!({ "$ref": "#/components/schemas/A" });
+
+        let definitions = definitions_of(&document, &root);
+        // What the schema reaches, and nothing it doesn't.
+        assert_eq!(
+            definitions.keys().collect::<Vec<_>>(),
+            vec![
+                "#/components/schemas/A",
+                "#/components/schemas/B",
+                "#/components/schemas/C"
+            ]
+        );
+
+        let bundled = bundle(&root, &definitions);
+        assert_self_contained(&bundled);
+        // A is where the ring is entered and re-entered, so it is the one
+        // written under `$defs`; B and C are used once each and read inline.
+        assert_eq!(
+            bundled,
+            json!({
+                "$ref": "#/$defs/A",
+                "$defs": { "A": { "oneOf": [
+                    { "type": "object", "properties": { "a": { "$ref": "#/$defs/A" } } },
+                    { "type": "array", "items": { "$ref": "#/$defs/A" } }
+                ] } }
+            })
+        );
+    }
+
+    /// Every step refers to every other: the number of paths through that
+    /// grows factorially, and expanding along each one is what the cache used
+    /// to do. Bundling writes each definition once, however they connect.
+    #[test]
+    fn a_densely_connected_ring_stays_the_size_of_the_document() {
+        let text = include_str!("../tests/fixtures/cyclic-union.json");
+        let document: serde_json::Value = serde_json::from_str(text).unwrap();
+        let root = json!({ "$ref": "#/components/schemas/Operand" });
+
+        let bundled = bundle(&root, &definitions_of(&document, &root));
+        assert_self_contained(&bundled);
+        let size = serde_json::to_string(&bundled).unwrap().len();
+        // The whole document is under 20 KB. The old expansion of this one
+        // schema was 5.3 MB.
+        assert!(size < 8_000, "{size} bytes");
+        // Every step is shared, so each is written exactly once.
+        let defs = bundled["$defs"].as_object().unwrap();
+        assert!((0..7).all(|step| defs.contains_key(&format!("Step{step}"))));
+    }
+
+    /// A definition used once reads in place, as it did before bundling
+    /// existed — `$defs` is only for what would otherwise repeat.
+    #[test]
+    fn a_definition_used_once_is_written_in_place() {
+        let document = json!({
+            "components": { "schemas": {
+                "NewUser": {
+                    "type": "object",
+                    "properties": {
+                        "address": { "$ref": "#/components/schemas/Address" },
+                        "example": { "$ref": "#/components/schemas/Address2" }
+                    },
+                    // Data, not schema: nothing in here is a reference.
+                    "example": { "$ref": "#/components/schemas/Missing" }
+                },
+                "Address": { "type": "object", "properties": { "city": { "type": "string" } } },
+                "Address2": { "type": "string" }
+            } }
+        });
+        let root = json!({ "$ref": "#/components/schemas/NewUser" });
+
+        let bundled = bundle(&root, &definitions_of(&document, &root));
+        assert!(bundled.get("$defs").is_none(), "{bundled}");
+        assert_eq!(
+            bundled.pointer("/properties/address/properties/city/type"),
+            Some(&json!("string"))
+        );
+        // A property that happens to be called `example` is still a schema.
+        assert_eq!(
+            bundled.pointer("/properties/example/type"),
+            Some(&json!("string"))
+        );
+        assert_eq!(
+            bundled.pointer("/example"),
+            Some(&json!({ "$ref": "#/components/schemas/Missing" }))
+        );
+    }
+
+    /// A `$ref` with a description beside it cannot be replaced by its target
+    /// without dropping the description, so it stays a reference.
+    #[test]
+    fn a_reference_with_siblings_stays_a_reference() {
+        let document = json!({
+            "components": { "schemas": { "Id": { "type": "string" } } }
+        });
+        let root = json!({
+            "type": "object",
+            "properties": {
+                "id": { "$ref": "#/components/schemas/Id", "description": "Who" }
+            }
+        });
+
+        let bundled = bundle(&root, &definitions_of(&document, &root));
+        assert_self_contained(&bundled);
+        assert_eq!(
+            bundled.pointer("/properties/id"),
+            Some(&json!({ "$ref": "#/$defs/Id", "description": "Who" }))
+        );
+        assert_eq!(bundled.pointer("/$defs/Id/type"), Some(&json!("string")));
     }
 
     /// Swagger 2 has no `requestBody` — the schema rides on a parameter.

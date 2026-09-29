@@ -257,6 +257,11 @@ struct CachedLoader {
     cache: Arc<loader::LoaderCache>,
 }
 
+struct CachedSchemas {
+    stamp: Option<(u128, u64)>,
+    schemas: Arc<loader::LoaderSchemas>,
+}
+
 type SectionSnapshot = (Arc<Vec<Arc<Section>>>, Arc<Vec<String>>);
 
 fn file_stamp(path: &std::path::Path) -> Option<(u128, u64)> {
@@ -315,6 +320,10 @@ pub struct FiberMcp {
     sections: Arc<Mutex<Option<CachedSections>>>,
     manifests: Arc<Mutex<HashMap<String, CachedManifest>>>,
     endpoint_caches: Arc<Mutex<HashMap<String, CachedLoader>>>,
+    /// Apart from `endpoint_caches` so that only `get_endpoint` ever reads a
+    /// schema. Everything else — listing, searching, deciding whether a call is
+    /// allowed — needs the endpoint list and nothing more.
+    schema_caches: Arc<Mutex<HashMap<String, CachedSchemas>>>,
     request_ids: Arc<AtomicU64>,
     requests: Arc<tokio::sync::Semaphore>,
     loaders: Arc<tokio::sync::Semaphore>,
@@ -333,32 +342,60 @@ impl FiberMcp {
         )
     }
 
+    /// A section's loaded endpoints, parsed once per change to the file.
+    ///
+    /// The read happens with the lock held, so calls that arrive together wait
+    /// for one read rather than each starting their own. Reads are small: the
+    /// file holds endpoints only, and one written before schemas moved out is
+    /// read no further than its endpoint list.
     fn loader_cache_of(&self, section_id: &str) -> Arc<loader::LoaderCache> {
         let path = self.loaders_dir.join(format!("{section_id}.json"));
         let stamp = file_stamp(&path);
-        {
-            let caches = self
-                .endpoint_caches
-                .lock()
-                .unwrap_or_else(|err| err.into_inner());
-            if let Some(cached) = caches.get(section_id) {
-                if cached.stamp == stamp {
-                    return cached.cache.clone();
-                }
+        let mut caches = self
+            .endpoint_caches
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(cached) = caches.get(section_id) {
+            if cached.stamp == stamp {
+                return cached.cache.clone();
             }
         }
         let cache = Arc::new(loader::read_cache(&self.loaders_dir, section_id).unwrap_or_default());
-        self.endpoint_caches
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .insert(
-                section_id.to_string(),
-                CachedLoader {
-                    stamp,
-                    cache: cache.clone(),
-                },
-            );
+        caches.insert(
+            section_id.to_string(),
+            CachedLoader {
+                stamp,
+                cache: cache.clone(),
+            },
+        );
         cache
+    }
+
+    /// A section's loader schemas, read the first time an endpoint's are asked
+    /// for and again only when the file changes.
+    fn loader_schemas_of(&self, section_id: &str) -> Arc<loader::LoaderSchemas> {
+        let stamp = loader::schemas_path(&self.loaders_dir, section_id)
+            .as_deref()
+            .and_then(file_stamp);
+        let mut caches = self
+            .schema_caches
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(cached) = caches.get(section_id) {
+            if cached.stamp == stamp {
+                return cached.schemas.clone();
+            }
+        }
+        let schemas =
+            Arc::new(loader::read_schemas(&self.loaders_dir, section_id).unwrap_or_default());
+        caches.insert(
+            section_id.to_string(),
+            CachedSchemas {
+                stamp,
+                schemas: schemas.clone(),
+            },
+        );
+        schemas
     }
 
     fn all_sections(&self) -> Result<SectionSnapshot, McpError> {
@@ -888,6 +925,7 @@ impl FiberMcp {
                     None,
                 )
             })?;
+        let schemas = self.loader_schemas_of(&section.id);
         ok_json(&serde_json::json!({
             "sectionId": section.id,
             "key": endpoint.key(),
@@ -906,8 +944,8 @@ impl FiberMcp {
             "form": endpoint.form,
             "pathParams": [],
             "parameters": endpoint.parameters,
-            "requestSchema": cache.schemas.get(&args.key),
-            "responseSchema": cache.response_schemas.get(&args.key),
+            "requestSchema": schemas.request_for(&args.key),
+            "responseSchema": schemas.response_for(&args.key),
         }))
     }
 
@@ -1183,22 +1221,31 @@ impl FiberMcp {
         let _permit = self.loaders.acquire().await.map_err(|_| {
             McpError::internal_error("loader concurrency limiter closed".to_string(), None)
         })?;
-        let (endpoints, schemas, response_schemas, pages) =
-            loader::run(&config, self.fetcher(&section))
-                .await
-                .map_err(|err| McpError::internal_error(err.to_string(), None))?;
+        let (endpoints, schemas, pages) = loader::run(&config, self.fetcher(&section))
+            .await
+            .map_err(|err| McpError::internal_error(err.to_string(), None))?;
 
         let previous = self.loader_cache_of(&section.id);
         let (added, removed) = loader::diff(&previous.endpoints, &endpoints);
         let cache = loader::LoaderCache {
             loaded_at: crate::history::now_millis(),
             endpoints: endpoints.clone(),
-            schemas,
-            response_schemas,
         };
-        loader::write_cache(&self.loaders_dir, &section.id, &cache).map_err(|err| {
+        loader::write_cache(&self.loaders_dir, &section.id, &cache, &schemas).map_err(|err| {
             McpError::internal_error(format!("could not persist loader cache: {err}"), None)
         })?;
+        self.schema_caches
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(
+                section.id.clone(),
+                CachedSchemas {
+                    stamp: loader::schemas_path(&self.loaders_dir, &section.id)
+                        .as_deref()
+                        .and_then(file_stamp),
+                    schemas: Arc::new(schemas),
+                },
+            );
         self.endpoint_caches
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -1672,6 +1719,7 @@ pub async fn serve() -> Result<(), Box<dyn std::error::Error>> {
         sections: Arc::new(Mutex::new(None)),
         manifests: Arc::new(Mutex::new(HashMap::new())),
         endpoint_caches: Arc::new(Mutex::new(HashMap::new())),
+        schema_caches: Arc::new(Mutex::new(HashMap::new())),
         request_ids: Arc::new(AtomicU64::new(0)),
         requests: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         loaders: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LOADERS)),
@@ -1775,6 +1823,7 @@ mod tests {
             sections: Arc::new(Mutex::new(None)),
             manifests: Arc::new(Mutex::new(HashMap::new())),
             endpoint_caches: Arc::new(Mutex::new(HashMap::new())),
+            schema_caches: Arc::new(Mutex::new(HashMap::new())),
             request_ids: Arc::new(AtomicU64::new(0)),
             requests: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS)),
             loaders: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LOADERS)),
@@ -1840,9 +1889,8 @@ mod tests {
             &loader::LoaderCache {
                 loaded_at: 1,
                 endpoints,
-                schemas: Default::default(),
-                response_schemas: Default::default(),
             },
+            &Default::default(),
         )
         .unwrap();
     }
@@ -1998,9 +2046,8 @@ mod tests {
                     body: String::new(),
                     ..Default::default()
                 }],
-                schemas: Default::default(),
-                response_schemas: Default::default(),
             },
+            &Default::default(),
         )
         .unwrap();
 
@@ -2009,6 +2056,78 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert!(found.iter().any(|e| e.key == "req-1" && !e.loaded));
         assert!(found.iter().any(|e| e.key == "POST /orders" && e.loaded));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Listing, searching and deciding whether a call is allowed need the
+    /// endpoint list and nothing else. Schemas are read only when an endpoint
+    /// is asked for — when they were one file, a large one hung every call.
+    #[tokio::test]
+    async fn only_get_endpoint_reads_schemas() {
+        let dir = scratch("schemas-apart");
+        let mut acme = section(true, false);
+        acme.loader = Some(loader::LoaderConfig::default());
+        store::save(&dir, &acme).unwrap();
+
+        let document: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/cyclic-union.json")).unwrap();
+        let key = "POST /data-points/concept3/define";
+        let root = serde_json::json!({ "$ref": "#/components/schemas/Operand" });
+        let mut schemas = loader::LoaderSchemas::default();
+        crate::openapi::collect_definitions(&document, &root, &mut schemas.definitions);
+        schemas.request.insert(key.into(), root);
+        loader::write_cache(
+            &dir.join("loaders"),
+            "sec-1",
+            &loader::LoaderCache {
+                loaded_at: 1,
+                endpoints: vec![loader::LoadedEndpoint {
+                    method: "POST".into(),
+                    path: "/data-points/concept3/define".into(),
+                    ..Default::default()
+                }],
+            },
+            &schemas,
+        )
+        .unwrap();
+
+        let mcp = server(&dir);
+        let listed = mcp
+            .list_sections()
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        assert_eq!(listed["sections"][0]["endpoints"], 2);
+        mcp.search_endpoints(Parameters(SearchArgs {
+            query: "define".into(),
+            section_id: None,
+            method: None,
+            offset: 0,
+            limit: 10,
+        }))
+        .await
+        .unwrap();
+        mcp.decide_one(&acme, "POST", "/data-points/concept3/define");
+        assert!(
+            mcp.schema_caches.lock().unwrap().is_empty(),
+            "a call that needs no schema read them"
+        );
+
+        let found = mcp
+            .get_endpoint(Parameters(EndpointArgs {
+                section_id: "sec-1".into(),
+                key: key.into(),
+            }))
+            .await
+            .unwrap()
+            .structured_content
+            .unwrap();
+        // Self-contained, with the ring written once under `$defs`.
+        assert_eq!(found["requestSchema"]["$ref"], "#/$defs/Operand");
+        assert!(found["requestSchema"]["$defs"]["Step6"].is_object());
+        assert!(found["responseSchema"].is_null());
+        assert_eq!(mcp.schema_caches.lock().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 
