@@ -1,5 +1,52 @@
 # fiber
 
+## 0.16.3
+
+### Patch Changes
+
+- [#102](https://github.com/MathiasWP/fiber/pull/102) [`69793d2`](https://github.com/MathiasWP/fiber/commit/69793d29a02be44d31f0ad46557908ab25d90b40) Thanks [@AndersRobstad](https://github.com/AndersRobstad)! - A response body that fails to load, or a history clear that fails, is reported
+  in the History tab again instead of vanishing the moment the tab opens.
+  
+  History now catches up with what the MCP server records whenever the tab is
+  opened, and a catch-up that succeeded cleared every error on the way — including
+  the one the tab was being opened to show. It now clears only an earlier failure
+  to list history, which is the one a successful list resolves.
+  
+  Also moves rustls to 0.23.45 for RUSTSEC-2026-0285, in which TLS 1.3 handshake
+  messages were accepted across encryption level boundaries, and fast-uri (used by
+  the editor's schema linting) to 3.1.8 for two advisories on how it parses a
+  URI's authority.
+  
+  Clicking another collection's settings cog while a settings drawer is open now
+  reliably switches to that collection. The click also counted as dismissing the
+  open drawer, and when the dismissal landed last the drawer closed and stayed
+  closed.
+
+- [#101](https://github.com/MathiasWP/fiber/pull/101) [`a0bf154`](https://github.com/MathiasWP/fiber/commit/a0bf154efc907d0ea3f7cb288bc80565fcbde221) Thanks [@AndersRobstad](https://github.com/AndersRobstad)! - A collection whose OpenAPI schemas refer to each other in a ring no longer
+  writes a loader cache of gigabytes, and the MCP server no longer hangs on one.
+  
+  The cache stored every endpoint's request and response schema with each `$ref`
+  expanded in place, stopping only where a reference met itself on the current
+  path. Schemas that refer to each other — an operand that is an object or a
+  function, each of which holds operands — have a number of such paths that
+  grows factorially, and every endpoint got its own copy: one real collection's
+  cache reached 2.5 GB, a single endpoint's schema 252 MB. Every MCP call, down
+  to `list_sections`, read that file first, so the server answered `initialize`
+  and then nothing else.
+  
+  Schemas now live in a file of their own beside the endpoint list, stored as the
+  document wrote them, with each definition they reach kept once. An endpoint's
+  schema is put together when it is opened or asked for by `get_endpoint`, with
+  anything used more than once written a single time under `$defs` — which the
+  editor's linting already reads — so it can never be larger than the document it
+  came from. Listing, searching and deciding whether a call is allowed read only
+  the endpoint list. Request bodies built from such schemas are bounded too,
+  since a depth limit alone still let them branch into hundreds of kilobytes.
+  
+  A cache written by an earlier version still lists its endpoints straight away:
+  reading stops at the end of the endpoint list, before the schemas. Its schemas
+  are left unread until the next refresh writes both files.
+
 ## 0.16.2
 
 ### Patch Changes
