@@ -97,13 +97,31 @@ class History {
 	 * clicked went nowhere.
 	 */
 	viewingId = $state<string | null>(null);
+	/**
+	 * The message of the last list that failed, if `error` still shows it.
+	 *
+	 * A list that succeeds resolves that error and no other. `refresh` runs
+	 * every time the History tab opens, and clearing `error` outright there
+	 * wiped a failed body load or clear the moment the tab that reports it was
+	 * opened.
+	 */
+	#listError: string | null = null;
+
+	#listed(): void {
+		if (this.error !== null && this.error === this.#listError) this.error = null;
+		this.#listError = null;
+	}
+
+	#listFailed(error: unknown): void {
+		this.error = this.#listError = String(error);
+	}
 
 	async load(): Promise<void> {
 		try {
 			this.entries = (await historyList()).map(fromRecord);
-			this.error = null;
+			this.#listed();
 		} catch (error) {
-			this.error = String(error);
+			this.#listFailed(error);
 		}
 	}
 
@@ -123,9 +141,9 @@ class History {
 		let records: HistoryRecord[];
 		try {
 			records = await historyList();
-			this.error = null;
+			this.#listed();
 		} catch (error) {
-			this.error = String(error);
+			this.#listFailed(error);
 			return;
 		}
 		const known = new Set(this.entries.map((entry) => entry.id));

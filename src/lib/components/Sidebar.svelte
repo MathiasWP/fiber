@@ -1110,6 +1110,7 @@
 												{...props}
 												type="button"
 												aria-label="Settings for {section.name}"
+												data-opens-settings
 												onclick={(event) => {
 													event.stopPropagation();
 													onOpenSettings(section);
