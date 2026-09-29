@@ -304,8 +304,20 @@
 		and usable — you are configuring a collection you can still see.
 	-->
 	<Dialog.Overlay class="drawer-scrim absolute inset-0 z-40 bg-black/40" />
+	<!--
+		A click on another collection's cog is outside this drawer, and used to
+		close it at the same time as it opened the next one. Whichever landed
+		last won, and sometimes that was the close: the drawer shut and stayed
+		shut. The cog switches collections itself, flushing the one being left,
+		so the click is not also a dismissal.
+	-->
 	<Dialog.Content
 		class="drawer absolute inset-y-0 left-0 z-50 flex w-[min(460px,80%)] flex-col border-r border-border bg-panel shadow-2xl"
+		onInteractOutside={(event) => {
+			if (event.target instanceof Element && event.target.closest('[data-opens-settings]')) {
+				event.preventDefault();
+			}
+		}}
 	>
 		<div class="p-4 pb-0 shrink-0">
 				<Dialog.Title class="text-sm font-semibold">Section settings</Dialog.Title>
