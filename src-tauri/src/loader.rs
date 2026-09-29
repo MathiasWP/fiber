@@ -177,22 +177,66 @@ impl LoadedEndpoint {
     }
 }
 
+/// What the last run found, as `<id>.json`: everything a listing, a search or
+/// an access decision needs, and nothing else.
+///
+/// Schemas used to live in this file too, which put them in the path of every
+/// MCP call — `list_sections` needs an endpoint count, and got a 2.5 GB file to
+/// parse for it. They are in [`LoaderSchemas`] now, read only when one is
+/// asked for. A file written before the split still reads: its `schemas` and
+/// `responseSchemas` are skipped rather than kept, since what they hold is the
+/// unbounded expansion this format exists to avoid.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LoaderCache {
     /// Epoch millis of the last successful run.
     pub loaded_at: i64,
     pub endpoints: Vec<LoadedEndpoint>,
-    /// Request-body schemas keyed by endpoint id. Kept out of the normal cache
-    /// response: a large OpenAPI document can share the same component schema
-    /// hundreds of times, and the editor only needs one schema at a time.
+}
+
+/// Request and response schemas for a loader's endpoints, as
+/// `<id>.schemas.json`.
+///
+/// Stored the way the document wrote them, `$ref`s and all, with each
+/// definition those refer to held once under `definitions`. An endpoint's
+/// schema is made self-contained only when it is asked for — see
+/// [`crate::openapi::bundle`] — so the file stays the size of the document,
+/// not of its expansion.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LoaderSchemas {
+    /// Keyed by the `$ref` that names each one, e.g.
+    /// `#/components/schemas/User`.
     #[serde(default)]
-    pub schemas: BTreeMap<String, serde_json::Value>,
-    /// Successful-response schemas, keyed the same way. Separate so a collection
-    /// whose request schemas already fill the cache does not grow a second copy
-    /// of every component for the response pane that is not yet open.
+    pub definitions: BTreeMap<String, serde_json::Value>,
+    /// Request-body schemas, keyed by endpoint id.
     #[serde(default)]
-    pub response_schemas: BTreeMap<String, serde_json::Value>,
+    pub request: BTreeMap<String, serde_json::Value>,
+    /// Successful-response schemas, keyed the same way.
+    #[serde(default)]
+    pub response: BTreeMap<String, serde_json::Value>,
+}
+
+impl LoaderSchemas {
+    /// One endpoint's request schema, ready to validate against.
+    pub fn request_for(&self, key: &str) -> Option<serde_json::Value> {
+        self.request
+            .get(key)
+            .map(|schema| crate::openapi::bundle(schema, &self.definitions))
+    }
+
+    /// One endpoint's response schema, ready to validate against.
+    pub fn response_for(&self, key: &str) -> Option<serde_json::Value> {
+        self.response
+            .get(key)
+            .map(|schema| crate::openapi::bundle(schema, &self.definitions))
+    }
+
+    fn extend(&mut self, other: LoaderSchemas) {
+        self.definitions.extend(other.definitions);
+        self.request.extend(other.request);
+        self.response.extend(other.response);
+    }
 }
 
 /// What a run produced, including what changed since last time.
@@ -414,15 +458,7 @@ fn kind_of(value: &serde_json::Value) -> &'static str {
 pub async fn run(
     config: &LoaderConfig,
     fetcher: Fetcher,
-) -> Result<
-    (
-        Vec<LoadedEndpoint>,
-        BTreeMap<String, serde_json::Value>,
-        BTreeMap<String, serde_json::Value>,
-        usize,
-    ),
-    LoaderError,
-> {
+) -> Result<(Vec<LoadedEndpoint>, LoaderSchemas, usize), LoaderError> {
     if config.url.trim().is_empty() {
         return Err(LoaderError::NoUrl);
     }
@@ -438,8 +474,7 @@ pub async fn run(
 
         let mut url = config.url.trim().to_string();
         let mut endpoints = Vec::new();
-        let mut schemas = BTreeMap::new();
-        let mut response_schemas = BTreeMap::new();
+        let mut schemas = LoaderSchemas::default();
         let mut identities = HashSet::new();
         let mut pages = 0;
 
@@ -450,9 +485,7 @@ pub async fn run(
             // METHOD/path, so keep the first rather than emitting duplicate
             // keyed rows into the sidebar and overlay.
             mapped.retain(|endpoint| identities.insert(endpoint.key()));
-            let (request, response) = enrich_openapi(&document, &mut mapped);
-            schemas.extend(request);
-            response_schemas.extend(response);
+            schemas.extend(enrich_openapi(&document, &mut mapped));
             endpoints.extend(mapped);
             pages += 1;
 
@@ -466,7 +499,7 @@ pub async fn run(
             }
         }
 
-        Ok((endpoints, schemas, response_schemas, pages))
+        Ok((endpoints, schemas, pages))
     })
     .await
     .map_err(|_| LoaderError::Timeout)?
@@ -580,19 +613,12 @@ fn clip(text: &str) -> String {
 ///
 /// Anything else — a routes array, a bespoke manifest — has no `paths`, so this
 /// does nothing and every endpoint keeps what the filter produced.
-fn enrich_openapi(
-    document: &serde_json::Value,
-    endpoints: &mut [LoadedEndpoint],
-) -> (
-    BTreeMap<String, serde_json::Value>,
-    BTreeMap<String, serde_json::Value>,
-) {
+fn enrich_openapi(document: &serde_json::Value, endpoints: &mut [LoadedEndpoint]) -> LoaderSchemas {
     let Some(paths) = document.get("paths").and_then(|paths| paths.as_object()) else {
-        return (BTreeMap::new(), BTreeMap::new());
+        return LoaderSchemas::default();
     };
 
-    let mut schemas = BTreeMap::new();
-    let mut response_schemas = BTreeMap::new();
+    let mut schemas = LoaderSchemas::default();
 
     for endpoint in endpoints {
         let Some(item) = paths.get(&endpoint.path).and_then(|item| item.as_object()) else {
@@ -631,14 +657,16 @@ fn enrich_openapi(
             endpoint.form = form;
         }
         if let Some(schema) = crate::openapi::request_schema(document, operation) {
-            schemas.insert(endpoint.key(), schema);
+            crate::openapi::collect_definitions(document, schema, &mut schemas.definitions);
+            schemas.request.insert(endpoint.key(), schema.clone());
         }
         if let Some(schema) = crate::openapi::response_schema(document, operation) {
-            response_schemas.insert(endpoint.key(), schema);
+            crate::openapi::collect_definitions(document, schema, &mut schemas.definitions);
+            schemas.response.insert(endpoint.key(), schema.clone());
         }
     }
 
-    (schemas, response_schemas)
+    schemas
 }
 
 /// `<app data>/loaders`
@@ -647,43 +675,121 @@ pub fn loaders_dir(app_data_dir: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn cache_path(dir: &std::path::Path, section_id: &str) -> Option<std::path::PathBuf> {
-    // Same guard as section files: an id becomes a file name.
+    // Same guard as section files: an id becomes a file name. It also keeps
+    // the two names below apart, since an id cannot contain a dot.
     crate::store::is_safe_id(section_id).then(|| dir.join(format!("{section_id}.json")))
+}
+
+pub fn schemas_path(dir: &std::path::Path, section_id: &str) -> Option<std::path::PathBuf> {
+    crate::store::is_safe_id(section_id).then(|| dir.join(format!("{section_id}.schemas.json")))
 }
 
 /// The last successful run. Loader output is a cache, never the source of
 /// truth, so a missing or unreadable file is simply "nothing loaded yet".
+///
+/// Streamed, and stops as soon as it has both fields. A file written before
+/// schemas moved out holds its gigabytes *after* the endpoint list — the
+/// struct wrote its fields in order — so this reads the few hundred kilobytes
+/// in front and never the rest, where parsing the whole file took long enough
+/// to look like a hang.
 pub fn read_cache(dir: &std::path::Path, section_id: &str) -> Option<LoaderCache> {
-    let path = cache_path(dir, section_id)?;
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
+    let file = std::fs::File::open(cache_path(dir, section_id)?).ok()?;
+    let mut found = None;
+    let mut reader =
+        serde_json::Deserializer::from_reader(std::io::BufReader::with_capacity(1 << 16, file));
+    // Stopping early leaves the object unclosed, which serde_json reports as
+    // an error once the visitor returns. That error is expected; whether the
+    // fields were found is what `found` says.
+    let _ = serde::Deserializer::deserialize_map(&mut reader, CacheHead(&mut found));
+    found
 }
 
+/// Reads `loadedAt` and `endpoints`, and stops.
+struct CacheHead<'a>(&'a mut Option<LoaderCache>);
+
+impl<'de> serde::de::Visitor<'de> for CacheHead<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a loader cache")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        let (mut loaded_at, mut endpoints) = (None, None);
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "loadedAt" => loaded_at = Some(map.next_value()?),
+                "endpoints" => endpoints = Some(map.next_value()?),
+                _ => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+            if loaded_at.is_some() && endpoints.is_some() {
+                break;
+            }
+        }
+        if let (Some(loaded_at), Some(endpoints)) = (loaded_at, endpoints) {
+            *self.0 = Some(LoaderCache {
+                loaded_at,
+                endpoints,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The schemas from the last successful run, when there are any.
+pub fn read_schemas(dir: &std::path::Path, section_id: &str) -> Option<LoaderSchemas> {
+    let file = std::fs::File::open(schemas_path(dir, section_id)?).ok()?;
+    serde_json::from_reader(std::io::BufReader::with_capacity(1 << 16, file)).ok()
+}
+
+/// Writes both halves of a run. Schemas first: a reader that sees the new
+/// endpoint list then finds schemas at least as new, and a schema for an
+/// endpoint that is not listed yet is never asked for.
 pub fn write_cache(
     dir: &std::path::Path,
     section_id: &str,
     cache: &LoaderCache,
+    schemas: &LoaderSchemas,
 ) -> std::io::Result<()> {
-    let Some(path) = cache_path(dir, section_id) else {
+    let (Some(path), Some(schemas_path)) =
+        (cache_path(dir, section_id), schemas_path(dir, section_id))
+    else {
         return Ok(());
     };
     std::fs::create_dir_all(dir)?;
-    let encoded = serde_json::to_string_pretty(cache)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
 
-    // Same write discipline as section files — temp, sync, rename — and the
-    // same per-process temp name, because the app and a headless `fiber mcp`
-    // can both refresh the same loader.
-    let temp = dir.join(format!("{section_id}.json.tmp-{}", std::process::id()));
+    // Compact: this half is never read by a person, and indenting a deeply
+    // nested schema costs more than the schema.
+    let encoded = serde_json::to_vec(schemas)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    write_atomic(&schemas_path, &encoded)?;
+
+    let encoded = serde_json::to_vec_pretty(cache)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    write_atomic(&path, &encoded)
+}
+
+/// Same write discipline as section files — temp, sync, rename — and the same
+/// per-process temp name, because the app and a headless `fiber mcp` can both
+/// refresh the same loader.
+fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(format!(".tmp-{}", std::process::id()));
+    let temp = std::path::PathBuf::from(temp);
     let mut file = std::fs::File::create(&temp)?;
-    std::io::Write::write_all(&mut file, encoded.as_bytes())?;
+    std::io::Write::write_all(&mut file, bytes)?;
     file.sync_all()?;
     drop(file);
-    std::fs::rename(&temp, &path)
+    std::fs::rename(&temp, path)
 }
 
 pub fn forget_cache(dir: &std::path::Path, section_id: &str) {
-    if let Some(path) = cache_path(dir, section_id) {
+    for path in [cache_path(dir, section_id), schemas_path(dir, section_id)]
+        .into_iter()
+        .flatten()
+    {
         let _ = std::fs::remove_file(path);
     }
 }
@@ -739,7 +845,7 @@ mod tests {
             .find(|(name, _)| *name == "Array of routes")
             .unwrap()
             .1;
-        let (endpoints, _schemas, _responses, pages) = run(
+        let (endpoints, _schemas, pages) = run(
             &config(routes),
             answering(
                 r#"{"routes":[
@@ -851,7 +957,7 @@ mod tests {
         let mut settings = config(".routes | map({method: .verb, path: .url})");
         settings.next = ".links.next".to_string();
 
-        let (endpoints, _schemas, _responses, pages) = run(&settings, fetcher).await.unwrap();
+        let (endpoints, _schemas, pages) = run(&settings, fetcher).await.unwrap();
         assert_eq!(pages, 2);
         assert_eq!(
             endpoints
@@ -879,7 +985,7 @@ mod tests {
         let mut settings = config(".routes | map({method: .verb, path: .url})");
         settings.next = ".links.next".to_string();
 
-        let (endpoints, _schemas, _responses, pages) = run(&settings, fetcher).await.unwrap();
+        let (endpoints, _schemas, pages) = run(&settings, fetcher).await.unwrap();
         assert_eq!(pages, MAX_PAGES);
         // The cap still stops the bad pointer, while overlapping pages no longer
         // create 50 sidebar rows with the same endpoint identity.
@@ -933,8 +1039,7 @@ mod tests {
             .find(|(name, _)| *name == "OpenAPI")
             .unwrap()
             .1;
-        let (endpoints, schemas, _responses, _) =
-            run(&config(openapi), answering(manifest)).await.unwrap();
+        let (endpoints, schemas, _) = run(&config(openapi), answering(manifest)).await.unwrap();
 
         let post = endpoints.iter().find(|e| e.method == "POST").unwrap();
         // Type names rather than empty values — the editor turns these into
@@ -948,7 +1053,8 @@ mod tests {
         assert!(post.body.contains("\"dryRun\": boolean"), "{}", post.body);
         assert_eq!(
             schemas
-                .get("POST /activity/backfill-activity")
+                .request_for("POST /activity/backfill-activity")
+                .as_ref()
                 .and_then(|schema| schema.pointer("/properties/dryRun/type"))
                 .and_then(|kind| kind.as_str()),
             Some("boolean")
@@ -986,7 +1092,7 @@ mod tests {
             .find(|(name, _)| *name == "OpenAPI")
             .unwrap()
             .1;
-        let (endpoints, _, _, _) = run(&config(openapi), answering(manifest)).await.unwrap();
+        let (endpoints, _, _) = run(&config(openapi), answering(manifest)).await.unwrap();
 
         let search = endpoints
             .iter()
@@ -1040,17 +1146,105 @@ mod tests {
         let settings = config(
             r#".paths | to_entries | map(.key as $path | .value | to_entries | map({method: .key, path: $path, body: "{\"enabled\": true}"})) | flatten"#,
         );
-        let (endpoints, schemas, _, _) = run(&settings, answering(manifest)).await.unwrap();
+        let (endpoints, schemas, _) = run(&settings, answering(manifest)).await.unwrap();
 
         let post = endpoints.iter().find(|e| e.method == "POST").unwrap();
         assert_eq!(post.body, "{\"enabled\": true}");
         assert_eq!(
             schemas
-                .get("POST /flags")
+                .request_for("POST /flags")
+                .as_ref()
                 .and_then(|schema| schema.pointer("/properties/enabled/type"))
                 .and_then(|kind| kind.as_str()),
             Some("boolean")
         );
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("fiber-loader-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// The regression this file layout exists for. Schemas that refer to each
+    /// other in a ring, shared by many endpoints, used to be expanded along
+    /// every path through the ring and stored once per endpoint: this 20 KB
+    /// document made a cache of over 200 MB, and a real one made 2.5 GB that
+    /// every MCP call then had to parse.
+    #[tokio::test]
+    async fn a_cyclic_spec_makes_a_cache_the_size_of_the_spec() {
+        let spec = include_str!("../tests/fixtures/cyclic-union.json");
+        let openapi = TEMPLATES
+            .iter()
+            .find(|(name, _)| *name == "OpenAPI")
+            .unwrap()
+            .1;
+        let (endpoints, schemas, _) = run(&config(openapi), answering(spec)).await.unwrap();
+        assert_eq!(endpoints.len(), 21);
+
+        let dir = scratch("cyclic");
+        let cache = LoaderCache {
+            loaded_at: 1,
+            endpoints,
+        };
+        write_cache(&dir, "sec-1", &cache, &schemas).unwrap();
+
+        let size = |name: &str| std::fs::metadata(dir.join(name)).unwrap().len();
+        // The endpoint list is all a listing reads. It holds no schema, and
+        // each body built from one is bounded — 440 KB apiece here, before.
+        assert!(size("sec-1.json") < 1_000_000, "{}", size("sec-1.json"));
+        // Every definition once, plus one `$ref` per endpoint and direction.
+        assert!(
+            size("sec-1.schemas.json") < spec.len() as u64,
+            "{}",
+            size("sec-1.schemas.json")
+        );
+
+        let read = read_cache(&dir, "sec-1").unwrap();
+        assert_eq!(read.endpoints.len(), 21);
+        let schemas = read_schemas(&dir, "sec-1").unwrap();
+        let key = "POST /data-points/concept7/define";
+        for bundled in [schemas.request_for(key), schemas.response_for(key)] {
+            let bundled = bundled.expect("a schema for both directions");
+            assert!(bundled["$defs"]["Operand"]["oneOf"].is_array(), "{bundled}");
+            assert!(serde_json::to_string(&bundled).unwrap().len() < 8_000);
+        }
+        // A body still comes out of the same schema.
+        let post = read.endpoints.iter().find(|e| e.key() == key).unwrap();
+        assert!(post.body.contains("\"kind\": \"step0\""), "{}", post.body);
+        assert!(post.body.len() < 48_000, "{}", post.body.len());
+
+        forget_cache(&dir, "sec-1");
+        assert!(read_cache(&dir, "sec-1").is_none());
+        assert!(read_schemas(&dir, "sec-1").is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A cache written before schemas moved to their own file still lists its
+    /// endpoints. What it held under `schemas` is the unbounded expansion, so
+    /// it is not served — and not even read: the endpoint list comes first,
+    /// and reading stops there.
+    #[test]
+    fn a_cache_from_before_the_split_is_read_only_as_far_as_its_endpoints() {
+        let dir = scratch("legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Everything after the endpoint list stands in for 2.5 GB: if it were
+        // parsed, it would fail.
+        let legacy = r#"{
+  "loadedAt": 7,
+  "endpoints": [{ "method": "POST", "path": "/define", "name": "define" }],
+  "schemas": { "POST /define": { "oneOf": [ this is never read"#;
+        std::fs::write(dir.join("sec-1.json"), legacy).unwrap();
+
+        let read = read_cache(&dir, "sec-1").unwrap();
+        assert_eq!(read.loaded_at, 7);
+        assert_eq!(read.endpoints[0].key(), "POST /define");
+        assert!(read_schemas(&dir, "sec-1").is_none());
+
+        // Missing either field is still "nothing loaded", not half a cache.
+        std::fs::write(dir.join("sec-1.json"), r#"{"endpoints": []}"#).unwrap();
+        assert!(read_cache(&dir, "sec-1").is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A manifest that is not OpenAPI has no `paths`, so nothing is derived and
@@ -1062,7 +1256,7 @@ mod tests {
             .find(|(name, _)| *name == "Array of routes")
             .unwrap()
             .1;
-        let (endpoints, _schemas, _, _) = run(
+        let (endpoints, _schemas, _) = run(
             &config(routes),
             answering(r#"{"routes":[{"verb":"post","url":"/user","handler":"createUser"}]}"#),
         )

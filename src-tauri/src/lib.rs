@@ -73,14 +73,19 @@ mod gui {
     /// `loader_schema` used to deserialize the whole on-disk file — every
     /// expanded schema included — on each endpoint click. The first read (or
     /// the last successful run) lives here so later clicks are a map lookup.
+    ///
+    /// Schemas are held apart from endpoints, and read the first time one is
+    /// asked for: the sidebar never needs them.
     struct LoaderMem {
         inner: Mutex<HashMap<String, loader::LoaderCache>>,
+        schemas: Mutex<HashMap<String, Arc<loader::LoaderSchemas>>>,
     }
 
     impl LoaderMem {
         fn new() -> Self {
             Self {
                 inner: Mutex::new(HashMap::new()),
+                schemas: Mutex::new(HashMap::new()),
             }
         }
 
@@ -112,11 +117,20 @@ mod gui {
         }
 
         fn schema(&self, dir: &Path, section_id: &str, endpoint_id: &str) -> EndpointSchemas {
-            let mut map = self.lock();
-            let cache = Self::fill(&mut map, dir, section_id);
+            let schemas = self
+                .schemas
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .entry(section_id.to_string())
+                .or_insert_with(|| {
+                    Arc::new(loader::read_schemas(dir, section_id).unwrap_or_default())
+                })
+                .clone();
+            // Outside the lock: bundling is per endpoint and needs only the
+            // shared, immutable copy.
             EndpointSchemas {
-                request: cache.schemas.get(endpoint_id).cloned(),
-                response: cache.response_schemas.get(endpoint_id).cloned(),
+                request: schemas.request_for(endpoint_id),
+                response: schemas.response_for(endpoint_id),
             }
         }
 
@@ -125,12 +139,25 @@ mod gui {
             Self::fill(&mut map, dir, section_id).endpoints.clone()
         }
 
-        fn remember(&self, section_id: &str, cache: loader::LoaderCache) {
+        fn remember(
+            &self,
+            section_id: &str,
+            cache: loader::LoaderCache,
+            schemas: loader::LoaderSchemas,
+        ) {
             self.lock().insert(section_id.to_string(), cache);
+            self.schemas
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .insert(section_id.to_string(), Arc::new(schemas));
         }
 
         fn forget(&self, section_id: &str) {
             self.lock().remove(section_id);
+            self.schemas
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .remove(section_id);
         }
     }
 
@@ -513,7 +540,7 @@ mod gui {
             &section,
         );
 
-        let (endpoints, schemas, response_schemas, pages) = loader::run(&config, fetcher).await?;
+        let (endpoints, schemas, pages) = loader::run(&config, fetcher).await?;
 
         let previous = mem.endpoints(&paths.loaders, &section_id);
         let (added, removed) = loader::diff(&previous, &endpoints);
@@ -522,13 +549,11 @@ mod gui {
         let cache = loader::LoaderCache {
             loaded_at,
             endpoints: endpoints.clone(),
-            schemas,
-            response_schemas,
         };
-        if let Err(err) = loader::write_cache(&paths.loaders, &section_id, &cache) {
+        if let Err(err) = loader::write_cache(&paths.loaders, &section_id, &cache, &schemas) {
             ::log::warn!("could not cache loader output: {err}");
         }
-        mem.remember(&section_id, cache);
+        mem.remember(&section_id, cache, schemas);
 
         Ok(LoaderRun {
             endpoints,

@@ -107,6 +107,31 @@ test.describe('validateJsonBody', () => {
 		]);
 	});
 
+	/**
+	 * How a loader schema arrives when its definitions refer to each other:
+	 * the ring written once under `$defs`, and the root a `$ref` into it.
+	 */
+	test('a recursive schema bundled under $defs is followed', () => {
+		const schema = {
+			$ref: '#/$defs/Operand',
+			$defs: {
+				Operand: {
+					oneOf: [
+						{
+							type: 'object',
+							required: ['input'],
+							properties: { input: { $ref: '#/$defs/Operand' } },
+							additionalProperties: false
+						},
+						{ type: 'string' }
+					]
+				}
+			}
+		};
+		expect(validateJsonBody(schema, '{ "input": { "input": "leaf" } }')).toEqual([]);
+		expect(validateJsonBody(schema, '{ "input": { "input": 1 } }')).not.toEqual([]);
+	});
+
 	/** Keywords the subset never covered at all. */
 	test('constraints beyond the old subset are enforced', () => {
 		expect(validateJsonBody({ type: 'integer', minimum: 1 }, '0')).toEqual([
