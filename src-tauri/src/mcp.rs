@@ -1092,17 +1092,18 @@ impl FiberMcp {
             hints.push("The response could not be persisted, so query_response is unavailable.");
             log::warn!("could not record MCP response {id}: {err}");
         }
-        // A 401 that survived the retry means re-authenticating did not help,
+        // An auth rejection that survived the retry means refreshing did not help,
         // and the reason depends on where the credential came from. The retry
         // re-reads it (`send::send_authenticated_streaming` invalidates first),
         // so a credential file that the app keeps current has already been
         // consulted — which is why the advice is no longer "restart the server".
-        if response.status == 401 && section.auth.secret_ref().is_some() {
+        if crate::send::authentication_rejected(&response) && section.auth.secret_ref().is_some() {
             let browser = matches!(section.auth, crate::auth::AuthConfig::Browser { .. });
             hints.push(if browser {
                 "Browser credentials cannot be re-captured headlessly. Sign in again in Fiber \
-                 — if this server reads a credential file the app keeps current, the next call \
-                 picks it up; otherwise re-export its secrets."
+                 and capture the credential. Local servers pick up saved keychain changes on \
+                 the next call; servers using FIBER_SECRETS_FILE pick up file changes. \
+                 Servers using a FIBER_SECRETS snapshot need their secrets re-exported and a restart."
             } else {
                 "Re-authenticating did not help, so the stored credential is being rejected. \
                  Check it in Section settings."

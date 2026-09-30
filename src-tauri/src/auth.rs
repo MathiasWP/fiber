@@ -3,7 +3,7 @@
 //! The point of this module is to kill "paste a fresh Bearer token every hour".
 //! A section describes how to *obtain* a token — usually by making a request —
 //! and the token is cached, injected, and re-fetched automatically when the API
-//! answers 401. See §5 of the design doc.
+//! rejects authentication (401 or an explicit token-expiry 403).
 //!
 //! Secrets are passed in by the caller rather than read here, so the logic is
 //! testable without touching the real keychain.
@@ -131,8 +131,11 @@ pub enum AuthError {
 
 struct CachedToken {
     value: String,
-    /// `None` means it only expires when the API rejects it.
+    /// `None` means no time limit; credential changes still invalidate it.
     expires_at: Option<Instant>,
+    revision: u64,
+    auth: AuthConfig,
+    base_url: String,
 }
 
 impl CachedToken {
@@ -141,12 +144,37 @@ impl CachedToken {
     }
 }
 
-#[derive(Default)]
 pub struct AuthState {
     tokens: Mutex<HashMap<String, CachedToken>>,
+    revisions_dir: std::path::PathBuf,
+    secrets_file: Option<std::path::PathBuf>,
+}
+
+impl Default for AuthState {
+    fn default() -> Self {
+        Self {
+            tokens: Mutex::default(),
+            revisions_dir: crate::secrets::revisions_dir(),
+            secrets_file: std::env::var_os("FIBER_SECRETS_FILE").map(Into::into),
+        }
+    }
 }
 
 impl AuthState {
+    #[cfg(test)]
+    pub(crate) fn with_secrets_file(path: std::path::PathBuf) -> Self {
+        Self {
+            secrets_file: Some(path),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn revision(&self, section: &Section) -> u64 {
+        section.auth.secret_ref().map_or(0, |reference| {
+            crate::secrets::revision(&self.revisions_dir, reference, self.secrets_file.as_deref())
+        })
+    }
+
     /// Drops a section's token so the next send fetches a new one.
     pub fn invalidate(&self, section_id: &str) {
         // A poisoned lock is another thread's panic, not this cache's problem:
@@ -157,24 +185,38 @@ impl AuthState {
             .remove(section_id);
     }
 
-    fn cached(&self, section_id: &str) -> Option<String> {
+    fn cached(&self, section: &Section, revision: u64) -> Option<String> {
         let tokens = self
             .tokens
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         tokens
-            .get(section_id)
-            .filter(|token| token.valid())
+            .get(&section.id)
+            .filter(|token| {
+                token.valid()
+                    && token.revision == revision
+                    && token.auth == section.auth
+                    && token.base_url == section.base_url
+            })
             .map(|token| token.value.clone())
     }
 
-    pub(crate) fn store(&self, section_id: &str, value: String, ttl_seconds: u64) {
+    pub(crate) fn store(&self, section: &Section, value: String, ttl_seconds: u64, revision: u64) {
         let expires_at =
             (ttl_seconds > 0).then(|| Instant::now() + Duration::from_secs(ttl_seconds));
         self.tokens
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(section_id.to_string(), CachedToken { value, expires_at });
+            .insert(
+                section.id.clone(),
+                CachedToken {
+                    value,
+                    expires_at,
+                    revision,
+                    auth: section.auth.clone(),
+                    base_url: section.base_url.clone(),
+                },
+            );
     }
 }
 
@@ -194,19 +236,21 @@ pub async fn header_for<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
+    // Sample before reading the credential: a concurrent write must invalidate
+    // this entry on the next send, never bless an old value with a new revision.
+    let revision = state.revision(section);
     let fetch = || section.auth.secret_ref().and_then(lookup);
 
     match &section.auth {
         AuthConfig::None => Ok(None),
 
-        // Cached like a login token, though nothing expires it but a 401 or the
-        // user replacing it — both of which already call `invalidate`.
+        // Cached until its source changes, including in another Fiber process.
         AuthConfig::Bearer { .. } => {
-            let token = match state.cached(&section.id) {
+            let token = match state.cached(section, revision) {
                 Some(token) => token,
                 None => {
                     let token = fetch().ok_or(AuthError::MissingSecret)?;
-                    state.store(&section.id, token.clone(), 0);
+                    state.store(section, token.clone(), 0, revision);
                     token
                 }
             };
@@ -225,12 +269,12 @@ where
             ttl_seconds,
             ..
         } => {
-            let token = match state.cached(&section.id) {
+            let token = match state.cached(section, revision) {
                 Some(token) => token,
                 None => {
                     let body = fetch().ok_or(AuthError::MissingSecret)?;
                     let token = log_in(http, section, method, url, &body, token_path).await?;
-                    state.store(&section.id, token.clone(), *ttl_seconds);
+                    state.store(section, token.clone(), *ttl_seconds, revision);
                     token
                 }
             };
@@ -242,11 +286,11 @@ where
         // Re-capturing it needs a webview, which lives outside this module —
         // see `browser.rs`. Here we only compose what's already stored.
         AuthConfig::Browser { header, prefix, .. } => {
-            let captured = match state.cached(&section.id) {
+            let captured = match state.cached(section, revision) {
                 Some(value) => value,
                 None => {
                     let value = fetch().ok_or(AuthError::NotSignedIn)?;
-                    state.store(&section.id, value.clone(), 0);
+                    state.store(section, value.clone(), 0, revision);
                     value
                 }
             };
@@ -610,6 +654,110 @@ mod tests {
             reads.load(Ordering::SeqCst),
             1,
             "three sends, one keychain read"
+        );
+    }
+
+    #[tokio::test]
+    async fn saved_browser_changes_reach_independent_caches_without_extra_keychain_reads() {
+        let dir = std::env::temp_dir().join(format!("fiber-revisions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = AuthState {
+            revisions_dir: dir.clone(),
+            ..Default::default()
+        };
+        let mcp = AuthState {
+            revisions_dir: dir.clone(),
+            ..Default::default()
+        };
+        let http = HttpState::default();
+        let section = section(
+            AuthConfig::Browser {
+                login_url: "https://example.com/login".into(),
+                capture: CaptureKind::LocalStorage,
+                capture_key: "token".into(),
+                capture_path: String::new(),
+                header: "Authorization".into(),
+                prefix: "Bearer".into(),
+                ttl_seconds: 0,
+                secret_ref: "revision-test:auth".into(),
+            },
+            "https://example.com",
+        );
+        let stored = Mutex::new(Some("old-token".to_string()));
+        let reads = AtomicUsize::new(0);
+        let lookup = |_: &str| {
+            reads.fetch_add(1, Ordering::SeqCst);
+            stored.lock().unwrap().clone()
+        };
+        for state in [&app, &mcp] {
+            for _ in 0..2 {
+                let header = header_for(state, &http, &section, &lookup)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(header.value, "Bearer old-token");
+            }
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        crate::secrets::mark_changed(&dir, "unrelated:auth").unwrap();
+        header_for(&mcp, &http, &section, &lookup).await.unwrap();
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            2,
+            "unrelated writes do not prompt"
+        );
+
+        *stored.lock().unwrap() = Some("new-token".into());
+        crate::secrets::mark_changed(&dir, "revision-test:auth").unwrap();
+        for state in [&app, &mcp] {
+            let header = header_for(state, &http, &section, &lookup)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(header.value, "Bearer new-token");
+        }
+        assert_eq!(reads.load(Ordering::SeqCst), 4);
+
+        *stored.lock().unwrap() = None;
+        crate::secrets::mark_changed(&dir, "revision-test:auth").unwrap();
+        for state in [&app, &mcp] {
+            assert!(matches!(
+                header_for(state, &http, &section, &lookup).await,
+                Err(AuthError::NotSignedIn)
+            ));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn changing_the_credential_reference_does_not_reuse_the_old_token() {
+        let state = AuthState::default();
+        let http = HttpState::default();
+        let mut section = section(
+            AuthConfig::Bearer {
+                secret_ref: "old".into(),
+            },
+            "https://example.com",
+        );
+        let lookup = |reference: &str| Some(reference.to_string());
+        assert_eq!(
+            header_for(&state, &http, &section, &lookup)
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
+            "Bearer old"
+        );
+        section.auth = AuthConfig::Bearer {
+            secret_ref: "new".into(),
+        };
+        assert_eq!(
+            header_for(&state, &http, &section, &lookup)
+                .await
+                .unwrap()
+                .unwrap()
+                .value,
+            "Bearer new"
         );
     }
 

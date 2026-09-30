@@ -1,4 +1,4 @@
-//! Authenticated send, with the 401 refresh-and-retry built in.
+//! Authenticated send, with refresh-and-retry for rejected credentials.
 //!
 //! Split out of the Tauri command layer so it stays free of Tauri types: both
 //! the app and the headless MCP server drive the same logic, and the headless
@@ -16,6 +16,55 @@ use crate::auth::{self, AuthConfig, AuthState};
 use crate::http::{self, ChunkSink, HttpError, HttpState, RequestSpec, ResponseData};
 use crate::store::Section;
 
+/// A forbidden response normally means insufficient permissions. Only explicit
+/// token-expiry errors share the 401 refresh path (some APIs, including Kvist,
+/// report expired JWTs as 403). Keep this shared with MCP's sign-in advice.
+pub(crate) fn authentication_rejected(response: &ResponseData) -> bool {
+    if response.status == 401 {
+        return true;
+    }
+    if response.status != 403 {
+        return false;
+    }
+    fn expired(message: &str) -> bool {
+        matches!(
+            message
+                .trim()
+                .trim_end_matches('.')
+                .to_ascii_lowercase()
+                .as_str(),
+            "invalid token: jwt expired"
+                | "jwt expired"
+                | "token expired"
+                | "token has expired"
+                | "access token expired"
+                | "access token has expired"
+                | "token_expired"
+                | "expired_token"
+                | "tokenexpirederror"
+                | "jwtexpired"
+        )
+    }
+    fn error_value(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::String(message) => expired(message),
+            serde_json::Value::Object(fields) => [
+                "error",
+                "message",
+                "error_description",
+                "detail",
+                "code",
+                "name",
+            ]
+            .iter()
+            .any(|key| fields.get(*key).is_some_and(error_value)),
+            _ => false,
+        }
+    }
+    expired(&response.body)
+        || serde_json::from_str(&response.body).is_ok_and(|value| error_value(&value))
+}
+
 /// Lifts a fresh browser-captured credential, for the one auth kind a replayed
 /// request can't refresh. Implemented by the GUI over a hidden webview; absent
 /// under the MCP server, where a browser-captured credential can be used but not
@@ -28,7 +77,7 @@ pub(crate) trait Recapturer: Send + Sync {
 }
 
 /// Applies the section's auth, and — the whole point of auth-as-a-request —
-/// treats a 401 as "the cached token aged out": drop it, log in again, retry
+/// treats a 401 or explicit 403 token-expiry error as a stale token: log in and retry
 /// once. Exactly once, so a genuinely unauthorised request can't loop.
 ///
 /// `lookup` resolves a keychain (or injected) reference. Injected so the retry
@@ -79,19 +128,11 @@ where
     let prepared = apply_auth(http_state, auth_state, section, spec, lookup).await?;
     let first = http::send_streaming(http_state, prepared, sink).await;
 
-    let rejected = matches!(&first, Ok(response) if response.status == 401);
+    let rejected = matches!(&first, Ok(response) if authentication_rejected(response));
 
-    // A static token cannot be refreshed by replaying anything, so there is no
-    // retry to make — but where the credential comes from a source that changes
-    // underneath the process, the cached copy is still worth dropping so the
-    // *next* send reads the new one. That is a containerised server whose
-    // credential file the app has just rewritten: without this, a bearer
-    // collection would present the token it started with for the life of the
-    // workload, because nothing else ever expires a zero-TTL entry.
-    //
-    // Conditioned on there being such a source, because in the desktop app the
-    // same line would buy nothing and cost a keychain prompt per 401 — see
-    // `auth::header_for` on why reads are lazy.
+    // Static bearer tokens cannot be refreshed automatically. Drop rejected
+    // injected values for the next send as well; local keychain values stay
+    // cached until their change marker moves, avoiding repeated prompts.
     if rejected && retry_spec.is_none() && crate::secrets::has_injected_source() {
         auth_state.invalidate(&section.id);
     }
@@ -102,7 +143,10 @@ where
     }
 
     let spec = retry_spec.expect("should_retry implies can_refresh");
-    log::info!("401 from {}, re-authenticating and retrying once", spec.url);
+    log::info!(
+        "authentication rejected by {}, re-authenticating and retrying once",
+        spec.url
+    );
     auth_state.invalidate(&section.id);
 
     // A browser-captured credential can't be re-fetched by replaying a request,
@@ -110,6 +154,7 @@ where
     // the identity provider's own session is still alive this is invisible. The
     // MCP server passes no recapturer, so this branch is simply skipped there.
     if let (AuthConfig::Browser { .. }, Some(recapture)) = (&section.auth, recapture) {
+        let revision = auth_state.revision(section);
         match recapture.recapture(section).await {
             Ok(value) => {
                 // Kept in memory, deliberately not written back to the keychain.
@@ -130,10 +175,10 @@ where
                 // server reads, which is not the keychain and costs no prompt,
                 // so the recapturer mirrors the new value into it before
                 // returning. See `browser::BrowserRecapture`.
-                auth_state.store(&section.id, value, 0);
+                auth_state.store(section, value, 0, revision);
             }
             // The window is now visible for the user to sign in; the original
-            // 401 is the honest answer for this request.
+            // rejection is the honest answer for this request.
             Err(err) => {
                 log::info!("silent re-capture failed: {err}");
                 return first;
@@ -141,11 +186,15 @@ where
         }
     }
 
-    match apply_auth(http_state, auth_state, section, spec, lookup).await {
+    let result = match apply_auth(http_state, auth_state, section, spec, lookup).await {
         Ok(retry) => http::send_streaming(http_state, retry, sink).await,
-        // Re-authentication failed, so the original 401 is the honest answer.
+        // Re-authentication failed, so return the original rejection.
         Err(_) => first,
+    };
+    if matches!(&result, Ok(response) if authentication_rejected(response)) {
+        auth_state.invalidate(&section.id);
     }
+    result
 }
 
 async fn apply_auth<F>(
@@ -377,6 +426,14 @@ mod tests {
     /// credential is not refreshed by replaying a request, it is *replaced on
     /// disk* by the desktop app when someone signs in again.
     async fn fixed_token_api(accepted: &'static str) -> (String, Arc<Calls>) {
+        rejecting_token_api(accepted, "401 Unauthorized", "").await
+    }
+
+    async fn rejecting_token_api(
+        accepted: &'static str,
+        rejected_status: &'static str,
+        body: &'static str,
+    ) -> (String, Arc<Calls>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let calls = Arc::new(Calls {
@@ -397,10 +454,15 @@ mod tests {
                     let request = String::from_utf8_lossy(&buf[..read]).to_string();
                     counters.protected.fetch_add(1, Ordering::SeqCst);
                     let ok = request.contains(&format!("Bearer {accepted}"));
-                    let status = if ok { "200 OK" } else { "401 Unauthorized" };
+                    let status = if ok { "200 OK" } else { rejected_status };
+                    let body = if ok { "" } else { body };
                     let _ = socket
                         .write_all(
-                            format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes(),
+                            format!(
+                                "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
                         )
                         .await;
                     let _ = socket.flush().await;
@@ -428,10 +490,6 @@ mod tests {
         let path = dir.join("secrets.json");
         std::fs::write(&path, r#"{"sec-1:auth":"old-token"}"#).unwrap();
 
-        // SAFETY: no other test reads this variable, and the reads it causes all
-        // happen on this task before it is removed at the end.
-        unsafe { std::env::set_var("FIBER_SECRETS_FILE", &path) };
-
         let section = Section {
             id: "sec-1".into(),
             name: "Test".into(),
@@ -442,7 +500,13 @@ mod tests {
             ..Default::default()
         };
         let http_state = HttpState::default();
-        let auth_state = AuthState::default();
+        let auth_state = AuthState::with_secrets_file(path.clone());
+        let lookup = |reference: &str| {
+            crate::secrets::read_file(&path, None)
+                .unwrap()
+                .get(reference)
+                .cloned()
+        };
 
         let send = || {
             send_authenticated(
@@ -450,24 +514,100 @@ mod tests {
                 &auth_state,
                 Some(&section),
                 spec_for(&base),
-                &crate::secrets::get,
+                &lookup,
                 None,
             )
         };
 
-        // The token the workload started with. Rejected, and now also dropped
-        // from the cache, which is the half that used to be missing.
+        // The token the workload started with is rejected.
         assert_eq!(send().await.unwrap().status, 401);
+
+        // Repopulate the cache before the disk write: the change must be
+        // noticed proactively, without needing another rejection first.
+        apply_auth(&http_state, &auth_state, &section, spec_for(&base), &lookup)
+            .await
+            .unwrap();
 
         // Signing in again in Fiber. Same length, as a refreshed token usually
         // is — an mtime+size stamp would not have noticed this.
         std::fs::write(&path, r#"{"sec-1:auth":"new-token"}"#).unwrap();
 
         let after = send().await.unwrap().status;
-        unsafe { std::env::remove_var("FIBER_SECRETS_FILE") };
         let _ = std::fs::remove_dir_all(&dir);
 
         assert_eq!(after, 200, "the next send should use the rewritten token");
+    }
+
+    #[tokio::test]
+    async fn browser_expiry_on_403_refreshes_once_but_permission_denials_do_not() {
+        for (body, expired) in [
+            ("Invalid token: jwt expired", true),
+            (r#"{"message":"Invalid token: jwt expired"}"#, true),
+            (r#"{"error":{"code":"token_expired"}}"#, true),
+            (r#"{"message":"Insufficient permissions"}"#, false),
+            (r#"{"error":"invalid_token"}"#, false),
+            (r#"{"data":"jwt expired","message":"Forbidden"}"#, false),
+        ] {
+            for refreshed in [true, false] {
+                let (base, calls) = rejecting_token_api("new-token", "403 Forbidden", body).await;
+                let http = HttpState::default();
+                let auth = AuthState::default();
+                let mut section = section_with_login(&base);
+                section.auth = AuthConfig::Browser {
+                    login_url: format!("{base}/login"),
+                    capture: crate::auth::CaptureKind::LocalStorage,
+                    capture_key: "token".into(),
+                    capture_path: String::new(),
+                    header: "Authorization".into(),
+                    prefix: "Bearer".into(),
+                    ttl_seconds: 0,
+                    secret_ref: "expiry-test:auth".into(),
+                };
+                let reads = AtomicUsize::new(0);
+                let lookup = |_: &str| {
+                    let count = reads.fetch_add(1, Ordering::SeqCst);
+                    Some(
+                        if refreshed && count > 0 {
+                            "new-token"
+                        } else {
+                            "old-token"
+                        }
+                        .into(),
+                    )
+                };
+                let response = send_authenticated(
+                    &http,
+                    &auth,
+                    Some(&section),
+                    spec_for(&base),
+                    &lookup,
+                    None,
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    response.status,
+                    if expired && refreshed { 200 } else { 403 },
+                    "{body}"
+                );
+                assert_eq!(
+                    calls.protected.load(Ordering::SeqCst),
+                    if expired { 2 } else { 1 },
+                    "exactly one retry only for expiry: {body}"
+                );
+                assert_eq!(reads.load(Ordering::SeqCst), if expired { 2 } else { 1 });
+                if expired && !refreshed {
+                    auth::header_for(&auth, &http, &section, &lookup)
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        reads.load(Ordering::SeqCst),
+                        3,
+                        "a rejected retry must not stay cached"
+                    );
+                }
+            }
+        }
     }
 
     /// A genuine 401 must not loop: exactly one retry, then give up.
