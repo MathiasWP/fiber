@@ -1,5 +1,11 @@
 # fiber
 
+## 0.16.4
+
+### Patch Changes
+
+- [#104](https://github.com/MathiasWP/fiber/pull/104) [`4176f4f`](https://github.com/MathiasWP/fiber/commit/4176f4ffe5c442ddcaddf136bf9909d70ca284ba) Thanks [@MathiasWP](https://github.com/MathiasWP)! - Invalidate cached authentication when saved credentials change across Fiber processes, and refresh once for explicit token-expiry errors returned as HTTP 403. MCP sign-in advice now covers expired-token responses too.
+
 ## 0.16.3
 
 ### Patch Changes
