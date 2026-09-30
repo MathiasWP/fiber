@@ -41,7 +41,53 @@ fn entry(reference: &str) -> Result<keyring::Entry, SecretError> {
 
 pub fn set(reference: &str, value: &str) -> Result<(), SecretError> {
     entry(reference)?.set_password(value)?;
+    notify_changed(reference);
     Ok(())
+}
+
+/// Non-secret change markers let other Fiber processes drop cached keychain
+/// values without reading the keychain (and prompting) on every request.
+pub(crate) fn revisions_dir() -> std::path::PathBuf {
+    crate::mcp::app_data_dir().join("credential-revisions")
+}
+
+fn revision_path(dir: &std::path::Path, reference: &str) -> std::path::PathBuf {
+    use base64::Engine as _;
+    dir.join(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(reference))
+}
+
+pub(crate) fn mark_changed(dir: &std::path::Path, reference: &str) -> Result<(), String> {
+    // Random content, rather than mtime or size: rapid, same-length credential
+    // replacements must still be visible. This contains no credential material.
+    let revision = new_key()?;
+    std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
+    std::fs::write(revision_path(dir, reference), revision).map_err(|err| err.to_string())
+}
+
+fn notify_changed(reference: &str) {
+    if let Err(err) = mark_changed(&revisions_dir(), reference) {
+        log::warn!("could not publish credential change: {err}");
+    }
+}
+
+/// An in-memory fingerprint only; neither credentials nor their hashes are
+/// written to the marker files. Read file contents to notice same-size writes
+/// even on mounts with coarse timestamps. Environment snapshots never change.
+pub(crate) fn revision(
+    dir: &std::path::Path,
+    reference: &str,
+    secrets_file: Option<&std::path::Path>,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    std::fs::read(revision_path(dir, reference))
+        .ok()
+        .hash(&mut hash);
+    if let Some(path) = secrets_file {
+        path.hash(&mut hash);
+        std::fs::read(path).ok().hash(&mut hash);
+    }
+    hash.finish()
 }
 
 /// Authenticated encryption for the credential file.
@@ -194,14 +240,13 @@ fn env_result() -> &'static Result<HashMap<String, String>, String> {
 /// container held whatever was true when it started: the user signed in, the
 /// keychain got the new token, and the server went on presenting the expired
 /// one until someone re-exported the secrets and restarted the workload. A
-/// mounted file changes under a running process, so re-reading it is half the
-/// fix; the other half is `send::send_authenticated_streaming` dropping the
-/// cached token on a 401, which is what sends anyone back here to look.
+/// mounted file changes under a running process. `auth::header_for` checks its
+/// content fingerprint before using a cached token, so changes reach the next send.
 ///
 /// Deliberately uncached, unlike the mtime+size stamp `mcp::all_sections` uses
 /// for collections. Two reasons. It is not hot: `auth::header_for` only reaches
 /// a lookup when `AuthState` has no live token, which is once per collection
-/// per run plus each 401 — everything else is answered from memory. And a
+/// per run, credential changes and authentication rejections. And a
 /// stamp would be *wrong* here in a way it is not for collections: one token
 /// replaced by another of the same length within a single mtime tick is the
 /// ordinary case for a refreshed JWT or session cookie, and a bind mount can
@@ -211,15 +256,25 @@ fn file_secrets() -> Result<HashMap<String, String>, String> {
     let Some(path) = std::env::var_os("FIBER_SECRETS_FILE") else {
         return Ok(HashMap::new());
     };
+    read_file(
+        std::path::Path::new(&path),
+        std::env::var("FIBER_SECRETS_KEY").ok().as_deref(),
+    )
+}
+
+pub(crate) fn read_file(
+    path: &std::path::Path,
+    key: Option<&str>,
+) -> Result<HashMap<String, String>, String> {
     // Absent is not an error. The app only writes the file once someone has set
     // a container up, and a server pointed at a path that isn't there yet
     // should say "no credentials", not refuse to start.
-    let raw = match std::fs::read_to_string(&path) {
+    let raw = match std::fs::read_to_string(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
         Err(err) => return Err(format!("could not read FIBER_SECRETS_FILE: {err}")),
     };
-    decode_file(&raw, std::env::var("FIBER_SECRETS_KEY").ok().as_deref())
+    decode_file(&raw, key)
 }
 
 /// The key is passed in rather than read here, so the format rules — including
@@ -395,7 +450,10 @@ pub fn has(reference: &str) -> bool {
 
 pub fn delete(reference: &str) -> Result<(), SecretError> {
     match entry(reference)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(keyring::Error::NoEntry) => {
+            notify_changed(reference);
+            Ok(())
+        }
         Err(err) => Err(err.into()),
     }
 }
@@ -503,11 +561,7 @@ mod tests {
     fn a_missing_secrets_file_is_not_an_error() {
         let path = std::env::temp_dir().join("fiber-secrets-absent.json");
         let _ = std::fs::remove_file(&path);
-        // SAFETY: single-threaded test setup; nothing else reads this variable
-        // until `file_secrets` does, on the next line.
-        unsafe { std::env::set_var("FIBER_SECRETS_FILE", &path) };
-        let found = file_secrets();
-        unsafe { std::env::remove_var("FIBER_SECRETS_FILE") };
+        let found = read_file(&path, None);
         assert!(found.unwrap().is_empty());
     }
 }

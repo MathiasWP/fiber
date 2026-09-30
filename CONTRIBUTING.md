@@ -147,8 +147,11 @@ browser route.
 Once per app run, for a collection with credentials — not once per request.
 
 The keychain is read the first time a section's credential is needed and kept in
-memory from then on, invalidated by a 401 or by the credential being replaced. A
-browser session re-captured after a 401 stays in memory only: writing it back
+memory from then on, invalidated by a 401, an explicit token-expiry 403, or a
+saved credential change. Non-secret change markers let a running local MCP
+server notice keychain writes and deletions made by Fiber without prompting on
+every request. Credential files are checked by content before reusing a token.
+A browser session re-captured after rejection stays in desktop memory only: writing it back
 needs authorization exactly as reading does, and a session that expires this
 often will be stale again long before the next launch, so the prompt bought
 nothing. Setting one up on purpose, through *Pick credential*, still writes.
